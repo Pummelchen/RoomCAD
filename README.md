@@ -19,10 +19,11 @@ All geometry uses metres internally and displays both metres and centimetres whe
 | Wall before rear window | 0.08 m | Confirmed by owner |
 | Rear window to bathroom wall | 1.52 m | Confirmed by owner |
 | Rear two-window width | 2.12 m | Inferred; not directly measured |
+| Main floor tile module | 0.60 × 0.60 m | Inferred from supplied photos |
 | Front glazing | Four elements | Confirmed by photos/sketch |
 | Rear glazing | Two elements | Confirmed by photos/sketch |
 
-The fixed shell includes the glossy grey-veined marble floor, white plaster, dark wood-look stair tiles, black steel railings, the stairwell opening, transverse upward flight, rear bathroom, four-element street window, and two-element rear window. The lower stair continues below the upper flight and bathroom. In 2D, current-floor architecture is solid while below-floor geometry is dashed purple.
+The fixed shell includes the glossy grey-veined marble floor, white plaster, dark wood-look stair tiles, black steel railings, the stairwell opening, transverse upward flight, rear bathroom, four-element street window, and two-element rear window. The main floor uses a continuous 60 cm tile grid with a photo-matched 4 mm grout joint and per-tile marble variation. Across the measured rectangle this gives 9 positions (8 full tiles plus a 7 cm cut) by 28 positions (27 full tiles plus a 24 cm cut); the stair opening removes parts of several positions. The lower stair continues below the upper flight and bathroom. In 2D, current-floor architecture is solid while below-floor geometry is dashed purple.
 
 > This is a layout visualisation tool, not a structural, fire-safety, ventilation, or permit drawing. Windowless rental rooms need professional review for Indonesian building, fire-egress, electrical, sanitation, and ventilation requirements before construction.
 
@@ -30,7 +31,8 @@ The fixed shell includes the glossy grey-veined marble floor, white plaster, dar
 
 ### 3D walkthrough
 
-- `W`, `A`, `S`, `D`: move
+- `W` / `S`: move forward / backward
+- `A` / `D`: move right / left (intentionally swapped to the requested layout)
 - Mouse drag: look around
 - `Space`: fly up
 - `C`: fly down

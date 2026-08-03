@@ -15,6 +15,35 @@ struct FloorPlanTests {
         #expect(abs(dimensions.floorArea - 80.0628) < 0.001)
     }
 
+    @Test("Photo-matched 60 cm floor tiles preserve the measured room extents")
+    func floorTileLayout() {
+        let layout = FloorTileLayout(dimensions: SurveyDimensions())
+
+        #expect(FloorTileLayout.tileSize == 0.60)
+        #expect(FloorTileLayout.groutWidth == 0.004)
+        #expect(layout.columns == 9)
+        #expect(layout.rows == 28)
+        #expect(layout.fullColumns == 8)
+        #expect(layout.fullRows == 27)
+        #expect(abs(layout.widthCut - 0.07) < 0.001)
+        #expect(abs(layout.lengthCut - 0.24) < 0.001)
+    }
+
+    @Test("Exact tile multiples do not create a false cut strip")
+    func exactFloorTileMultiple() {
+        var dimensions = SurveyDimensions()
+        dimensions.roomWidth = 4.80
+        dimensions.roomLength = 16.20
+        let layout = FloorTileLayout(dimensions: dimensions)
+
+        #expect(layout.columns == 8)
+        #expect(layout.rows == 27)
+        #expect(layout.fullColumns == 8)
+        #expect(layout.fullRows == 27)
+        #expect(layout.widthCut == 0)
+        #expect(layout.lengthCut == 0)
+    }
+
     @Test("Stacked stair core preserves the supplied landing and lower-flight measurements")
     func stackedStairCore() {
         let dimensions = SurveyDimensions()

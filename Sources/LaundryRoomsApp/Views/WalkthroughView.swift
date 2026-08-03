@@ -20,7 +20,8 @@ struct WalkthroughView: View {
 
                 Text("Walk / fly")
                     .font(.headline)
-                Text("W A S D  •  drag mouse to look")
+                Text("W/S forward/back  •  A right  •  D left")
+                Text("Drag mouse to look")
                 Text("Space up  •  C down  •  Shift fast")
                 Text("Click the scene to capture keys")
             }

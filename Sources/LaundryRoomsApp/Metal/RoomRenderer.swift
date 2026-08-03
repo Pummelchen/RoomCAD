@@ -11,6 +11,7 @@ private struct RoomVertex: Sendable {
 private struct FrameUniforms: Sendable {
     var viewProjection: simd_float4x4
     var cameraExposure: SIMD4<Float>
+    var materialMetrics: SIMD4<Float> // floor tile, grout, room width, room length
 }
 
 private enum Surface: Float, Sendable {
@@ -157,9 +158,16 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         let projection = simd_float4x4.perspective(fovY: .pi / 3.1, aspect: aspect, near: 0.04, far: 80)
         let forward = cameraForward
         let viewMatrix = simd_float4x4.lookAt(eye: cameraPosition, target: cameraPosition + forward, up: SIMD3<Float>(0, 1, 0))
+        let dimensions = currentPlan.dimensions
         var uniforms = FrameUniforms(
             viewProjection: projection * viewMatrix,
-            cameraExposure: SIMD4<Float>(cameraPosition.x, cameraPosition.y, cameraPosition.z, 0.86)
+            cameraExposure: SIMD4<Float>(cameraPosition.x, cameraPosition.y, cameraPosition.z, 0.86),
+            materialMetrics: SIMD4<Float>(
+                FloorTileLayout.tileSize,
+                FloorTileLayout.groutWidth,
+                dimensions.roomWidth,
+                dimensions.roomLength
+            )
         )
 
         encoder.setCullMode(.none)
@@ -196,8 +204,8 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         var movement = SIMD3<Float>.zero
         if view.isPressed("w") { movement += flatForward }
         if view.isPressed("s") { movement -= flatForward }
-        if view.isPressed("d") { movement += right }
-        if view.isPressed("a") { movement -= right }
+        if view.isPressed("a") { movement += right }
+        if view.isPressed("d") { movement -= right }
         if view.isPressed(" ") { movement.y += 1 }
         if view.isPressed("c") { movement.y -= 1 }
 
@@ -644,6 +652,7 @@ private extension RoomRenderer {
     struct Uniforms {
         float4x4 viewProjection;
         float4 cameraExposure;
+        float4 materialMetrics;
     };
 
     struct VertexOut {
@@ -684,14 +693,46 @@ private extension RoomRenderer {
 
         if (material > 0.5 && material < 1.5) {
             float2 p = in.worldPosition.xz;
-            float broad = sin(p.x * 2.3 + sin(p.y * 1.1) * 1.9);
-            float fine = sin(p.x * 13.0 + p.y * 7.0 + hash21(floor(p * 3.0)) * 5.0);
-            float vein = smoothstep(0.76, 0.98, abs(broad * 0.72 + fine * 0.28));
-            float groutX = smoothstep(0.965, 0.995, abs(fract(p.x / 0.60) * 2.0 - 1.0));
-            float groutZ = smoothstep(0.965, 0.995, abs(fract(p.y / 0.60) * 2.0 - 1.0));
-            base = mix(float3(0.86, 0.89, 0.90), float3(0.36, 0.40, 0.42), vein * 0.72);
-            base = mix(base, float3(0.57), max(groutX, groutZ) * 0.35);
-            roughness = 0.16;
+            float tileSize = uniforms.materialMetrics.x;
+            float groutWidth = uniforms.materialMetrics.y;
+            float2 tileID = floor(p / tileSize);
+            float2 cell = fract(p / tileSize);
+            float2 local = (cell - 0.5) * tileSize;
+            float tileRandom = hash21(tileID + 17.0);
+            float orientation = floor(tileRandom * 4.0);
+
+            if (orientation < 0.5) {
+                local = float2(local.x, local.y);
+            } else if (orientation < 1.5) {
+                local = float2(-local.y, local.x);
+            } else if (orientation < 2.5) {
+                local = -local;
+            } else {
+                local = float2(local.y, -local.x);
+            }
+
+            float warp = sin(local.y * 15.0 + tileRandom * 6.283) * 0.035
+                       + sin(local.y * 37.0 - tileRandom * 3.1) * 0.010;
+            float primaryLine = local.x * 0.82 + local.y * 0.46 + warp
+                              - (tileRandom - 0.5) * 0.16;
+            float secondaryLine = local.x * 0.42 - local.y * 0.90
+                                + sin(local.x * 28.0 + tileRandom * 5.0) * 0.018
+                                + (tileRandom - 0.5) * 0.28;
+            float broadVein = 1.0 - smoothstep(0.020, 0.060, abs(primaryLine));
+            float fineVein = 1.0 - smoothstep(0.003, 0.012, abs(primaryLine));
+            float branchVein = 1.0 - smoothstep(0.004, 0.015, abs(secondaryLine));
+            float vein = max(broadVein * 0.42, max(fineVein * 0.82, branchVein * 0.48));
+
+            float2 edgeDistance = min(cell, 1.0 - cell) * tileSize;
+            float2 pixelFootprint = fwidth(p);
+            float antialias = max(max(pixelFootprint.x, pixelFootprint.y) * 1.25, 0.0005);
+            float groutDistance = min(edgeDistance.x, edgeDistance.y);
+            float grout = 1.0 - smoothstep(groutWidth * 0.5, groutWidth * 0.5 + antialias, groutDistance);
+
+            float tileTone = 0.96 + (tileRandom - 0.5) * 0.055;
+            base = mix(float3(0.88, 0.90, 0.91) * tileTone, float3(0.34, 0.38, 0.40), vein);
+            base = mix(base, float3(0.48, 0.49, 0.49), grout * 0.82);
+            roughness = mix(0.16, 0.52, grout);
         } else if (material > 1.5 && material < 2.5) {
             float grain = sin(in.surface.x * 19.0 + sin(in.surface.y * 8.0) * 2.4);
             base *= 0.78 + grain * 0.09;

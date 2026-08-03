@@ -43,6 +43,43 @@ struct SurveyDimensions: Codable, Equatable, Sendable {
     }
 }
 
+/// Photo-matched floor finish expressed in the same metre coordinate system as
+/// the survey. The 60 cm module is inferred from the square polished tiles in
+/// the supplied photographs; cut strips fall at the far walls.
+struct FloorTileLayout: Equatable, Sendable {
+    static let tileSize: Float = 0.60
+    static let groutWidth: Float = 0.004
+
+    let columns: Int
+    let rows: Int
+    let fullColumns: Int
+    let fullRows: Int
+    let widthCut: Float
+    let lengthCut: Float
+
+    init(dimensions: SurveyDimensions) {
+        func axisLayout(length: Float) -> (full: Int, cut: Float) {
+            let quotient = length / Self.tileSize
+            let nearestWhole = quotient.rounded()
+            if abs(quotient - nearestWhole) < 0.001 {
+                return (Int(nearestWhole), 0)
+            }
+            let full = Int(quotient.rounded(.down))
+            return (full, max(0, length - Float(full) * Self.tileSize))
+        }
+
+        let width = axisLayout(length: dimensions.roomWidth)
+        let length = axisLayout(length: dimensions.roomLength)
+
+        fullColumns = width.full
+        fullRows = length.full
+        widthCut = width.cut
+        lengthCut = length.cut
+        columns = width.full + (width.cut > 0.001 ? 1 : 0)
+        rows = length.full + (length.cut > 0.001 ? 1 : 0)
+    }
+}
+
 struct PlanRectangle: Equatable, Sendable {
     var minX: Float
     var maxX: Float

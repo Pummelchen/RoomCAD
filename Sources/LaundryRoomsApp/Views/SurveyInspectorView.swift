@@ -31,6 +31,22 @@ struct SurveyInspectorView: View {
                 measurement("Drawing grid", value: $draft.gridSpacing)
             }
 
+            Section("Floor tiles · photo estimate") {
+                LabeledContent("Tile module", value: "60 × 60 cm")
+                LabeledContent(
+                    "Across \(draft.roomWidth.formattedMeters)",
+                    value: "\(floorTiles.columns) positions · \(floorTiles.fullColumns) full + \(floorTiles.widthCut.formattedCentimeters) cut"
+                )
+                LabeledContent(
+                    "Along \(draft.roomLength.formattedMeters)",
+                    value: "\(floorTiles.rows) positions · \(floorTiles.fullRows) full + \(floorTiles.lengthCut.formattedCentimeters) cut"
+                )
+                LabeledContent("Rendered grout", value: "4 mm")
+                Text("The tile size is inferred from the photographs. Counts describe the uninterrupted room rectangle; the stair opening removes parts of several positions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Confirmed stair relationships") {
                 LabeledContent("First upward step", value: fixedCore.upperFlight.minX.formattedMeters + " from opposite wall")
                 LabeledContent("Lower stair width", value: fixedCore.lowerOpening.width.formattedMeters)
@@ -86,6 +102,10 @@ struct SurveyInspectorView: View {
 
     private var fixedCore: StairBathroomLayout {
         StairBathroomLayout(dimensions: draft)
+    }
+
+    private var floorTiles: FloorTileLayout {
+        FloorTileLayout(dimensions: draft)
     }
 
     private func measurement(_ title: String, value: Binding<Float>) -> some View {
