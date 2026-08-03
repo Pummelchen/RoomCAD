@@ -108,4 +108,103 @@ struct FloorPlanTests {
         store.undo()
         #expect(store.plan == original)
     }
+
+    @Test("Furniture uses measured planning footprints and four cardinal rotations")
+    func furnitureDimensionsAndRotation() {
+        var bed = FurnitureItem(kind: .singleBed, center: PlanPoint(x: 1, z: 2))
+
+        #expect(abs(bed.orientedWidth - 0.90) < 0.001)
+        #expect(abs(bed.orientedDepth - 2.00) < 0.001)
+        bed.direction = bed.direction.next
+        #expect(bed.direction == .east)
+        #expect(abs(bed.orientedWidth - 2.00) < 0.001)
+        #expect(abs(bed.orientedDepth - 0.90) < 0.001)
+        bed.direction = bed.direction.next.next.next
+        #expect(bed.direction == .north)
+
+        #expect(FurnitureKind.squareTable.dimensions.width == 0.70)
+        #expect(FurnitureKind.chair.dimensions.width == 0.45)
+        #expect(FurnitureKind.twoDoorWardrobe.dimensions.depth == 0.60)
+    }
+
+    @Test("Furniture remains on the floor and outside fixed stair geometry")
+    func furnitureFloorConstraints() {
+        let dimensions = SurveyDimensions()
+        let fixed = StairBathroomLayout(dimensions: dimensions)
+        var bed = FurnitureItem(kind: .singleBed, center: PlanPoint(x: -2, z: -2))
+
+        bed.clampToRoom(dimensions)
+        #expect(bed.footprint.minX >= 0)
+        #expect(bed.footprint.minZ >= 0)
+        #expect(bed.isOnUsableFloor(dimensions))
+
+        bed.center = PlanPoint(
+            x: (fixed.lowerOpening.minX + fixed.lowerOpening.maxX) / 2,
+            z: (fixed.lowerOpening.minZ + fixed.lowerOpening.maxZ) / 2
+        )
+        #expect(!bed.isOnUsableFloor(dimensions))
+    }
+
+    @Test("Store adds, rotates, moves, rejects stair overlap, and undoes furniture") @MainActor
+    func furnitureStoreFlow() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+
+        store.addFurniture(.singleBed, at: PlanPoint(x: 1.0, z: 2.0))
+        let id = try #require(store.selectedFurnitureID)
+        #expect(store.plan.furniture.count == 1)
+        #expect(store.selectedFurniture?.direction == .north)
+
+        store.rotateSelectedFurniture()
+        #expect(store.selectedFurniture?.direction == .east)
+        #expect(abs((store.selectedFurniture?.orientedWidth ?? 0) - 2.00) < 0.001)
+
+        store.moveFurniture(id: id, to: PlanPoint(x: 2.5, z: 4.0))
+        #expect(store.selectedFurniture?.center == PlanPoint(x: 2.5, z: 4.0))
+
+        let validCenter = try #require(store.selectedFurniture?.center)
+        let opening = StairBathroomLayout(dimensions: store.plan.dimensions).lowerOpening
+        store.moveFurniture(
+            id: id,
+            to: PlanPoint(
+                x: (opening.minX + opening.maxX) / 2,
+                z: (opening.minZ + opening.maxZ) / 2
+            )
+        )
+        #expect(store.selectedFurniture?.center == validCenter)
+
+        store.undo()
+        #expect(store.selectedFurnitureID == nil)
+        #expect(store.plan.furniture.first?.center == PlanPoint(x: 1.0, z: 2.0))
+        #expect(store.plan.furniture.first?.direction == .east)
+    }
+
+    @Test("Older saved plans decode without a furniture field")
+    func legacyPlanDecoding() throws {
+        let encoded = try JSONEncoder().encode(FloorPlan.example)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "furniture")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let restored = try JSONDecoder().decode(FloorPlan.self, from: legacyData)
+
+        #expect(restored.furniture.isEmpty)
+        #expect(restored.dimensions == FloorPlan.example.dimensions)
+    }
+
+    @Test("Furniture survives plan persistence")
+    func furniturePersistence() throws {
+        var plan = FloorPlan.example
+        plan.furniture = [
+            FurnitureItem(
+                kind: .twoDoorWardrobe,
+                center: PlanPoint(x: 1.4, z: 3.2),
+                direction: .west
+            )
+        ]
+
+        let restored = try JSONDecoder().decode(FloorPlan.self, from: JSONEncoder().encode(plan))
+        #expect(restored.furniture == plan.furniture)
+    }
 }

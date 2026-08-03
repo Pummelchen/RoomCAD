@@ -37,6 +37,18 @@ struct LaundryRoomsApp: App {
                 Button("Export Layout…") { store.exportPlan() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }
+            CommandMenu("Furniture") {
+                Button("Add Single Bed") { store.addFurniture(.singleBed) }
+                Button("Add Square Table") { store.addFurniture(.squareTable) }
+                Button("Add Chair") { store.addFurniture(.chair) }
+                Button("Add Two-Door Wardrobe") { store.addFurniture(.twoDoorWardrobe) }
+                Divider()
+                Button("Rotate Selected Furniture") { store.rotateSelectedFurniture() }
+                    .keyboardShortcut("b", modifiers: [])
+                    .disabled(store.selectedFurnitureID == nil)
+                Button("Delete Selected Furniture") { store.deleteSelectedFurniture() }
+                    .disabled(store.selectedFurnitureID == nil)
+            }
         }
     }
 }

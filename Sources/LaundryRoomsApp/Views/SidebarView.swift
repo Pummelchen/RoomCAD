@@ -42,6 +42,28 @@ struct SidebarView: View {
                 }
             }
 
+            Section("Furniture") {
+                ForEach(FurnitureKind.allCases) { kind in
+                    Button {
+                        store.addFurniture(kind)
+                    } label: {
+                        Label("Add \(kind.title)", systemImage: kind.systemImage)
+                    }
+                    .draggable(kind.rawValue) {
+                        Label(kind.title, systemImage: kind.systemImage)
+                            .padding(8)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .help("Click to place, or drag into the 2D plan · \(kind.footprintLabel)")
+                }
+
+                metric("Placed", "\(store.plan.furniture.count)")
+                Button("Clear furniture", systemImage: "trash") {
+                    store.clearFurniture()
+                }
+                .disabled(store.plan.furniture.isEmpty)
+            }
+
             Section("File") {
                 Button("Export JSON…", systemImage: "square.and.arrow.up") {
                     store.exportPlan()

@@ -206,6 +206,42 @@ struct FloorPlan: Codable, Equatable, Sendable {
     var dimensions = SurveyDimensions()
     var partitions: [PartitionWall] = []
     var doors: [DoorOpening] = []
+    var furniture: [FurnitureItem] = []
+
+    init(
+        dimensions: SurveyDimensions = SurveyDimensions(),
+        partitions: [PartitionWall] = [],
+        doors: [DoorOpening] = [],
+        furniture: [FurnitureItem] = []
+    ) {
+        self.dimensions = dimensions
+        self.partitions = partitions
+        self.doors = doors
+        self.furniture = furniture
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case dimensions
+        case partitions
+        case doors
+        case furniture
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        dimensions = try container.decode(SurveyDimensions.self, forKey: .dimensions)
+        partitions = try container.decodeIfPresent([PartitionWall].self, forKey: .partitions) ?? []
+        doors = try container.decodeIfPresent([DoorOpening].self, forKey: .doors) ?? []
+        furniture = try container.decodeIfPresent([FurnitureItem].self, forKey: .furniture) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(dimensions, forKey: .dimensions)
+        try container.encode(partitions, forKey: .partitions)
+        try container.encode(doors, forKey: .doors)
+        try container.encode(furniture, forKey: .furniture)
+    }
 
     static let initial = FloorPlan()
 
@@ -238,6 +274,11 @@ struct FloorPlan: Codable, Equatable, Sendable {
             guard validIDs.contains(door.wallID),
                   let wall = partitions.first(where: { $0.id == door.wallID }) else { return false }
             return door.width >= 0.6 && door.offset >= 0 && door.offset + door.width <= wall.length
+        }
+        furniture = furniture.map { item in
+            var copy = item
+            copy.sanitize(for: dimensions)
+            return copy
         }
     }
 }

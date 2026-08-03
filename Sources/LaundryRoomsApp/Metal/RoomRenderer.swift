@@ -290,6 +290,7 @@ private struct RoomMeshBuilder: Sendable {
         addBathroom()
         addStairsAndRails()
         addPartitions()
+        addFurniture()
         addCeilingLights()
         return RoomMesh(opaque: opaqueVertices, translucent: translucentVertices)
     }
@@ -498,6 +499,117 @@ private struct RoomMeshBuilder: Sendable {
         let start = SIMD3<Float>(wall.start.x + dx * from, y, wall.start.z + dz * from)
         let end = SIMD3<Float>(wall.start.x + dx * to, y, wall.start.z + dz * to)
         addBeam(from: start, to: end, thickness: plan.dimensions.drywallThickness, height: height, color: SIMD4<Float>(0.88, 0.87, 0.83, 1), surface: .drywall)
+    }
+
+    private mutating func addFurniture() {
+        for item in plan.furniture where item.isOnUsableFloor(plan.dimensions) {
+            switch item.kind {
+            case .singleBed:
+                addSingleBed(item)
+            case .squareTable:
+                addSquareTable(item)
+            case .chair:
+                addChair(item)
+            case .twoDoorWardrobe:
+                addTwoDoorWardrobe(item)
+            }
+        }
+    }
+
+    private mutating func addSingleBed(_ item: FurnitureItem) {
+        let size = item.kind.dimensions
+        let timber = SIMD4<Float>(0.34, 0.20, 0.11, 1)
+        let mattress = SIMD4<Float>(0.78, 0.82, 0.86, 1)
+        let pillow = SIMD4<Float>(0.91, 0.92, 0.90, 1)
+
+        // Every local part uses its half-height as its Y centre when touching
+        // the floor, making y = 0 the single source of truth for alignment.
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, 0.15, 0), size: SIMD3<Float>(size.width, 0.30, size.depth), color: timber, surface: .stairWood)
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, 0.40, 0), size: SIMD3<Float>(size.width - 0.06, 0.20, size.depth - 0.08), color: mattress, surface: .drywall)
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, 0.45, size.depth / 2 - 0.035), size: SIMD3<Float>(size.width, 0.90, 0.07), color: timber, surface: .stairWood)
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, 0.54, size.depth / 2 - 0.30), size: SIMD3<Float>(size.width * 0.68, 0.08, 0.38), color: pillow, surface: .drywall)
+    }
+
+    private mutating func addSquareTable(_ item: FurnitureItem) {
+        let size = item.kind.dimensions
+        let timber = SIMD4<Float>(0.42, 0.25, 0.13, 1)
+        let leg: Float = 0.06
+        let legHeight: Float = 0.69
+        let inset: Float = 0.08
+
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, legHeight + 0.03, 0), size: SIMD3<Float>(size.width, 0.06, size.depth), color: timber, surface: .stairWood)
+        for x in [-size.width / 2 + inset, size.width / 2 - inset] {
+            for z in [-size.depth / 2 + inset, size.depth / 2 - inset] {
+                addFurnitureBox(item, localCenter: SIMD3<Float>(x, legHeight / 2, z), size: SIMD3<Float>(leg, legHeight, leg), color: timber, surface: .stairWood)
+            }
+        }
+    }
+
+    private mutating func addChair(_ item: FurnitureItem) {
+        let size = item.kind.dimensions
+        let timber = SIMD4<Float>(0.47, 0.29, 0.15, 1)
+        let leg: Float = 0.045
+        let seatBottom: Float = 0.43
+        let inset: Float = 0.055
+
+        for x in [-size.width / 2 + inset, size.width / 2 - inset] {
+            for z in [-size.depth / 2 + inset, size.depth / 2 - inset] {
+                addFurnitureBox(item, localCenter: SIMD3<Float>(x, seatBottom / 2, z), size: SIMD3<Float>(leg, seatBottom, leg), color: timber, surface: .stairWood)
+            }
+        }
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, seatBottom + 0.035, 0), size: SIMD3<Float>(size.width, 0.07, size.depth - 0.04), color: timber, surface: .stairWood)
+        let backHeight = size.height - seatBottom - 0.07
+        addFurnitureBox(
+            item,
+            localCenter: SIMD3<Float>(0, seatBottom + 0.07 + backHeight / 2, size.depth / 2 - 0.025),
+            size: SIMD3<Float>(size.width, backHeight, 0.05),
+            color: timber,
+            surface: .stairWood
+        )
+    }
+
+    private mutating func addTwoDoorWardrobe(_ item: FurnitureItem) {
+        let size = item.kind.dimensions
+        let timber = SIMD4<Float>(0.38, 0.24, 0.14, 1)
+        let door = SIMD4<Float>(0.48, 0.32, 0.19, 1)
+        let metal = SIMD4<Float>(0.08, 0.09, 0.10, 1)
+
+        addFurnitureBox(item, localCenter: SIMD3<Float>(0, size.height / 2, 0), size: SIMD3<Float>(size.width, size.height, size.depth), color: timber, surface: .stairWood)
+        let doorWidth = size.width / 2 - 0.018
+        let frontZ = size.depth / 2 + 0.018
+        for sign: Float in [-1, 1] {
+            addFurnitureBox(
+                item,
+                localCenter: SIMD3<Float>(sign * (size.width / 4), size.height / 2, frontZ),
+                size: SIMD3<Float>(doorWidth, size.height - 0.08, 0.036),
+                color: door,
+                surface: .stairWood
+            )
+            addFurnitureBox(
+                item,
+                localCenter: SIMD3<Float>(sign * 0.045, size.height * 0.52, frontZ + 0.035),
+                size: SIMD3<Float>(0.025, 0.18, 0.025),
+                color: metal,
+                surface: .metal
+            )
+        }
+    }
+
+    private mutating func addFurnitureBox(
+        _ item: FurnitureItem,
+        localCenter: SIMD3<Float>,
+        size: SIMD3<Float>,
+        color: SIMD4<Float>,
+        surface: Surface
+    ) {
+        let yaw = item.direction.yawRadians
+        let right = SIMD3<Float>(cos(yaw), 0, -sin(yaw))
+        let forward = SIMD3<Float>(sin(yaw), 0, cos(yaw))
+        let worldCenter = SIMD3<Float>(item.center.x, 0, item.center.z)
+            + right * localCenter.x
+            + SIMD3<Float>(0, localCenter.y, 0)
+            + forward * localCenter.z
+        addOrientedBox(center: worldCenter, size: size, yaw: yaw, color: color, surface: surface)
     }
 
     private mutating func addCeilingLights() {

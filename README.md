@@ -46,11 +46,16 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 
 - **Draw wall**: drag between endpoints; coordinates snap to the configured 5 cm grid.
 - **Place door**: click close to a wall. Each wall supports one 90 cm single-leaf door; placing again moves it.
-- **Inspect**: click a wall to view its exact endpoints and length, flip its hinge, or delete it.
-- **Erase**: click a door or wall.
+- **Furniture**: click a furniture-palette button for automatic placement, or drag it directly onto usable floor in the plan.
+- **Move furniture**: choose Inspect, then click and drag an object. Every object is locked to floor level in 3D and cannot be placed over the bathroom, upper stair flight, or lower stair opening.
+- **Rotate furniture**: click an object to select it and press `B` to rotate clockwise through north, east, south, and west.
+- **Inspect**: click a wall or furniture object to view exact dimensions and editing controls.
+- **Erase**: click furniture, a door, or a wall.
 - **Restore example**: loads a small two-wall/one-door layout; a fresh install starts with the measured shell empty.
 - Undo/redo: `⌘Z` / `⇧⌘Z`.
 - Layouts autosave in Application Support and can be exported as readable JSON.
+
+Furniture uses compact Indonesian-market planning dimensions: a 90 × 200 cm single bed ([IKEA Indonesia example](https://www.ikea.co.id/en/catalog/products/30278708)), 70 × 70 cm square table ([local product example](https://www.ikea.co.id/in/produk/luar-ruang/kursi-makan-luar-ruang/visingso-visingso-spr-59621540)), 45 × 47 cm chair ([VIHALS](https://www.ikea.co.id/en/products/dining-chairs/non-upholstered-chairs/vihals-art-80592734)), and 100 × 60 cm two-door wardrobe (within [IKEA Indonesia's common two-door range](https://www.ikea.co.id/en/inspirations/how-to-measure-a-wardrobe-that-fits-your-bedroom)). These are editable-layout defaults rather than a legal furniture standard. Furniture position and orientation are included in autosave, JSON export, undo, and redo.
 
 ## Build and run
 
@@ -79,13 +84,13 @@ swift test
 - Opaque surfaces avoid blending; glass blends without writing depth, improving both performance and correctness.
 - Static mesh arrays reserve capacity and use shared unified memory suited to Apple silicon.
 - The 2D Canvas renders an immutable `Sendable` snapshot asynchronously, keeping drawing gestures responsive.
-- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 424 KB versus the previous 1.2 MB debug bundle.
+- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 500 KB versus the previous 1.2 MB debug bundle.
 
 On the target MacBook Air M3 (8-core CPU, 16 GB), the corrected stacked-core scene measured 60 fps with 3,060 vertices and 2× MSAA. A five-second Metal System Trace of the renderer showed no command-buffer errors, potential hangs, or runtime shader compilation during steady rendering.
 
 ## Project structure
 
-- `Models/`: survey, wall, and door geometry in real-world units
+- `Models/`: survey, wall, door, and floor-aligned furniture geometry in real-world units
 - `Stores/`: layout editing, validation, undo/redo, autosave, and export
 - `Views/`: desktop split layout, survey inspector, walkthrough HUD, and 2D editor
 - `Metal/`: `MTKView` bridge, camera controls, procedural mesh builder, and Metal shaders

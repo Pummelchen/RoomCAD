@@ -4,13 +4,16 @@ struct TopDownEditorView: View {
     let store: FloorPlanStore
     @State private var dragStart: PlanPoint?
     @State private var dragCurrent: PlanPoint?
+    @State private var furnitureDragID: UUID?
+    @State private var furnitureDragCenter: PlanPoint?
 
     var body: some View {
         GeometryReader { geometry in
             let transform = PlanTransform(size: geometry.size, dimensions: store.plan.dimensions)
             let snapshot = PlanDrawingSnapshot(
-                plan: store.plan,
+                plan: previewPlan,
                 selectedWallID: store.selectedWallID,
+                selectedFurnitureID: store.selectedFurnitureID,
                 dragStart: dragStart,
                 dragCurrent: dragCurrent
             )
@@ -25,6 +28,10 @@ struct TopDownEditorView: View {
                     Color.clear
                         .contentShape(Rectangle())
                         .gesture(wallGesture(transform: transform))
+                } else if store.tool == .select {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(selectionGesture(transform: transform))
                 } else {
                     Color.clear
                         .contentShape(Rectangle())
@@ -38,6 +45,12 @@ struct TopDownEditorView: View {
                             }
                         }
                 }
+            }
+            .dropDestination(for: String.self) { values, location in
+                guard let rawKind = values.first,
+                      let kind = FurnitureKind(rawValue: rawKind) else { return false }
+                store.addFurniture(kind, at: transform.planPoint(from: location))
+                return true
             }
             .overlay(alignment: .bottomLeading) {
                 Label(instruction, systemImage: store.tool.systemImage)
@@ -53,8 +66,8 @@ struct TopDownEditorView: View {
         switch store.tool {
         case .wall: "Drag to draw; endpoints snap to \(store.plan.dimensions.gridSpacing.formattedCentimeters)"
         case .door: "Click a wall to place one 90 cm door"
-        case .erase: "Click a door or wall to remove it"
-        case .select: "Click a wall to inspect exact dimensions"
+        case .erase: "Click furniture, a door, or a wall to remove it"
+        case .select: "Click or drag furniture · B rotates selected furniture"
         }
     }
 
@@ -72,6 +85,39 @@ struct TopDownEditorView: View {
             }
     }
 
+    private func selectionGesture(transform: PlanTransform) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if furnitureDragID == nil {
+                    store.select(near: transform.planPoint(from: value.startLocation))
+                    furnitureDragID = store.selectedFurnitureID
+                }
+                guard let furnitureDragID,
+                      let center = store.constrainedFurnitureCenter(
+                        id: furnitureDragID,
+                        near: transform.planPoint(from: value.location)
+                      ) else { return }
+                furnitureDragCenter = center
+            }
+            .onEnded { _ in
+                if let furnitureDragID, let furnitureDragCenter {
+                    store.moveFurniture(id: furnitureDragID, to: furnitureDragCenter)
+                }
+                furnitureDragID = nil
+                furnitureDragCenter = nil
+            }
+    }
+
+    private var previewPlan: FloorPlan {
+        guard let furnitureDragID, let furnitureDragCenter,
+              let index = store.plan.furniture.firstIndex(where: { $0.id == furnitureDragID }) else {
+            return store.plan
+        }
+        var plan = store.plan
+        plan.furniture[index].center = furnitureDragCenter
+        return plan
+    }
+
     private static func drawPlan(context: inout GraphicsContext, transform: PlanTransform, snapshot: PlanDrawingSnapshot) {
         drawGrid(context: &context, transform: transform, dimensions: snapshot.plan.dimensions)
 
@@ -87,6 +133,14 @@ struct TopDownEditorView: View {
         }
         for door in snapshot.plan.doors {
             drawDoor(door, context: &context, transform: transform, plan: snapshot.plan)
+        }
+        for item in snapshot.plan.furniture {
+            drawFurniture(
+                item,
+                context: &context,
+                transform: transform,
+                selected: item.id == snapshot.selectedFurnitureID
+            )
         }
 
         if let start = snapshot.dragStart, let end = snapshot.dragCurrent {
@@ -141,6 +195,64 @@ struct TopDownEditorView: View {
         let center = PlanPoint(x: wall.start.x + dx * centerOffset, z: wall.start.z + dz * centerOffset)
         let gapRect = CGRect(x: transform.point(center).x - 5, y: transform.point(center).y - 5, width: 10, height: 10)
         context.fill(Path(ellipseIn: gapRect), with: .color(.cyan))
+    }
+
+    private static func drawFurniture(
+        _ item: FurnitureItem,
+        context: inout GraphicsContext,
+        transform: PlanTransform,
+        selected: Bool
+    ) {
+        let rectangle = transform.rect(item.footprint)
+        let color: Color = switch item.kind {
+        case .singleBed: .indigo
+        case .squareTable: .brown
+        case .chair: .orange
+        case .twoDoorWardrobe: .teal
+        }
+
+        context.fill(Path(rectangle), with: .color(color.opacity(0.38)))
+        context.stroke(
+            Path(rectangle),
+            with: .color(selected ? .accentColor : color),
+            lineWidth: selected ? 3 : 1.5
+        )
+
+        let center = transform.point(item.center)
+        let directionLength = max(4, min(rectangle.width, rectangle.height) * 0.30)
+        let directionEnd: CGPoint = switch item.direction {
+        case .north: CGPoint(x: center.x, y: center.y - directionLength)
+        case .east: CGPoint(x: center.x + directionLength, y: center.y)
+        case .south: CGPoint(x: center.x, y: center.y + directionLength)
+        case .west: CGPoint(x: center.x - directionLength, y: center.y)
+        }
+        var directionPath = Path()
+        directionPath.move(to: center)
+        directionPath.addLine(to: directionEnd)
+        context.stroke(directionPath, with: .color(.primary.opacity(0.72)), lineWidth: 1.5)
+        context.fill(
+            Path(ellipseIn: CGRect(x: directionEnd.x - 2, y: directionEnd.y - 2, width: 4, height: 4)),
+            with: .color(.primary)
+        )
+
+        context.draw(
+            Text(item.kind.planLabel).font(.system(size: 7, weight: .bold, design: .rounded)),
+            at: center
+        )
+
+        if selected {
+            for corner in [
+                CGPoint(x: rectangle.minX, y: rectangle.minY),
+                CGPoint(x: rectangle.maxX, y: rectangle.minY),
+                CGPoint(x: rectangle.minX, y: rectangle.maxY),
+                CGPoint(x: rectangle.maxX, y: rectangle.maxY)
+            ] {
+                context.fill(
+                    Path(ellipseIn: CGRect(x: corner.x - 3, y: corner.y - 3, width: 6, height: 6)),
+                    with: .color(.accentColor)
+                )
+            }
+        }
     }
 
     private static func drawWindows(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
@@ -250,6 +362,7 @@ struct TopDownEditorView: View {
 private struct PlanDrawingSnapshot: Sendable {
     var plan: FloorPlan
     var selectedWallID: UUID?
+    var selectedFurnitureID: UUID?
     var dragStart: PlanPoint?
     var dragCurrent: PlanPoint?
 }

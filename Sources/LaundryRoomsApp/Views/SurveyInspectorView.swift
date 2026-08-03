@@ -66,6 +66,21 @@ struct SurveyInspectorView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let item = store.selectedFurniture {
+                Section("Selected furniture") {
+                    LabeledContent("Object", value: item.kind.title)
+                    LabeledContent("Footprint", value: item.kind.footprintLabel)
+                    LabeledContent("Facing", value: item.direction.title)
+                    LabeledContent("Centre", value: pointText(item.center))
+                    Button("Rotate 90° — B", systemImage: "rotate.right") {
+                        store.rotateSelectedFurniture()
+                    }
+                    Button("Delete furniture", systemImage: "trash", role: .destructive) {
+                        store.deleteSelectedFurniture()
+                    }
+                }
+            }
+
             if let wall = selectedWall {
                 Section("Selected wall") {
                     LabeledContent("Length", value: wall.length.formattedMeters)
