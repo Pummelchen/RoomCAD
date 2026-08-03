@@ -98,6 +98,8 @@ struct PlanRectangle: Equatable, Sendable {
 /// transverse upper flight, and is exposed only in the 3.50 m floor opening.
 /// Keeping this derivation in the model makes the 2D and Metal views agree.
 struct StairBathroomLayout: Equatable, Sendable {
+    static let bathroomDepth: Float = 1.75
+
     let core: PlanRectangle
     let bathroom: PlanRectangle
     let upperFlight: PlanRectangle
@@ -114,6 +116,7 @@ struct StairBathroomLayout: Equatable, Sendable {
         let rearBlockStart = coreStart + landingLength
         let lowerWidth = min(1.15, d.roomWidth - 1.0)
         let lowerMinX = d.roomWidth - lowerWidth
+        let bathroomMinX = max(0, d.roomWidth - Self.bathroomDepth)
         let upperStartX = min(2.40, lowerMinX - 0.60)
         let landingMinX = max(upperStartX, lowerMinX - 1.35)
         let upperFlightDepth = min(1.35, d.roomLength - rearBlockStart)
@@ -126,7 +129,7 @@ struct StairBathroomLayout: Equatable, Sendable {
             maxZ: d.roomLength
         )
         bathroom = PlanRectangle(
-            minX: lowerMinX,
+            minX: bathroomMinX,
             maxX: d.roomWidth,
             minZ: upperFlightEnd,
             maxZ: d.roomLength
@@ -162,7 +165,7 @@ struct StairBathroomLayout: Equatable, Sendable {
             maxZ: d.roomLength
         )
         rearWindowStartX = 0.08
-        rearWindowEndX = max(rearWindowStartX + 0.50, lowerMinX - 1.52)
+        rearWindowEndX = max(rearWindowStartX + 0.50, bathroomMinX - 1.52)
     }
 }
 

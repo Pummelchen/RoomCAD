@@ -15,10 +15,11 @@ All geometry uses metres internally and displays both metres and centimetres whe
 | Stair/bath core width | 2.50 m | Read from sketch; needs confirmation |
 | First upward step from long wall | 2.40 m | Confirmed by owner |
 | Lower stair width | 1.15 m | Confirmed by owner |
+| Bathroom depth | 1.75 m | Confirmed by owner |
 | Landing beside lower opening | 1.32 × 3.50 m | Calculated from confirmed dimensions |
 | Wall before rear window | 0.08 m | Confirmed by owner |
 | Rear window to bathroom wall | 1.52 m | Confirmed by owner |
-| Rear two-window width | 2.12 m | Inferred; not directly measured |
+| Rear two-window width | 1.52 m | Inferred; not directly measured |
 | Main floor tile module | 0.60 × 0.60 m | Inferred from supplied photos |
 | Front glazing | Four elements | Confirmed by photos/sketch |
 | Rear glazing | Two elements | Confirmed by photos/sketch |

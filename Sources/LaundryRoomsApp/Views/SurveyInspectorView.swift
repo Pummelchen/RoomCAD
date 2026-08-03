@@ -48,6 +48,7 @@ struct SurveyInspectorView: View {
             }
 
             Section("Confirmed stair relationships") {
+                LabeledContent("Bathroom depth", value: fixedCore.bathroom.width.formattedMeters)
                 LabeledContent("First upward step", value: fixedCore.upperFlight.minX.formattedMeters + " from opposite wall")
                 LabeledContent("Lower stair width", value: fixedCore.lowerOpening.width.formattedMeters)
                 LabeledContent("Clear landing", value: fixedCore.landing.width.formattedMeters + " × " + fixedCore.landing.length.formattedMeters)
@@ -60,7 +61,7 @@ struct SurveyInspectorView: View {
                 LabeledContent("Left wall before window", value: "0.08 m")
                 LabeledContent("Two-window width", value: (fixedCore.rearWindowEndX - fixedCore.rearWindowStartX).formattedMeters + " inferred")
                 LabeledContent("Window to bathroom", value: "1.52 m")
-                Text("The 2.12 m window width is calculated from the 4.87 m total and has not been measured directly.")
+                Text("The 1.52 m window width is calculated from the 4.87 m total after the confirmed 1.75 m bathroom depth and has not been measured directly.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -86,7 +87,7 @@ struct SurveyInspectorView: View {
                     .foregroundStyle(.green)
                 Label("Please verify: width 4.87 m", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                Text("Height remains a photo estimate. The 6.00 m stacked core uses the supplied 2.40 m upward-step offset and 1.15 m lower stair, leaving a calculated 1.32 × 3.50 m landing.")
+                Text("Height remains a photo estimate. The 6.00 m stacked core uses the supplied 1.75 m bathroom depth, 2.40 m upward-step offset, and 1.15 m lower stair, leaving a calculated 1.32 × 3.50 m landing.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

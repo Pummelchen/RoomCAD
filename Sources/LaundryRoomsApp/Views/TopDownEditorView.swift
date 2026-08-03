@@ -217,7 +217,7 @@ struct TopDownEditorView: View {
 
         let coreLabel = Font.system(size: 7, weight: .semibold, design: .rounded)
         let compactMeasurement = FloatingPointFormatStyle<Float>.number.precision(.fractionLength(2))
-        context.draw(Text("BATH\nLOWER STAIR BELOW").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
+        context.draw(Text("BATH\n1.75 m DEEP").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
         context.draw(Text("UP →").font(coreLabel).foregroundStyle(.brown), at: CGPoint(x: upperFlight.midX, y: upperFlight.midY))
         context.draw(Text("LOWER OPENING\n\(layout.lowerOpening.width.formatted(compactMeasurement)) × \(layout.lowerOpening.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.primary), at: CGPoint(x: lowerOpening.midX, y: lowerOpening.midY))
         context.draw(Text("LANDING\n\(layout.landing.width.formatted(compactMeasurement)) × \(layout.landing.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.orange), at: CGPoint(x: landing.midX, y: landing.midY))

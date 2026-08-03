@@ -58,10 +58,12 @@ struct FloorPlanTests {
         #expect(layout.lowerCoveredFlight.minZ == layout.lowerOpening.maxZ)
         #expect(layout.lowerUnderBathroom.maxZ == dimensions.roomLength)
         #expect(layout.bathroom.minZ == layout.upperFlight.maxZ)
-        #expect(layout.bathroom == layout.lowerUnderBathroom)
+        #expect(abs(layout.bathroom.width - 1.75) < 0.001)
+        #expect(layout.bathroom.minX < layout.lowerUnderBathroom.minX)
+        #expect(layout.bathroom.maxX == layout.lowerUnderBathroom.maxX)
         #expect(abs(layout.rearWindowStartX - 0.08) < 0.001)
         #expect(abs((layout.bathroom.minX - layout.rearWindowEndX) - 1.52) < 0.001)
-        #expect(abs((layout.rearWindowEndX - layout.rearWindowStartX) - 2.12) < 0.001)
+        #expect(abs((layout.rearWindowEndX - layout.rearWindowStartX) - 1.52) < 0.001)
     }
 
     @Test("Wall projection supplies a physical door offset")
