@@ -1,0 +1,42 @@
+import AppKit
+import SwiftUI
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+@main
+struct LaundryRoomsApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var store = FloorPlanStore()
+
+    var body: some Scene {
+        WindowGroup("Laundry Rooms Planner") {
+            ContentView(store: store)
+                .frame(minWidth: 1_180, minHeight: 720)
+        }
+        .defaultSize(width: 1_440, height: 900)
+        .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { store.undo() }
+                    .keyboardShortcut("z")
+                    .disabled(!store.canUndo)
+                Button("Redo") { store.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!store.canRedo)
+            }
+            CommandMenu("Layout") {
+                Button("3D Walkthrough") { store.mode = .walkthrough }
+                    .keyboardShortcut("1", modifiers: .command)
+                Button("2D Plan") { store.mode = .plan }
+                    .keyboardShortcut("2", modifiers: .command)
+                Divider()
+                Button("Export Layout…") { store.exportPlan() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
+        }
+    }
+}
