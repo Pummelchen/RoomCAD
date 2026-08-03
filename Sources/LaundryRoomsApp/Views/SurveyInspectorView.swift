@@ -31,6 +31,24 @@ struct SurveyInspectorView: View {
                 measurement("Drawing grid", value: $draft.gridSpacing)
             }
 
+            Section("Confirmed stair relationships") {
+                LabeledContent("First upward step", value: fixedCore.upperFlight.minX.formattedMeters + " from opposite wall")
+                LabeledContent("Lower stair width", value: fixedCore.lowerOpening.width.formattedMeters)
+                LabeledContent("Clear landing", value: fixedCore.landing.width.formattedMeters + " × " + fixedCore.landing.length.formattedMeters)
+                Text("The lower flight continues below the bathroom and upper flight. Dashed purple geometry in 2D is below this floor.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Two-window wall") {
+                LabeledContent("Left wall before window", value: "0.08 m")
+                LabeledContent("Two-window width", value: (fixedCore.rearWindowEndX - fixedCore.rearWindowStartX).formattedMeters + " inferred")
+                LabeledContent("Window to bathroom", value: "1.52 m")
+                Text("The 2.12 m window width is calculated from the 4.87 m total and has not been measured directly.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if let wall = selectedWall {
                 Section("Selected wall") {
                     LabeledContent("Length", value: wall.length.formattedMeters)
@@ -52,7 +70,7 @@ struct SurveyInspectorView: View {
                     .foregroundStyle(.green)
                 Label("Please verify: width 4.87 m", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                Text("Height and stair-core dimensions are photo/sketch estimates. Change them here when measured; the 2D and Metal models update together.")
+                Text("Height remains a photo estimate. The 6.00 m stacked core uses the supplied 2.40 m upward-step offset and 1.15 m lower stair, leaving a calculated 1.32 × 3.50 m landing.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -64,6 +82,10 @@ struct SurveyInspectorView: View {
     private var selectedWall: PartitionWall? {
         guard let id = store.selectedWallID else { return nil }
         return store.plan.partitions.first { $0.id == id }
+    }
+
+    private var fixedCore: StairBathroomLayout {
+        StairBathroomLayout(dimensions: draft)
     }
 
     private func measurement(_ title: String, value: Binding<Float>) -> some View {

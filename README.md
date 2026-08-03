@@ -11,12 +11,18 @@ All geometry uses metres internally and displays both metres and centimetres whe
 | Window-to-window length | **16.44 m** | Confirmed by owner, 3 August 2026 |
 | Inside width | 4.87 m | Read from handwritten sketch; needs confirmation |
 | Clear ceiling height | 3.60 m | Estimated from photos; needs measurement |
-| Stair/bath core length | 6.00 m | Read from sketch; needs confirmation |
+| Stair/bath core length | 6.00 m | Supplied by owner |
 | Stair/bath core width | 2.50 m | Read from sketch; needs confirmation |
+| First upward step from long wall | 2.40 m | Confirmed by owner |
+| Lower stair width | 1.15 m | Confirmed by owner |
+| Landing beside lower opening | 1.32 × 3.50 m | Calculated from confirmed dimensions |
+| Wall before rear window | 0.08 m | Confirmed by owner |
+| Rear window to bathroom wall | 1.52 m | Confirmed by owner |
+| Rear two-window width | 2.12 m | Inferred; not directly measured |
 | Front glazing | Four elements | Confirmed by photos/sketch |
 | Rear glazing | Two elements | Confirmed by photos/sketch |
 
-The fixed shell includes the glossy grey-veined marble floor, white plaster, dark wood-look stair tiles, black steel railings, the stairwell opening, upward flight, rear bathroom, four-element street window, and two-element rear window. Architectural positions other than the confirmed length are deliberately editable in the survey inspector.
+The fixed shell includes the glossy grey-veined marble floor, white plaster, dark wood-look stair tiles, black steel railings, the stairwell opening, transverse upward flight, rear bathroom, four-element street window, and two-element rear window. The lower stair continues below the upper flight and bathroom. In 2D, current-floor architecture is solid while below-floor geometry is dashed purple.
 
 > This is a layout visualisation tool, not a structural, fire-safety, ventilation, or permit drawing. Windowless rental rooms need professional review for Indonesian building, fire-egress, electrical, sanitation, and ventilation requirements before construction.
 
@@ -70,9 +76,9 @@ swift test
 - Opaque surfaces avoid blending; glass blends without writing depth, improving both performance and correctness.
 - Static mesh arrays reserve capacity and use shared unified memory suited to Apple silicon.
 - The 2D Canvas renders an immutable `Sendable` snapshot asynchronously, keeping drawing gestures responsive.
-- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 406 KB versus the previous 1.2 MB debug bundle.
+- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 424 KB versus the previous 1.2 MB debug bundle.
 
-On the target MacBook Air M3 (8-core CPU, 16 GB), the release HUD measured 60 fps with 2,622 vertices and 2× MSAA. A five-second Metal System Trace showed no command-buffer errors, potential hangs, or runtime shader compilation during steady rendering.
+On the target MacBook Air M3 (8-core CPU, 16 GB), the corrected stacked-core scene measured 60 fps with 3,060 vertices and 2× MSAA. A five-second Metal System Trace of the renderer showed no command-buffer errors, potential hangs, or runtime shader compilation during steady rendering.
 
 ## Project structure
 

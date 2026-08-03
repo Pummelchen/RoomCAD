@@ -15,6 +15,26 @@ struct FloorPlanTests {
         #expect(abs(dimensions.floorArea - 80.0628) < 0.001)
     }
 
+    @Test("Stacked stair core preserves the supplied landing and lower-flight measurements")
+    func stackedStairCore() {
+        let dimensions = SurveyDimensions()
+        let layout = StairBathroomLayout(dimensions: dimensions)
+
+        #expect(abs(layout.core.length - 6.00) < 0.001)
+        #expect(abs(layout.lowerOpening.width - 1.15) < 0.001)
+        #expect(abs(layout.lowerOpening.length - 3.50) < 0.001)
+        #expect(abs(layout.landing.width - 1.32) < 0.001)
+        #expect(abs(layout.landing.length - 3.50) < 0.001)
+        #expect(abs(layout.upperFlight.minX - 2.40) < 0.001)
+        #expect(layout.lowerCoveredFlight.minZ == layout.lowerOpening.maxZ)
+        #expect(layout.lowerUnderBathroom.maxZ == dimensions.roomLength)
+        #expect(layout.bathroom.minZ == layout.upperFlight.maxZ)
+        #expect(layout.bathroom == layout.lowerUnderBathroom)
+        #expect(abs(layout.rearWindowStartX - 0.08) < 0.001)
+        #expect(abs((layout.bathroom.minX - layout.rearWindowEndX) - 1.52) < 0.001)
+        #expect(abs((layout.rearWindowEndX - layout.rearWindowStartX) - 2.12) < 0.001)
+    }
+
     @Test("Wall projection supplies a physical door offset")
     func wallProjection() {
         let wall = PartitionWall(start: PlanPoint(x: 1, z: 2), end: PlanPoint(x: 4, z: 2))

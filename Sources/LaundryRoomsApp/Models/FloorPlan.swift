@@ -43,6 +43,92 @@ struct SurveyDimensions: Codable, Equatable, Sendable {
     }
 }
 
+struct PlanRectangle: Equatable, Sendable {
+    var minX: Float
+    var maxX: Float
+    var minZ: Float
+    var maxZ: Float
+
+    var width: Float { maxX - minX }
+    var length: Float { maxZ - minZ }
+    var centerX: Float { (minX + maxX) / 2 }
+    var centerZ: Float { (minZ + maxZ) / 2 }
+}
+
+/// Shared photo-and-survey interpretation for the fixed six-metre core.
+///
+/// The lower flight approaches beneath the bathroom, turns beneath the
+/// transverse upper flight, and is exposed only in the 3.50 m floor opening.
+/// Keeping this derivation in the model makes the 2D and Metal views agree.
+struct StairBathroomLayout: Equatable, Sendable {
+    let core: PlanRectangle
+    let bathroom: PlanRectangle
+    let upperFlight: PlanRectangle
+    let landing: PlanRectangle
+    let lowerOpening: PlanRectangle
+    let lowerCoveredFlight: PlanRectangle
+    let lowerUnderBathroom: PlanRectangle
+    let rearWindowStartX: Float
+    let rearWindowEndX: Float
+
+    init(dimensions d: SurveyDimensions) {
+        let coreStart = d.roomLength - d.stairCoreLength
+        let landingLength = min(3.50, d.stairCoreLength - 1.0)
+        let rearBlockStart = coreStart + landingLength
+        let lowerWidth = min(1.15, d.roomWidth - 1.0)
+        let lowerMinX = d.roomWidth - lowerWidth
+        let upperStartX = min(2.40, lowerMinX - 0.60)
+        let landingMinX = max(upperStartX, lowerMinX - 1.35)
+        let upperFlightDepth = min(1.35, d.roomLength - rearBlockStart)
+        let upperFlightEnd = rearBlockStart + upperFlightDepth
+
+        core = PlanRectangle(
+            minX: max(0, d.roomWidth - d.stairCoreWidth),
+            maxX: d.roomWidth,
+            minZ: coreStart,
+            maxZ: d.roomLength
+        )
+        bathroom = PlanRectangle(
+            minX: lowerMinX,
+            maxX: d.roomWidth,
+            minZ: upperFlightEnd,
+            maxZ: d.roomLength
+        )
+        upperFlight = PlanRectangle(
+            minX: upperStartX,
+            maxX: d.roomWidth,
+            minZ: rearBlockStart,
+            maxZ: upperFlightEnd
+        )
+        landing = PlanRectangle(
+            minX: landingMinX,
+            maxX: lowerMinX,
+            minZ: coreStart,
+            maxZ: rearBlockStart
+        )
+        lowerOpening = PlanRectangle(
+            minX: lowerMinX,
+            maxX: d.roomWidth,
+            minZ: coreStart,
+            maxZ: rearBlockStart
+        )
+        lowerCoveredFlight = PlanRectangle(
+            minX: lowerMinX,
+            maxX: d.roomWidth,
+            minZ: rearBlockStart,
+            maxZ: upperFlightEnd
+        )
+        lowerUnderBathroom = PlanRectangle(
+            minX: lowerMinX,
+            maxX: d.roomWidth,
+            minZ: upperFlightEnd,
+            maxZ: d.roomLength
+        )
+        rearWindowStartX = 0.08
+        rearWindowEndX = max(rearWindowStartX + 0.50, lowerMinX - 1.52)
+    }
+}
+
 struct PartitionWall: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var start: PlanPoint

@@ -152,8 +152,9 @@ struct TopDownEditorView: View {
         front.addLine(to: frontRight)
         context.stroke(front, with: .color(.blue), style: StrokeStyle(lineWidth: 7, dash: [14, 3]))
 
-        let rearLeft = transform.point(PlanPoint(x: 0.30, z: dimensions.roomLength))
-        let rearRight = transform.point(PlanPoint(x: min(2.45, width - 0.3), z: dimensions.roomLength))
+        let fixedCore = StairBathroomLayout(dimensions: dimensions)
+        let rearLeft = transform.point(PlanPoint(x: fixedCore.rearWindowStartX, z: dimensions.roomLength))
+        let rearRight = transform.point(PlanPoint(x: fixedCore.rearWindowEndX, z: dimensions.roomLength))
         var rear = Path()
         rear.move(to: rearLeft)
         rear.addLine(to: rearRight)
@@ -161,39 +162,65 @@ struct TopDownEditorView: View {
     }
 
     private static func drawFixedCore(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
-        let d = dimensions
-        let coreStart = d.roomLength - d.stairCoreLength
-        let coreX = max(0, d.roomWidth - d.stairCoreWidth)
-        let stairRect = CGRect(
-            x: transform.point(PlanPoint(x: coreX, z: d.roomLength)).x,
-            y: transform.point(PlanPoint(x: coreX, z: d.roomLength)).y,
-            width: CGFloat(d.stairCoreWidth) * transform.scale,
-            height: CGFloat(d.stairCoreLength) * transform.scale
-        )
-        context.fill(Path(stairRect), with: .color(.brown.opacity(0.16)))
-        context.stroke(Path(stairRect), with: .color(.brown), lineWidth: 2)
+        let layout = StairBathroomLayout(dimensions: dimensions)
+        let bathroom = transform.rect(layout.bathroom)
+        let upperFlight = transform.rect(layout.upperFlight)
+        let landing = transform.rect(layout.landing)
+        let lowerOpening = transform.rect(layout.lowerOpening)
+        let lowerCovered = transform.rect(layout.lowerCoveredFlight)
+        let lowerUnderBathroom = transform.rect(layout.lowerUnderBathroom)
 
-        let steps = 14
+        context.fill(Path(bathroom), with: .color(.teal.opacity(0.14)))
+        context.stroke(Path(bathroom), with: .color(.teal), lineWidth: 2)
+
+        context.fill(Path(lowerCovered), with: .color(.purple.opacity(0.08)))
+        context.stroke(Path(lowerCovered), with: .color(.purple.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+        context.fill(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.08)))
+        context.stroke(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+
+        context.fill(Path(landing), with: .color(.orange.opacity(0.10)))
+        context.stroke(Path(landing), with: .color(.orange.opacity(0.75)), lineWidth: 1.5)
+
+        context.fill(Path(upperFlight), with: .color(.brown.opacity(0.18)))
+        context.stroke(Path(upperFlight), with: .color(.brown), lineWidth: 2)
+
+        let steps = 12
         for index in 1..<steps {
-            let z = coreStart + Float(index) * d.stairCoreLength / Float(steps)
+            let x = layout.upperFlight.minX + Float(index) * layout.upperFlight.width / Float(steps)
             var line = Path()
-            line.move(to: transform.point(PlanPoint(x: coreX, z: z)))
-            line.addLine(to: transform.point(PlanPoint(x: d.roomWidth, z: z)))
+            line.move(to: transform.point(PlanPoint(x: x, z: layout.upperFlight.minZ)))
+            line.addLine(to: transform.point(PlanPoint(x: x, z: layout.upperFlight.maxZ)))
             context.stroke(line, with: .color(.brown.opacity(0.5)), lineWidth: 1)
         }
 
-        let bathWidth = min(1.35, max(1.0, coreX - 0.15))
-        let bathroom = CGRect(
-            x: transform.point(PlanPoint(x: coreX - bathWidth, z: d.roomLength)).x,
-            y: transform.point(PlanPoint(x: coreX - bathWidth, z: d.roomLength)).y,
-            width: CGFloat(bathWidth) * transform.scale,
-            height: CGFloat(2.50) * transform.scale
-        )
-        context.fill(Path(bathroom), with: .color(.teal.opacity(0.12)))
-        context.stroke(Path(bathroom), with: .color(.teal), lineWidth: 2)
+        context.fill(Path(lowerOpening), with: .color(.black.opacity(0.22)))
+        context.stroke(Path(lowerOpening), with: .color(.primary), lineWidth: 2)
+        var openingRail = Path()
+        openingRail.move(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.minZ)))
+        openingRail.addLine(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.maxZ)))
+        openingRail.move(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.minZ)))
+        openingRail.addLine(to: transform.point(PlanPoint(x: layout.lowerOpening.maxX, z: layout.lowerOpening.minZ)))
+        context.stroke(openingRail, with: .color(.primary), lineWidth: 4)
 
-        context.draw(Text("STAIRS").font(.caption2).foregroundStyle(.brown), at: CGPoint(x: stairRect.midX, y: stairRect.midY))
-        context.draw(Text("BATH").font(.caption2).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
+        let bathroomDoorWidth = min(0.72, layout.bathroom.length - 0.20)
+        let bathroomDoorStart = layout.bathroom.minZ + (layout.bathroom.length - bathroomDoorWidth) / 2
+        let bathroomDoorEnd = bathroomDoorStart + bathroomDoorWidth
+        let bathroomHinge = transform.point(PlanPoint(x: layout.bathroom.minX, z: bathroomDoorStart))
+        var bathroomDoorGap = Path()
+        bathroomDoorGap.move(to: bathroomHinge)
+        bathroomDoorGap.addLine(to: transform.point(PlanPoint(x: layout.bathroom.minX, z: bathroomDoorEnd)))
+        context.stroke(bathroomDoorGap, with: .color(Color(nsColor: .textBackgroundColor)), lineWidth: 5)
+        var bathroomDoorLeaf = Path()
+        bathroomDoorLeaf.move(to: bathroomHinge)
+        bathroomDoorLeaf.addLine(to: transform.point(PlanPoint(x: layout.bathroom.minX - bathroomDoorWidth, z: bathroomDoorStart)))
+        context.stroke(bathroomDoorLeaf, with: .color(.teal), lineWidth: 2)
+
+        let coreLabel = Font.system(size: 7, weight: .semibold, design: .rounded)
+        let compactMeasurement = FloatingPointFormatStyle<Float>.number.precision(.fractionLength(2))
+        context.draw(Text("BATH\nLOWER STAIR BELOW").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
+        context.draw(Text("UP →").font(coreLabel).foregroundStyle(.brown), at: CGPoint(x: upperFlight.midX, y: upperFlight.midY))
+        context.draw(Text("LOWER OPENING\n\(layout.lowerOpening.width.formatted(compactMeasurement)) × \(layout.lowerOpening.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.primary), at: CGPoint(x: lowerOpening.midX, y: lowerOpening.midY))
+        context.draw(Text("LANDING\n\(layout.landing.width.formatted(compactMeasurement)) × \(layout.landing.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.orange), at: CGPoint(x: landing.midX, y: landing.midY))
     }
 
     private static func drawDimensions(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
@@ -209,7 +236,9 @@ struct TopDownEditorView: View {
             anchor: .center
         )
         context.draw(Text("4-PANE FRONT WINDOW").font(.caption2).foregroundStyle(.blue), at: CGPoint(x: transform.roomRect.midX, y: transform.roomRect.maxY + 38))
-        context.draw(Text("2-PANE REAR").font(.caption2).foregroundStyle(.blue), at: CGPoint(x: transform.roomRect.minX + transform.roomRect.width * 0.28, y: transform.roomRect.minY - 14))
+        let rearWindow = StairBathroomLayout(dimensions: d)
+        let rearWindowWidth = rearWindow.rearWindowEndX - rearWindow.rearWindowStartX
+        context.draw(Text("2-PANE REAR ≈\(rearWindowWidth.formattedMeters)").font(.caption2).foregroundStyle(.blue), at: CGPoint(x: transform.roomRect.minX + transform.roomRect.width * 0.28, y: transform.roomRect.minY - 14))
     }
 }
 
@@ -242,6 +271,16 @@ private struct PlanTransform: Sendable {
         CGPoint(
             x: roomRect.minX + CGFloat(point.x) * scale,
             y: roomRect.maxY - CGFloat(point.z) * scale
+        )
+    }
+
+    func rect(_ rectangle: PlanRectangle) -> CGRect {
+        let topLeft = point(PlanPoint(x: rectangle.minX, z: rectangle.maxZ))
+        return CGRect(
+            x: topLeft.x,
+            y: topLeft.y,
+            width: CGFloat(rectangle.width) * scale,
+            height: CGFloat(rectangle.length) * scale
         )
     }
 

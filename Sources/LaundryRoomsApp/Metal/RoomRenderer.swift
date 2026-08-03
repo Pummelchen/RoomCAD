@@ -276,16 +276,8 @@ private struct RoomMeshBuilder: Sendable {
     mutating func build() -> RoomMesh {
         opaqueVertices.reserveCapacity(4_096)
         translucentVertices.reserveCapacity(256)
-        let d = plan.dimensions
         addFloorWithStairOpening()
-        addPlane(
-            origin: SIMD3<Float>(0, d.clearHeight, 0),
-            axisU: SIMD3<Float>(d.roomWidth, 0, 0),
-            axisV: SIMD3<Float>(0, 0, d.roomLength),
-            normal: SIMD3<Float>(0, -1, 0),
-            color: SIMD4<Float>(0.92, 0.94, 0.95, 1),
-            surface: .plaster
-        )
+        addCeilingWithUpperOpening()
         addExteriorShell()
         addBathroom()
         addStairsAndRails()
@@ -296,17 +288,28 @@ private struct RoomMeshBuilder: Sendable {
 
     private mutating func addFloorWithStairOpening() {
         let d = plan.dimensions
-        let holeMinX = max(0.2, d.roomWidth - 1.70)
-        let holeMaxX = d.roomWidth - 0.12
-        let coreStart = d.roomLength - d.stairCoreLength
-        let holeMinZ = max(2, coreStart - 2.9)
-        let holeMaxZ = coreStart + 0.25
+        let hole = StairBathroomLayout(dimensions: d).lowerOpening
         let marble = SIMD4<Float>(0.82, 0.86, 0.88, 1)
 
-        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: 0, z1: holeMinZ, y: 0, color: marble, surface: .marble)
-        addHorizontalRect(x0: 0, x1: holeMinX, z0: holeMinZ, z1: holeMaxZ, y: 0, color: marble, surface: .marble)
-        addHorizontalRect(x0: holeMaxX, x1: d.roomWidth, z0: holeMinZ, z1: holeMaxZ, y: 0, color: marble, surface: .marble)
-        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: holeMaxZ, z1: d.roomLength, y: 0, color: marble, surface: .marble)
+        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: 0, z1: hole.minZ, y: 0, color: marble, surface: .marble)
+        addHorizontalRect(x0: 0, x1: hole.minX, z0: hole.minZ, z1: hole.maxZ, y: 0, color: marble, surface: .marble)
+        if hole.maxX < d.roomWidth {
+            addHorizontalRect(x0: hole.maxX, x1: d.roomWidth, z0: hole.minZ, z1: hole.maxZ, y: 0, color: marble, surface: .marble)
+        }
+        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: hole.maxZ, z1: d.roomLength, y: 0, color: marble, surface: .marble)
+    }
+
+    private mutating func addCeilingWithUpperOpening() {
+        let d = plan.dimensions
+        let opening = StairBathroomLayout(dimensions: d).upperFlight
+        let plaster = SIMD4<Float>(0.92, 0.94, 0.95, 1)
+
+        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: 0, z1: opening.minZ, y: d.clearHeight, color: plaster, surface: .plaster, normal: SIMD3<Float>(0, -1, 0))
+        addHorizontalRect(x0: 0, x1: opening.minX, z0: opening.minZ, z1: opening.maxZ, y: d.clearHeight, color: plaster, surface: .plaster, normal: SIMD3<Float>(0, -1, 0))
+        if opening.maxX < d.roomWidth {
+            addHorizontalRect(x0: opening.maxX, x1: d.roomWidth, z0: opening.minZ, z1: opening.maxZ, y: d.clearHeight, color: plaster, surface: .plaster, normal: SIMD3<Float>(0, -1, 0))
+        }
+        addHorizontalRect(x0: 0, x1: d.roomWidth, z0: opening.maxZ, z1: d.roomLength, y: d.clearHeight, color: plaster, surface: .plaster, normal: SIMD3<Float>(0, -1, 0))
     }
 
     private mutating func addExteriorShell() {
@@ -321,9 +324,16 @@ private struct RoomMeshBuilder: Sendable {
         let frontWindowEnd = d.roomWidth - 0.34
         addWindowWall(z: 0, windowStart: frontWindowStart, windowEnd: frontWindowEnd, sill: 0.82, top: 2.72, outward: -1, paneCount: 4)
 
-        let rearWindowStart: Float = 0.28
-        let rearWindowEnd = min(2.38, d.roomWidth - 0.3)
-        addWindowWall(z: d.roomLength, windowStart: rearWindowStart, windowEnd: rearWindowEnd, sill: 0.92, top: 2.55, outward: 1, paneCount: 2)
+        let fixedCore = StairBathroomLayout(dimensions: d)
+        addWindowWall(
+            z: d.roomLength,
+            windowStart: fixedCore.rearWindowStartX,
+            windowEnd: fixedCore.rearWindowEndX,
+            sill: 0.92,
+            top: 2.55,
+            outward: 1,
+            paneCount: 2
+        )
     }
 
     private mutating func addWindowWall(z: Float, windowStart: Float, windowEnd: Float, sill: Float, top: Float, outward: Float, paneCount: Int) {
@@ -352,59 +362,91 @@ private struct RoomMeshBuilder: Sendable {
 
     private mutating func addBathroom() {
         let d = plan.dimensions
-        let coreX = d.roomWidth - d.stairCoreWidth
-        let bathWidth = min(1.35, max(1.0, coreX - 0.15))
-        let x0 = max(0.15, coreX - bathWidth)
-        let x1 = coreX
-        let z0 = d.roomLength - 2.50
+        let bathroom = StairBathroomLayout(dimensions: d).bathroom
+        let x0 = bathroom.minX
+        let x1 = bathroom.maxX
+        let z0 = bathroom.minZ
         let color = SIMD4<Float>(0.84, 0.87, 0.86, 1)
-        let t: Float = 0.10
+        let t: Float = min(0.08, bathroom.width * 0.09)
 
-        addBox(center: SIMD3<Float>(x0, d.clearHeight / 2, (z0 + d.roomLength) / 2), size: SIMD3<Float>(t, d.clearHeight, 2.50), color: color, surface: .bathroomTile)
-        addBox(center: SIMD3<Float>((x0 + x1) / 2, d.clearHeight / 2, d.roomLength - 0.05), size: SIMD3<Float>(x1 - x0, d.clearHeight, t), color: color, surface: .bathroomTile)
+        addBox(center: SIMD3<Float>(x1, d.clearHeight / 2, bathroom.centerZ), size: SIMD3<Float>(t, d.clearHeight, bathroom.length), color: color, surface: .bathroomTile)
+        addBox(center: SIMD3<Float>(bathroom.centerX, d.clearHeight / 2, z0), size: SIMD3<Float>(bathroom.width, d.clearHeight, t), color: color, surface: .bathroomTile)
+        addBox(center: SIMD3<Float>(bathroom.centerX, d.clearHeight / 2, d.roomLength - t / 2), size: SIMD3<Float>(bathroom.width, d.clearHeight, t), color: color, surface: .bathroomTile)
 
-        let doorWidth: Float = min(0.78, (x1 - x0) - 0.25)
-        let doorLeft = x0 + 0.12
-        let doorRight = doorLeft + doorWidth
-        addBox(center: SIMD3<Float>((x0 + doorLeft) / 2, d.clearHeight / 2, z0), size: SIMD3<Float>(doorLeft - x0, d.clearHeight, t), color: color, surface: .plaster)
-        addBox(center: SIMD3<Float>((doorRight + x1) / 2, d.clearHeight / 2, z0), size: SIMD3<Float>(x1 - doorRight, d.clearHeight, t), color: color, surface: .plaster)
-        addBox(center: SIMD3<Float>((doorLeft + doorRight) / 2, (2.1 + d.clearHeight) / 2, z0), size: SIMD3<Float>(doorWidth, d.clearHeight - 2.1, t), color: color, surface: .plaster)
-        addBox(center: SIMD3<Float>(doorLeft, 1.05, z0 - 0.37), size: SIMD3<Float>(0.035, 2.1, doorWidth), color: SIMD4<Float>(0.92, 0.93, 0.90, 1), surface: .drywall)
+        let doorWidth: Float = min(0.72, bathroom.length - 0.20)
+        let doorStart = bathroom.minZ + (bathroom.length - doorWidth) / 2
+        let doorEnd = doorStart + doorWidth
+        addBox(center: SIMD3<Float>(x0, d.clearHeight / 2, (bathroom.minZ + doorStart) / 2), size: SIMD3<Float>(t, d.clearHeight, doorStart - bathroom.minZ), color: color, surface: .plaster)
+        addBox(center: SIMD3<Float>(x0, d.clearHeight / 2, (doorEnd + bathroom.maxZ) / 2), size: SIMD3<Float>(t, d.clearHeight, bathroom.maxZ - doorEnd), color: color, surface: .plaster)
+        addBox(center: SIMD3<Float>(x0, (2.1 + d.clearHeight) / 2, (doorStart + doorEnd) / 2), size: SIMD3<Float>(t, d.clearHeight - 2.1, doorWidth), color: color, surface: .plaster)
+        addBox(center: SIMD3<Float>(x0 - doorWidth / 2, 1.05, doorStart), size: SIMD3<Float>(doorWidth, 2.1, 0.035), color: SIMD4<Float>(0.92, 0.93, 0.90, 1), surface: .drywall)
     }
 
     private mutating func addStairsAndRails() {
         let d = plan.dimensions
-        let stairWidth: Float = min(1.18, d.stairCoreWidth - 0.25)
-        let x0 = d.roomWidth - stairWidth - 0.15
-        let x1 = d.roomWidth - 0.15
-        let z0 = d.roomLength - d.stairCoreLength + 0.25
-        let run = d.stairCoreLength - 0.55
-        let steps = 17
+        let layout = StairBathroomLayout(dimensions: d)
+        let upper = layout.upperFlight
+        let steps = 12
         let rise = d.clearHeight / Float(steps)
-        let tread = run / Float(steps)
+        let tread = upper.width / Float(steps)
         let wood = SIMD4<Float>(0.24, 0.13, 0.08, 1)
 
         for index in 0..<steps {
             let height = rise * Float(index + 1)
-            let z = z0 + tread * (Float(index) + 0.5)
-            addBox(center: SIMD3<Float>((x0 + x1) / 2, height / 2, z), size: SIMD3<Float>(stairWidth, height, tread + 0.015), color: wood, surface: .stairWood)
+            let x = upper.minX + tread * (Float(index) + 0.5)
+            addBox(center: SIMD3<Float>(x, height / 2, upper.centerZ), size: SIMD3<Float>(tread + 0.015, height, upper.length), color: wood, surface: .stairWood)
         }
 
-        let railX = x0 - 0.035
         let metal = SIMD4<Float>(0.025, 0.045, 0.055, 1)
+        let upperRailZ = upper.minZ - 0.035
         for index in stride(from: 0, through: steps, by: 3) {
-            let z = z0 + tread * Float(index)
+            let x = upper.minX + tread * Float(index)
             let y = min(d.clearHeight, rise * Float(index))
-            addBeam(from: SIMD3<Float>(railX, y, z), to: SIMD3<Float>(railX, y + 0.94, z), thickness: 0.045, color: metal, surface: .metal)
+            addBeam(from: SIMD3<Float>(x, y, upperRailZ), to: SIMD3<Float>(x, y + 0.94, upperRailZ), thickness: 0.045, color: metal, surface: .metal)
         }
-        addBeam(from: SIMD3<Float>(railX, 0.94, z0), to: SIMD3<Float>(railX, d.clearHeight + 0.76, z0 + run), thickness: 0.055, color: metal, surface: .metal)
+        addBeam(
+            from: SIMD3<Float>(upper.minX, 0.94, upperRailZ),
+            to: SIMD3<Float>(upper.maxX, d.clearHeight + 0.76, upperRailZ),
+            thickness: 0.055,
+            color: metal,
+            surface: .metal
+        )
 
-        let coreStart = d.roomLength - d.stairCoreLength
-        let holeMinZ = max(2, coreStart - 2.9)
-        let holeMaxZ = coreStart + 0.25
-        let holeMinX = d.roomWidth - 1.70
-        addGuardRail(from: SIMD3<Float>(holeMinX, 0, holeMinZ), to: SIMD3<Float>(holeMinX, 0, holeMaxZ), color: metal)
-        addGuardRail(from: SIMD3<Float>(holeMinX, 0, holeMinZ), to: SIMD3<Float>(d.roomWidth - 0.12, 0, holeMinZ), color: metal)
+        addLowerStairs(layout: layout, color: wood)
+
+        let opening = layout.lowerOpening
+        addGuardRail(from: SIMD3<Float>(opening.minX, 0, opening.minZ), to: SIMD3<Float>(opening.minX, 0, opening.maxZ), color: metal)
+        addGuardRail(from: SIMD3<Float>(opening.minX, 0, opening.minZ), to: SIMD3<Float>(opening.maxX, 0, opening.minZ), color: metal)
+    }
+
+    private mutating func addLowerStairs(layout: StairBathroomLayout, color: SIMD4<Float>) {
+        let d = plan.dimensions
+        let flightMinZ = layout.lowerOpening.minZ
+        let flightMaxZ = layout.lowerCoveredFlight.maxZ
+        let steps = 17
+        let tread = (flightMaxZ - flightMinZ) / Float(steps)
+        let rise = d.clearHeight / Float(steps)
+        let bottom = -d.clearHeight
+
+        for index in 0..<steps {
+            let top = -rise * Float(index)
+            let height = max(0.04, top - bottom)
+            let z = flightMinZ + tread * (Float(index) + 0.5)
+            addBox(
+                center: SIMD3<Float>(layout.lowerOpening.centerX, bottom + height / 2, z),
+                size: SIMD3<Float>(layout.lowerOpening.width, height, tread + 0.015),
+                color: color,
+                surface: .stairWood
+            )
+        }
+
+        let underBathroom = layout.lowerUnderBathroom
+        addBox(
+            center: SIMD3<Float>(underBathroom.centerX, bottom + 0.06, underBathroom.centerZ),
+            size: SIMD3<Float>(underBathroom.width, 0.12, underBathroom.length),
+            color: color,
+            surface: .stairWood
+        )
     }
 
     private mutating func addGuardRail(from start: SIMD3<Float>, to end: SIMD3<Float>, color: SIMD4<Float>) {
@@ -452,14 +494,19 @@ private struct RoomMeshBuilder: Sendable {
 
     private mutating func addCeilingLights() {
         let d = plan.dimensions
+        let upperOpening = StairBathroomLayout(dimensions: d).upperFlight
         for z in stride(from: Float(2.2), through: d.roomLength - 1.5, by: 3.0) {
+            let lightMinX = d.roomWidth / 2 - 0.525
+            let lightMaxX = d.roomWidth / 2 + 0.525
+            let intersectsUpperOpening = lightMaxX > upperOpening.minX && lightMinX < upperOpening.maxX && z > upperOpening.minZ && z < upperOpening.maxZ
+            guard !intersectsUpperOpening else { continue }
             addBox(center: SIMD3<Float>(d.roomWidth / 2, d.clearHeight - 0.025, z), size: SIMD3<Float>(1.05, 0.035, 0.10), color: SIMD4<Float>(1, 0.93, 0.72, 1), surface: .glass)
         }
     }
 
-    private mutating func addHorizontalRect(x0: Float, x1: Float, z0: Float, z1: Float, y: Float, color: SIMD4<Float>, surface: Surface) {
+    private mutating func addHorizontalRect(x0: Float, x1: Float, z0: Float, z1: Float, y: Float, color: SIMD4<Float>, surface: Surface, normal: SIMD3<Float> = SIMD3<Float>(0, 1, 0)) {
         guard x1 > x0, z1 > z0 else { return }
-        addPlane(origin: SIMD3<Float>(x0, y, z0), axisU: SIMD3<Float>(x1 - x0, 0, 0), axisV: SIMD3<Float>(0, 0, z1 - z0), normal: SIMD3<Float>(0, 1, 0), color: color, surface: surface)
+        addPlane(origin: SIMD3<Float>(x0, y, z0), axisU: SIMD3<Float>(x1 - x0, 0, 0), axisV: SIMD3<Float>(0, 0, z1 - z0), normal: normal, color: color, surface: surface)
     }
 
     private mutating func addPlane(origin: SIMD3<Float>, axisU: SIMD3<Float>, axisV: SIMD3<Float>, normal: SIMD3<Float>, color: SIMD4<Float>, surface: Surface) {
