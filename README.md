@@ -32,7 +32,7 @@ The fixed shell includes the glossy grey-veined marble floor, white plaster, dar
 ### 3D walkthrough
 
 - `W` / `S`: move forward / backward
-- `A` / `D`: move right / left (intentionally swapped to the requested layout)
+- `A` / `D`: move left / right
 - Mouse drag: look around
 - `Space`: fly up
 - `C`: fly down

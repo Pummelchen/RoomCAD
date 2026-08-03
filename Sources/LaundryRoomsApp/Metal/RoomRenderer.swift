@@ -204,8 +204,8 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         var movement = SIMD3<Float>.zero
         if view.isPressed("w") { movement += flatForward }
         if view.isPressed("s") { movement -= flatForward }
-        if view.isPressed("a") { movement += right }
-        if view.isPressed("d") { movement -= right }
+        if view.isPressed("a") { movement -= right }
+        if view.isPressed("d") { movement += right }
         if view.isPressed(" ") { movement.y += 1 }
         if view.isPressed("c") { movement.y -= 1 }
 
