@@ -178,8 +178,13 @@ struct TopDownEditorView: View {
         context.fill(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.08)))
         context.stroke(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
 
-        context.fill(Path(landing), with: .color(.orange.opacity(0.10)))
-        context.stroke(Path(landing), with: .color(.orange.opacity(0.75)), lineWidth: 1.5)
+        // This is usable floor, not a constructed block. Keep the floor/grid
+        // visible and use only a light dashed survey boundary.
+        context.stroke(
+            Path(landing),
+            with: .color(.green.opacity(0.60)),
+            style: StrokeStyle(lineWidth: 1.25, dash: [5, 4])
+        )
 
         context.fill(Path(upperFlight), with: .color(.brown.opacity(0.18)))
         context.stroke(Path(upperFlight), with: .color(.brown), lineWidth: 2)
@@ -220,7 +225,7 @@ struct TopDownEditorView: View {
         context.draw(Text("BATH\n1.75 m DEEP").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
         context.draw(Text("UP →").font(coreLabel).foregroundStyle(.brown), at: CGPoint(x: upperFlight.midX, y: upperFlight.midY))
         context.draw(Text("LOWER OPENING\n\(layout.lowerOpening.width.formatted(compactMeasurement)) × \(layout.lowerOpening.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.primary), at: CGPoint(x: lowerOpening.midX, y: lowerOpening.midY))
-        context.draw(Text("LANDING\n\(layout.landing.width.formatted(compactMeasurement)) × \(layout.landing.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.orange), at: CGPoint(x: landing.midX, y: landing.midY))
+        context.draw(Text("FREE LANDING SPACE\n\(layout.landing.width.formatted(compactMeasurement)) × \(layout.landing.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.green), at: CGPoint(x: landing.midX, y: landing.midY))
     }
 
     private static func drawDimensions(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {

@@ -51,7 +51,7 @@ struct SurveyInspectorView: View {
                 LabeledContent("Bathroom depth", value: fixedCore.bathroom.width.formattedMeters)
                 LabeledContent("First upward step", value: fixedCore.upperFlight.minX.formattedMeters + " from opposite wall")
                 LabeledContent("Lower stair width", value: fixedCore.lowerOpening.width.formattedMeters)
-                LabeledContent("Clear landing", value: fixedCore.landing.width.formattedMeters + " × " + fixedCore.landing.length.formattedMeters)
+                LabeledContent("Free landing space", value: fixedCore.landing.width.formattedMeters + " × " + fixedCore.landing.length.formattedMeters)
                 Text("The lower flight continues below the bathroom and upper flight. Dashed purple geometry in 2D is below this floor.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
