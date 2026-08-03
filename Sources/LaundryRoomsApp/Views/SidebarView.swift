@@ -21,7 +21,10 @@ struct SidebarView: View {
                 metric("Length", store.plan.dimensions.roomLength.formattedMeters)
                 metric("Width", store.plan.dimensions.roomWidth.formattedMeters)
                 metric("Clear height", store.plan.dimensions.clearHeight.formattedMeters)
-                metric("Floor area", String(format: "%.1f m²", store.plan.dimensions.floorArea))
+                metric(
+                    "Floor area",
+                    store.plan.dimensions.floorArea.formatted(.number.precision(.fractionLength(1))) + " m²"
+                )
             }
 
             Section("Test layout") {

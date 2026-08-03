@@ -1,4 +1,4 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -10,12 +10,19 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "LaundryRoomsApp",
-            path: "Sources/LaundryRoomsApp"
+            path: "Sources/LaundryRoomsApp",
+            swiftSettings: [
+                .unsafeFlags(["-strict-memory-safety"])
+            ]
         ),
         .testTarget(
             name: "LaundryRoomsAppTests",
             dependencies: ["LaundryRoomsApp"],
-            path: "Tests/LaundryRoomsAppTests"
+            path: "Tests/LaundryRoomsAppTests",
+            swiftSettings: [
+                .unsafeFlags(["-strict-memory-safety"])
+            ]
         )
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

@@ -31,7 +31,7 @@ The fixed shell includes the glossy grey-veined marble floor, white plaster, dar
 - `Shift`: move faster
 - Click the Metal view if movement keys are not active
 
-The renderer targets 60 fps, uses Retina resolution, 4× MSAA, physically-inspired lighting, glossy procedural marble, glass, timber grain, tiled surfaces, and geometry rebuilt only when the plan changes. The current scene is intentionally lightweight for the unified-memory budget of a MacBook Air M3 with 16 GB RAM.
+The renderer targets 60 fps at Retina resolution with physically-inspired lighting, glossy procedural marble, glass, timber grain, and tiled surfaces. The base Apple M3 profile uses 2× MSAA to hold 60 fps; higher-tier Apple GPUs retain 4× MSAA. The live HUD reports measured FPS, vertex count, MSAA, and GPU name.
 
 ### 2D plan
 
@@ -51,7 +51,7 @@ Requirements: Apple silicon Mac, macOS 14 or later, and Xcode command-line tools
 ./script/build_and_run.sh
 ```
 
-The script builds with SwiftPM, stages `dist/LaundryRooms.app`, and launches it as a normal foreground macOS app. The Codex **Run** action uses the same script.
+The script builds a stripped arm64 **release** binary by default, stages `dist/LaundryRooms.app`, and launches it as a normal foreground macOS app. Use `./script/build_and_run.sh --debug` for an LLDB-ready debug build. The Codex **Run** action uses the optimized release path.
 
 Validation commands:
 
@@ -59,6 +59,20 @@ Validation commands:
 swift test
 ./script/build_and_run.sh --verify
 ```
+
+## Swift 6.3 and M3 optimization
+
+- Swift tools 6.3, explicit Swift 6 language mode, strict concurrency, and strict-memory-safety auditing.
+- Swift 6.3 `@concurrent` cancellable mesh construction keeps wall edits off the main actor.
+- Explicit `unsafe` annotations are limited to reviewed AppKit and Metal raw-pointer boundaries.
+- Metal 4 shader compilation on macOS 26, Metal 3.2 on macOS 15, and Metal 3.1 fallback on macOS 14.
+- Fast Metal math on supported systems, with opaque and translucent geometry in separate optimized pipelines.
+- Opaque surfaces avoid blending; glass blends without writing depth, improving both performance and correctness.
+- Static mesh arrays reserve capacity and use shared unified memory suited to Apple silicon.
+- The 2D Canvas renders an immutable `Sendable` snapshot asynchronously, keeping drawing gestures responsive.
+- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 406 KB versus the previous 1.2 MB debug bundle.
+
+On the target MacBook Air M3 (8-core CPU, 16 GB), the release HUD measured 60 fps with 2,622 vertices and 2× MSAA. A five-second Metal System Trace showed no command-buffer errors, potential hangs, or runtime shader compilation during steady rendering.
 
 ## Project structure
 

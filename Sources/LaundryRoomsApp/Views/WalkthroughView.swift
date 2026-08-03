@@ -2,16 +2,21 @@ import SwiftUI
 
 struct WalkthroughView: View {
     let store: FloorPlanStore
+    @State private var metrics = RenderMetrics()
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            MetalCanvas(plan: store.plan)
+            MetalCanvas(plan: store.plan) { metrics = $0 }
                 .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 8) {
                 Label("M3 REALTIME", systemImage: "apple.logo")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.green)
+
+                Text(metrics.summary)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
 
                 Text("Walk / fly")
                     .font(.headline)

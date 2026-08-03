@@ -219,6 +219,11 @@ final class FloorPlanStore {
 }
 
 extension Float {
-    var formattedMeters: String { String(format: "%.2f m", self) }
-    var formattedCentimeters: String { String(format: "%.0f cm", self * 100) }
+    var formattedMeters: String {
+        formatted(.number.precision(.fractionLength(2))) + " m"
+    }
+
+    var formattedCentimeters: String {
+        (self * 100).formatted(.number.precision(.fractionLength(0))) + " cm"
+    }
 }

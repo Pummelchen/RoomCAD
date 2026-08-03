@@ -1,19 +1,19 @@
 import MetalKit
 import simd
 
-private struct RoomVertex {
+private struct RoomVertex: Sendable {
     var position: SIMD4<Float>
     var normal: SIMD4<Float>
     var color: SIMD4<Float>
     var surface: SIMD4<Float> // u, v, material id, unused
 }
 
-private struct FrameUniforms {
+private struct FrameUniforms: Sendable {
     var viewProjection: simd_float4x4
     var cameraExposure: SIMD4<Float>
 }
 
-private enum Surface: Float {
+private enum Surface: Float, Sendable {
     case plaster = 0
     case marble = 1
     case stairWood = 2
@@ -23,23 +23,44 @@ private enum Surface: Float {
     case bathroomTile = 6
 }
 
+private struct RoomMesh: Sendable {
+    var opaque: [RoomVertex]
+    var translucent: [RoomVertex]
+
+    var vertexCount: Int { opaque.count + translucent.count }
+}
+
 @MainActor
 final class RoomRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    private let pipeline: MTLRenderPipelineState
-    private let depthState: MTLDepthStencilState
+    private let opaquePipeline: MTLRenderPipelineState
+    private let translucentPipeline: MTLRenderPipelineState
+    private let opaqueDepthState: MTLDepthStencilState
+    private let translucentDepthState: MTLDepthStencilState
     private weak var view: InteractiveMetalView?
-    private var vertexBuffer: MTLBuffer?
-    private var vertexCount = 0
+    private var opaqueVertexBuffer: MTLBuffer?
+    private var translucentVertexBuffer: MTLBuffer?
+    private var opaqueVertexCount = 0
+    private var translucentVertexCount = 0
     private var currentPlan: FloorPlan
     private var lastFrameTime = CACurrentMediaTime()
+    private var metricsElapsed: Double = 0
+    private var metricsFrames = 0
+    private var geometryGeneration: UInt = 0
+    private var geometryTask: Task<Void, Never>?
+
+    var onMetrics: @MainActor (RenderMetrics) -> Void
 
     private var cameraPosition = SIMD3<Float>(2.43, 1.65, 1.60)
     private var yaw: Float = 0
     private var pitch: Float = 0
 
-    init(view: InteractiveMetalView, plan: FloorPlan) throws {
+    init(
+        view: InteractiveMetalView,
+        plan: FloorPlan,
+        onMetrics: @escaping @MainActor (RenderMetrics) -> Void
+    ) throws {
         guard let device = view.device, let queue = device.makeCommandQueue() else {
             throw RendererError.noDevice
         }
@@ -47,30 +68,59 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         commandQueue = queue
         self.view = view
         currentPlan = plan
+        self.onMetrics = onMetrics
 
-        let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = library.makeFunction(name: "room_vertex")
-        descriptor.fragmentFunction = library.makeFunction(name: "room_fragment")
-        descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
-        descriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
-        descriptor.rasterSampleCount = view.sampleCount
-        descriptor.colorAttachments[0].isBlendingEnabled = true
-        descriptor.colorAttachments[0].rgbBlendOperation = .add
-        descriptor.colorAttachments[0].alphaBlendOperation = .add
-        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
-        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        let compileOptions = MTLCompileOptions()
+        if #available(macOS 26.0, *) {
+            compileOptions.languageVersion = .version4_0
+        } else if #available(macOS 15.0, *) {
+            compileOptions.languageVersion = .version3_2
+        } else {
+            compileOptions.languageVersion = .version3_1
+        }
+        if #available(macOS 15.0, *) {
+            compileOptions.mathMode = .fast
+            compileOptions.mathFloatingPointFunctions = .fast
+        }
+        let library = try device.makeLibrary(source: Self.shaderSource, options: compileOptions)
 
-        let depthDescriptor = MTLDepthStencilDescriptor()
-        depthDescriptor.depthCompareFunction = .less
-        depthDescriptor.isDepthWriteEnabled = true
-        guard let depth = device.makeDepthStencilState(descriptor: depthDescriptor) else {
+        let opaqueDescriptor = MTLRenderPipelineDescriptor()
+        opaqueDescriptor.label = "M3 opaque architecture"
+        opaqueDescriptor.vertexFunction = library.makeFunction(name: "room_vertex")
+        opaqueDescriptor.fragmentFunction = library.makeFunction(name: "room_fragment")
+        opaqueDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        opaqueDescriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
+        opaqueDescriptor.rasterSampleCount = view.sampleCount
+        opaquePipeline = try device.makeRenderPipelineState(descriptor: opaqueDescriptor)
+
+        guard let translucentDescriptor = opaqueDescriptor.copy() as? MTLRenderPipelineDescriptor else {
+            throw RendererError.pipelineDescriptorCopy
+        }
+        translucentDescriptor.label = "M3 translucent glazing"
+        translucentDescriptor.colorAttachments[0].isBlendingEnabled = true
+        translucentDescriptor.colorAttachments[0].rgbBlendOperation = .add
+        translucentDescriptor.colorAttachments[0].alphaBlendOperation = .add
+        translucentDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        translucentDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        translucentDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+        translucentDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        translucentPipeline = try device.makeRenderPipelineState(descriptor: translucentDescriptor)
+
+        let opaqueDepthDescriptor = MTLDepthStencilDescriptor()
+        opaqueDepthDescriptor.depthCompareFunction = .less
+        opaqueDepthDescriptor.isDepthWriteEnabled = true
+        guard let opaqueDepth = device.makeDepthStencilState(descriptor: opaqueDepthDescriptor) else {
             throw RendererError.noDepthState
         }
-        depthState = depth
+        opaqueDepthState = opaqueDepth
+
+        let translucentDepthDescriptor = MTLDepthStencilDescriptor()
+        translucentDepthDescriptor.depthCompareFunction = .lessEqual
+        translucentDepthDescriptor.isDepthWriteEnabled = false
+        guard let translucentDepth = device.makeDepthStencilState(descriptor: translucentDepthDescriptor) else {
+            throw RendererError.noDepthState
+        }
+        translucentDepthState = translucentDepth
         super.init()
         rebuildGeometry()
     }
@@ -92,14 +142,14 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         let now = CACurrentMediaTime()
-        let delta = Float(min(now - lastFrameTime, 1.0 / 15.0))
+        let elapsed = now - lastFrameTime
+        let delta = Float(min(elapsed, 1.0 / 15.0))
         lastFrameTime = now
         updateCamera(deltaTime: delta)
 
         guard let drawable = view.currentDrawable,
               let pass = view.currentRenderPassDescriptor,
-              let vertexBuffer,
-              vertexCount > 0,
+              opaqueVertexCount + translucentVertexCount > 0,
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
 
@@ -112,16 +162,27 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
             cameraExposure: SIMD4<Float>(cameraPosition.x, cameraPosition.y, cameraPosition.z, 0.86)
         )
 
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setDepthStencilState(depthState)
         encoder.setCullMode(.none)
-        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 1)
-        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 1)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount)
+        unsafe encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 1)
+        unsafe encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 1)
+
+        if let opaqueVertexBuffer, opaqueVertexCount > 0 {
+            encoder.setRenderPipelineState(opaquePipeline)
+            encoder.setDepthStencilState(opaqueDepthState)
+            encoder.setVertexBuffer(opaqueVertexBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: opaqueVertexCount)
+        }
+
+        if let translucentVertexBuffer, translucentVertexCount > 0 {
+            encoder.setRenderPipelineState(translucentPipeline)
+            encoder.setDepthStencilState(translucentDepthState)
+            encoder.setVertexBuffer(translucentVertexBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: translucentVertexCount)
+        }
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        recordMetrics(frameDuration: elapsed)
     }
 
     private var cameraForward: SIMD3<Float> {
@@ -151,30 +212,70 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
     }
 
     private func rebuildGeometry() {
-        var builder = RoomMeshBuilder(plan: currentPlan)
-        let vertices = builder.build()
-        vertexCount = vertices.count
-        vertexBuffer = device.makeBuffer(
+        geometryGeneration &+= 1
+        let generation = geometryGeneration
+        let plan = currentPlan
+        geometryTask?.cancel()
+        geometryTask = Task { @concurrent in
+            var builder = RoomMeshBuilder(plan: plan)
+            let mesh = builder.build()
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, generation == self.geometryGeneration else { return }
+                self.install(mesh: mesh)
+            }
+        }
+    }
+
+    private func install(mesh: RoomMesh) {
+        opaqueVertexCount = mesh.opaque.count
+        translucentVertexCount = mesh.translucent.count
+        opaqueVertexBuffer = makeBuffer(vertices: mesh.opaque, label: "Opaque room architecture")
+        translucentVertexBuffer = makeBuffer(vertices: mesh.translucent, label: "Translucent room glazing")
+    }
+
+    private func makeBuffer(vertices: [RoomVertex], label: String) -> MTLBuffer? {
+        guard !vertices.isEmpty else { return nil }
+        let buffer = unsafe device.makeBuffer(
             bytes: vertices,
             length: vertices.count * MemoryLayout<RoomVertex>.stride,
             options: .storageModeShared
         )
-        vertexBuffer?.label = "Laundry room architecture"
+        buffer?.label = label
+        return buffer
+    }
+
+    private func recordMetrics(frameDuration: Double) {
+        metricsFrames += 1
+        metricsElapsed += frameDuration
+        guard metricsElapsed >= 0.75 else { return }
+        onMetrics(RenderMetrics(
+            framesPerSecond: Double(metricsFrames) / metricsElapsed,
+            vertexCount: opaqueVertexCount + translucentVertexCount,
+            deviceName: device.name,
+            sampleCount: view?.sampleCount ?? 1
+        ))
+        metricsFrames = 0
+        metricsElapsed = 0
     }
 
     enum RendererError: Error {
         case noDevice
         case noDepthState
+        case pipelineDescriptorCopy
     }
 }
 
-private struct RoomMeshBuilder {
+private struct RoomMeshBuilder: Sendable {
     let plan: FloorPlan
-    private var vertices: [RoomVertex] = []
+    private var opaqueVertices: [RoomVertex] = []
+    private var translucentVertices: [RoomVertex] = []
 
     init(plan: FloorPlan) { self.plan = plan }
 
-    mutating func build() -> [RoomVertex] {
+    mutating func build() -> RoomMesh {
+        opaqueVertices.reserveCapacity(4_096)
+        translucentVertices.reserveCapacity(256)
         let d = plan.dimensions
         addFloorWithStairOpening()
         addPlane(
@@ -190,7 +291,7 @@ private struct RoomMeshBuilder {
         addStairsAndRails()
         addPartitions()
         addCeilingLights()
-        return vertices
+        return RoomMesh(opaque: opaqueVertices, translucent: translucentVertices)
     }
 
     private mutating func addFloorWithStairOpening() {
@@ -438,13 +539,19 @@ private struct RoomMeshBuilder {
     private mutating func appendQuad(_ p0: SIMD3<Float>, _ p1: SIMD3<Float>, _ p2: SIMD3<Float>, _ p3: SIMD3<Float>, normal: SIMD3<Float>, color: SIMD4<Float>, surface: Surface, uvMax: SIMD2<Float>) {
         let points = [p0, p1, p2, p0, p2, p3]
         let uvs = [SIMD2<Float>(0, 0), SIMD2<Float>(uvMax.x, 0), uvMax, SIMD2<Float>(0, 0), uvMax, SIMD2<Float>(0, uvMax.y)]
+        let isTranslucent = surface == .glass && color.w < 0.999
         for (point, uv) in zip(points, uvs) {
-            vertices.append(RoomVertex(
+            let vertex = RoomVertex(
                 position: SIMD4<Float>(point.x, point.y, point.z, 1),
                 normal: SIMD4<Float>(normal.x, normal.y, normal.z, 0),
                 color: color,
                 surface: SIMD4<Float>(uv.x, uv.y, surface.rawValue, 0)
-            ))
+            )
+            if isTranslucent {
+                translucentVertices.append(vertex)
+            } else {
+                opaqueVertices.append(vertex)
+            }
         }
     }
 }

@@ -2,17 +2,30 @@ import AppKit
 import MetalKit
 import SwiftUI
 
+struct RenderMetrics: Equatable, Sendable {
+    var framesPerSecond: Double = 0
+    var vertexCount: Int = 0
+    var deviceName = "Apple GPU"
+    var sampleCount = 1
+
+    var summary: String {
+        let fps = framesPerSecond.formatted(.number.precision(.fractionLength(0)))
+        return "\(fps) FPS · \(vertexCount.formatted()) vertices · \(sampleCount)× MSAA · \(deviceName)"
+    }
+}
+
 struct MetalCanvas: NSViewRepresentable {
     let plan: FloorPlan
+    let onMetrics: @MainActor (RenderMetrics) -> Void
 
     func makeNSView(context: Context) -> InteractiveMetalView {
         let view = InteractiveMetalView(frame: .zero)
-        view.configure(plan: plan)
+        view.configure(plan: plan, onMetrics: onMetrics)
         return view
     }
 
     func updateNSView(_ view: InteractiveMetalView, context: Context) {
-        view.update(plan: plan)
+        view.update(plan: plan, onMetrics: onMetrics)
     }
 }
 
@@ -24,20 +37,23 @@ final class InteractiveMetalView: MTKView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    func configure(plan: FloorPlan) {
+    func configure(plan: FloorPlan, onMetrics: @escaping @MainActor (RenderMetrics) -> Void) {
         guard let device = MTLCreateSystemDefaultDevice() else { return }
         self.device = device
         colorPixelFormat = .bgra8Unorm_srgb
         depthStencilPixelFormat = .depth32Float
-        sampleCount = 4
+        let preferredSamples = device.name == "Apple M3" ? 2 : 4
+        sampleCount = device.supportsTextureSampleCount(preferredSamples) ? preferredSamples : 1
         preferredFramesPerSecond = 60
         enableSetNeedsDisplay = false
         isPaused = false
         framebufferOnly = true
+        presentsWithTransaction = false
+        autoResizeDrawable = true
         clearColor = MTLClearColor(red: 0.045, green: 0.065, blue: 0.09, alpha: 1)
 
         do {
-            let renderer = try RoomRenderer(view: self, plan: plan)
+            let renderer = try RoomRenderer(view: self, plan: plan, onMetrics: onMetrics)
             self.renderer = renderer
             delegate = renderer
         } catch {
@@ -45,7 +61,8 @@ final class InteractiveMetalView: MTKView {
         }
     }
 
-    func update(plan: FloorPlan) {
+    func update(plan: FloorPlan, onMetrics: @escaping @MainActor (RenderMetrics) -> Void) {
+        renderer?.onMetrics = onMetrics
         renderer?.update(plan: plan)
     }
 
@@ -53,11 +70,11 @@ final class InteractiveMetalView: MTKView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
+        unsafe window?.makeFirstResponder(self)
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        unsafe window?.makeFirstResponder(self)
     }
 
     override func mouseDragged(with event: NSEvent) {

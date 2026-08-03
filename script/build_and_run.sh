@@ -17,13 +17,21 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT_DIR"
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+BUILD_CONFIGURATION="release"
+if [[ "$MODE" == "--debug" || "$MODE" == "debug" ]]; then
+  BUILD_CONFIGURATION="debug"
+fi
+
+swift build -c "$BUILD_CONFIGURATION"
+BUILD_BINARY="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  /usr/bin/strip -x "$APP_BINARY"
+fi
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -40,6 +48,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSArchitecturePriority</key>
+  <array>
+    <string>arm64</string>
+  </array>
+  <key>LSRequiresNativeExecution</key>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>
@@ -47,6 +61,11 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# SwiftPM signs its executable before it is copied into this hand-built bundle.
+# Stripping and adding Info.plist changes the sealed contents, so sign the final
+# bundle as one unit. A distribution identity can replace this ad-hoc signature.
+/usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

@@ -79,6 +79,7 @@ struct SurveyInspectorView: View {
     }
 
     private func pointText(_ point: PlanPoint) -> String {
-        String(format: "%.2f, %.2f m", point.x, point.z)
+        let precision = FloatingPointFormatStyle<Float>.number.precision(.fractionLength(2))
+        return "\(point.x.formatted(precision)), \(point.z.formatted(precision)) m"
     }
 }
