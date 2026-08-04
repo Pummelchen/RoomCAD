@@ -1,6 +1,6 @@
 # RoomCAD
 
-A native macOS planning tool for the first floor of an Indonesian shophouse. It combines a realtime Swift + Metal walkthrough with a precise SwiftUI top-down editor for testing women-only rental-room layouts.
+A native macOS planning tool for shophouses. It combines a realtime Swift + Metal walkthrough with a precise SwiftUI top-down editor for testing women-only rental-room layouts.
 
 ## Current survey model
 
