@@ -45,7 +45,7 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 ### 2D plan
 
 - **Configure the grid**: enter any spacing from 1–50 cm in the Editor Grid inspector, or choose a 1, 2.5, 5, or 10 cm preset. The default is 5 cm. The visible grid and pointer coordinate follow the setting, while the exact measured shell edges remain available as snap targets.
-- **Draw walls**: click one grid point and then another. Continue clicking to chain connected free-form wall segments, then choose **Finish**; alternatively, drag between two points to create one wall. Every endpoint snaps to the configured grid.
+- **Draw walls**: click one grid point and then another. Continue clicking to chain connected free-form wall segments, then choose **Finish**; alternatively, drag between two points to create one wall. Every endpoint snaps to the configured grid. Press `Esc` at any time to cancel the active wall chain or drag without creating a wall.
 - **Place and position doors**: choose Place Door and click close to a wall. Each wall supports one 90 cm single-leaf door. The editor immediately switches to Inspect so the door can be dragged along the wall. Live labels show the door width and the remaining wall length in centimetres on both sides.
 - **Furniture**: click a furniture-palette button for automatic placement, or drag it directly onto usable floor in the plan. The selected-object controls keep Rotate and Delete next to the canvas.
 - **Move furniture**: choose Inspect, then click and drag an object; positions snap to the active grid. Every object is locked to floor level in 3D and cannot be placed over the bathroom, upper stair flight, or lower stair opening.

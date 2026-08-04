@@ -5,6 +5,7 @@ struct TopDownEditorView: View {
     @State private var wallAnchor: PlanPoint?
     @State private var dragStart: PlanPoint?
     @State private var dragCurrent: PlanPoint?
+    @State private var wallDragCancelled = false
     @State private var hoverPoint: PlanPoint?
     @State private var doorDragID: UUID?
     @State private var doorDragOffset: Float?
@@ -60,6 +61,14 @@ struct TopDownEditorView: View {
                     hoverPoint = nil
                 }
             }
+            .background {
+                EscapeKeyMonitor(
+                    isEnabled: store.tool == .wall
+                        && (wallAnchor != nil || dragStart != nil || dragCurrent != nil),
+                    action: cancelWallDrawing
+                )
+                .frame(width: 0, height: 0)
+            }
             .dropDestination(for: String.self) { values, location in
                 guard let rawKind = values.first,
                       let kind = FurnitureKind(rawValue: rawKind) else { return false }
@@ -84,6 +93,8 @@ struct TopDownEditorView: View {
                         Label("Wall chain active", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                         Button("Finish") { cancelWallChain() }
                             .buttonStyle(.bordered)
+                        Text("Esc cancels")
+                            .foregroundStyle(.secondary)
                     }
                     .font(.callout)
                     .padding(10)
@@ -103,7 +114,7 @@ struct TopDownEditorView: View {
 
     private var instruction: String {
         switch store.tool {
-        case .wall: "Click points to chain walls, or drag one wall"
+        case .wall: "Click points to chain walls, or drag one wall · Esc cancels"
         case .door: "Click a wall to place a 90 cm door, then Inspect to slide it"
         case .erase: "Click furniture, a door, or a wall to remove it"
         case .select: "Drag doors along walls or furniture across the grid"
@@ -113,12 +124,19 @@ struct TopDownEditorView: View {
     private func wallGesture(transform: PlanTransform) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                guard !wallDragCancelled else { return }
                 if dragStart == nil {
                     dragStart = wallAnchor ?? transform.snappedPlanPoint(from: value.startLocation)
                 }
                 dragCurrent = transform.snappedPlanPoint(from: value.location)
             }
             .onEnded { value in
+                if wallDragCancelled {
+                    wallDragCancelled = false
+                    dragStart = nil
+                    dragCurrent = nil
+                    return
+                }
                 let end = transform.snappedPlanPoint(from: value.location)
                 let travel = hypot(value.translation.width, value.translation.height)
                 if travel < 3 {
@@ -241,10 +259,21 @@ struct TopDownEditorView: View {
         store.statusMessage = "Wall chain finished"
     }
 
+    private func cancelWallDrawing() {
+        guard store.tool == .wall,
+              wallAnchor != nil || dragStart != nil || dragCurrent != nil else { return }
+        wallDragCancelled = dragStart != nil || dragCurrent != nil
+        wallAnchor = nil
+        dragStart = nil
+        dragCurrent = nil
+        store.statusMessage = "Wall drawing cancelled"
+    }
+
     private func resetTransientInteraction() {
         wallAnchor = nil
         dragStart = nil
         dragCurrent = nil
+        wallDragCancelled = false
         furnitureDragID = nil
         furnitureDragCenter = nil
         doorDragID = nil
