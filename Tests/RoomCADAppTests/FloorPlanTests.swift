@@ -142,6 +142,45 @@ struct FloorPlanTests {
         #expect(store.plan == emptyPlan)
     }
 
+    @Test("A fresh app workspace starts with the complete eight-room demo") @MainActor
+    func freshWorkspaceStartsWithDemo() {
+        let missingRecovery = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "missing-layout.json")
+        let store = FloorPlanStore(persistenceURL: missingRecovery, loadPersisted: true)
+
+        #expect(store.plan.partitions.count == 17)
+        #expect(store.plan.doors.count == 8)
+        #expect(store.plan.furniture.count == 24)
+        #expect(store.plan.roomLabels.count == 8)
+        #expect(!store.documentIsEdited)
+        #expect(store.statusMessage == "Loaded optimized 8-room demo")
+    }
+
+    @Test("An older untouched empty workspace can be seeded once without replacing user work") @MainActor
+    func seedOlderEmptyWorkspace() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "layout.json")
+        try FileManager.default.createDirectory(
+            at: temporary.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(FloorPlan.initial).write(to: temporary)
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: true)
+
+        #expect(store.loadDemoIfEmpty())
+        #expect(store.plan.partitions.count == 17)
+        #expect(store.plan.doors.count == 8)
+        #expect(store.plan.furniture.count == 24)
+        #expect(store.plan.roomLabels.count == 8)
+        #expect(!store.loadDemoIfEmpty())
+
+        store.clearFurniture()
+        #expect(!store.loadDemoIfEmpty())
+        #expect(store.plan.furniture.isEmpty)
+    }
+
     @Test("Wall projection supplies a physical door offset")
     func wallProjection() {
         let wall = PartitionWall(start: PlanPoint(x: 1, z: 2), end: PlanPoint(x: 4, z: 2))
@@ -531,7 +570,12 @@ struct FloorPlanTests {
         #expect(json["formatIdentifier"] as? String == RoomCADFile.formatIdentifier)
         #expect(json["formatVersion"] as? Int == RoomCADFile.currentFormatVersion)
         #expect(json["units"] as? String == "metres")
-        #expect(json["plan"] != nil)
+        let encodedPlan = try #require(json["plan"] as? [String: Any])
+        #expect((encodedPlan["partitions"] as? [Any])?.count == 17)
+        #expect((encodedPlan["doors"] as? [Any])?.count == 8)
+        #expect((encodedPlan["furniture"] as? [Any])?.count == 24)
+        #expect((encodedPlan["roomLabels"] as? [Any])?.count == 8)
+        #expect(data.count > 10_000)
 
         let decoded = try RoomCADFile.decode(data)
         #expect(decoded.plan == plan)
@@ -600,7 +644,7 @@ struct FloorPlanTests {
         #expect(store.currentDocumentURL == designURL.standardizedFileURL)
         #expect(store.documentDisplayName == "Eight Rooms")
         #expect(!store.documentIsEdited)
-        #expect(store.statusMessage == "Saved Eight Rooms.roomcad")
+        #expect(store.statusMessage == "Saved Eight Rooms.roomcad · 17 walls, 8 doors, 24 furniture")
 
         store.clearPartitions()
         #expect(store.documentIsEdited)

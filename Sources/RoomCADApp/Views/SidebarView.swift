@@ -183,6 +183,19 @@ struct SidebarView: View {
                 Label(store.documentDisplayName, systemImage: "doc")
                     .lineLimit(1)
                     .help(store.currentDocumentURL?.path ?? "Not saved as a RoomCAD design yet")
+                Text(store.documentContentsSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let currentDocumentFileSize = store.currentDocumentFileSize {
+                    Text(
+                        "Last saved size: " + ByteCountFormatter.string(
+                            fromByteCount: Int64(currentDocumentFileSize),
+                            countStyle: .file
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 if store.documentIsEdited {
                     Label("Unsaved design changes", systemImage: "pencil.circle")
                         .font(.caption)

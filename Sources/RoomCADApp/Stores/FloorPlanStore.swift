@@ -21,6 +21,7 @@ final class FloorPlanStore {
     var lastSavedAt: Date?
     var currentDocumentURL: URL?
     var lastDocumentSavedAt: Date?
+    var currentDocumentFileSize: Int?
     var documentIsEdited = false
     var documentErrorMessage: String?
     var statusMessage = "Ready"
@@ -32,6 +33,10 @@ final class FloorPlanStore {
 
     var documentDisplayName: String {
         currentDocumentURL?.deletingPathExtension().lastPathComponent ?? "Untitled Design"
+    }
+
+    var documentContentsSummary: String {
+        "Measured shell · \(plan.partitions.count) walls · \(plan.doors.count) doors · \(plan.furniture.count) furniture · \(plan.roomLabels.count) rooms"
     }
 
     var selectedFurnitureID: UUID? {
@@ -65,7 +70,10 @@ final class FloorPlanStore {
             }
             documentIsEdited = true
         } else {
-            plan = .initial
+            plan = loadPersisted ? .example : .initial
+            if loadPersisted {
+                statusMessage = "Loaded optimized 8-room demo"
+            }
         }
         snapshots = loadSnapshots()
     }
@@ -698,6 +706,15 @@ final class FloorPlanStore {
         persist()
     }
 
+    /// One-time upgrade path for installations that previously autosaved the
+    /// old empty startup workspace. Never replaces a non-empty user layout.
+    @discardableResult
+    func loadDemoIfEmpty() -> Bool {
+        guard plan == .initial else { return false }
+        resetToSurvey()
+        return true
+    }
+
     func undo() {
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(plan)
@@ -746,8 +763,8 @@ final class FloorPlanStore {
     }
 
     func loadDocument(from url: URL) throws {
-        if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-           size > RoomCADFile.maximumFileSize {
+        let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        if let fileSize, fileSize > RoomCADFile.maximumFileSize {
             throw RoomCADDocumentError.fileTooLarge
         }
         let accessed = url.startAccessingSecurityScopedResource()
@@ -765,6 +782,7 @@ final class FloorPlanStore {
         tool = .select
         documentCreatedAt = decoded.createdAt
         lastDocumentSavedAt = decoded.savedAt
+        currentDocumentFileSize = fileSize
         currentDocumentURL = decoded.isLegacyJSON ? nil : url.standardizedFileURL
         documentIsEdited = decoded.isLegacyJSON || decoded.repairedInvalidObjects
 
@@ -801,7 +819,7 @@ final class FloorPlanStore {
         panel.allowsOtherFileTypes = false
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        panel.nameFieldStringValue = documentDisplayName + "." + RoomCADFile.fileExtension
+        panel.nameFieldStringValue = suggestedDocumentName + "." + RoomCADFile.fileExtension
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
             try saveDocument(to: url)
@@ -827,8 +845,9 @@ final class FloorPlanStore {
         try data.write(to: url, options: .atomic)
         currentDocumentURL = url.standardizedFileURL
         lastDocumentSavedAt = savedAt
+        currentDocumentFileSize = data.count
         documentIsEdited = false
-        statusMessage = "Saved \(url.lastPathComponent)"
+        statusMessage = "Saved \(url.lastPathComponent) · \(plan.partitions.count) walls, \(plan.doors.count) doors, \(plan.furniture.count) furniture"
     }
 
     func exportPlan() {
@@ -921,6 +940,17 @@ final class FloorPlanStore {
         default:
             return false
         }
+    }
+
+    private var suggestedDocumentName: String {
+        guard currentDocumentURL == nil,
+              plan.partitions.count == 17,
+              plan.doors.count == 8,
+              plan.furniture.count == 24,
+              plan.roomLabels.count == 8 else {
+            return documentDisplayName
+        }
+        return "RoomCAD 8-Room Demo"
     }
 
     private func recordUndo() {

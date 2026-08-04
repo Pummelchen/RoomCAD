@@ -12,7 +12,7 @@ struct QuickStartGuideView: View {
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             VStack(spacing: 7) {
-                Text("Build Your Room")
+                Text("Explore and Build")
                     .font(.largeTitle.bold())
                 Text("RoomCAD works like a simple building game.")
                     .font(.title3)
@@ -20,12 +20,13 @@ struct QuickStartGuideView: View {
             }
 
             VStack(alignment: .leading, spacing: 16) {
-                guideRow("1", "Draw walls", "Choose Draw Wall, then click grid dots. Hold Shift for clean 45° angles.")
-                guideRow("2", "Add doors", "Choose Add Door and click a wall. Inspect lets you slide it.")
-                guideRow("3", "Place furniture", "Pick an item on the left, move the green ghost, and click.")
-                guideRow("4", "Name rooms", "Double-click inside a room, then type its name in the pop-up.")
-                guideRow("5", "Fix anything", "Drag objects to move them. Esc cancels. ⌘Z undoes.")
-                guideRow("6", "Look around", "Use the mouse wheel to zoom, Space-drag to pan, and the turn buttons to rotate.")
+                guideRow("1", "Explore the demo", "Eight furnished rooms are ready. Click objects to see how the plan works.")
+                guideRow("2", "Draw walls", "Choose Draw Wall, then click grid dots. Hold Shift for clean 45° angles.")
+                guideRow("3", "Add doors", "Choose Add Door and click a wall. Inspect lets you slide it.")
+                guideRow("4", "Place furniture", "Pick an item on the left, move the green ghost, and click.")
+                guideRow("5", "Name rooms", "Double-click inside a room, then type its name in the pop-up.")
+                guideRow("6", "Fix anything", "Drag objects to move them. Esc cancels. ⌘Z undoes.")
+                guideRow("7", "Save your design", "Press ⌘S. The RoomCAD file keeps the shell and every object.")
             }
 
             Divider()
@@ -36,7 +37,7 @@ struct QuickStartGuideView: View {
             HStack {
                 Button("Not Now") { dismiss() }
                 Spacer()
-                Button("Start Building", systemImage: "hammer.fill") {
+                Button("Explore Demo", systemImage: "building.2.fill") {
                     startDesigning()
                     dismiss()
                 }

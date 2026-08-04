@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var showInspector = true
     @State private var showQuickStart = false
     @AppStorage("hasSeenRoomCADQuickStart") private var hasSeenQuickStart = false
+    @AppStorage("hasSeededRoomCADEightRoomDemo") private var hasSeededEightRoomDemo = false
 
     var body: some View {
         NavigationSplitView {
@@ -98,6 +99,10 @@ struct ContentView: View {
         }
         .navigationTitle(store.documentDisplayName + (store.documentIsEdited ? " — Edited" : ""))
         .task {
+            if !hasSeededEightRoomDemo {
+                store.loadDemoIfEmpty()
+                hasSeededEightRoomDemo = true
+            }
             if !hasSeenQuickStart {
                 showQuickStart = true
             }
@@ -106,8 +111,8 @@ struct ContentView: View {
             QuickStartGuideView(doNotShowAgain: $hasSeenQuickStart) {
                 hasSeenQuickStart = true
                 store.mode = .plan
-                store.tool = .wall
-                store.statusMessage = "Click a grid point to start your first wall"
+                store.tool = .select
+                store.statusMessage = "Explore the furnished demo, or choose Draw Wall to change it"
             }
         }
         .onOpenURL { url in
