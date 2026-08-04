@@ -62,7 +62,7 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 - **Tool keys**: `V` Inspect, `W` Draw Wall, `D` Place Door, and `E` Erase while the 2D plan is active. Delete removes the selected object.
 - **Quick Start**: the first launch opens a game-style guide. Tick **Do not show again** to hide it on future launches; reopen it any time from the Workspace section.
 - **Snapshots and recovery**: name and save stable layout versions from the sidebar, then restore one with a click. Clear and example-replacement actions require confirmation and remain undoable.
-- **Restore example**: loads a small two-wall/one-door layout; a fresh install starts with the measured shell empty.
+- **8-room demo**: loads a space-optimized concept with seven approximately 6.0 m² rooms in the front rectangle and one approximately 6.1 m² room beside the stair core. Every room opens directly onto the common corridor and includes a single bed, wardrobe, and chair. This dense example demonstrates the editor; verify hallway width, accessibility, ventilation, fire egress, and all local building or rental rules before treating it as a construction plan. A fresh install still starts with the measured shell empty.
 - **Undo/redo**: use the arrow icons in the 2D toolbar or press `⌘Z` / `⇧⌘Z`. Every top-right toolbar icon explains its action when hovered.
 - Layouts autosave in Application Support with visible saved status and can be exported as readable JSON.
 

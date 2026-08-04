@@ -70,6 +70,7 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         self.view = view
         currentPlan = plan
         self.onMetrics = onMetrics
+        cameraPosition = Self.preferredCameraPosition(for: plan)
 
         let compileOptions = MTLCompileOptions()
         if #available(macOS 26.0, *) {
@@ -131,7 +132,44 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
         currentPlan = plan
         cameraPosition.x = cameraPosition.x.clamped(to: 0.2...(plan.dimensions.roomWidth - 0.2))
         cameraPosition.z = cameraPosition.z.clamped(to: 0.2...(plan.dimensions.roomLength - 0.2))
+        if !Self.isCameraPositionClear(cameraPosition, in: plan) {
+            cameraPosition = Self.preferredCameraPosition(for: plan)
+            yaw = 0
+            pitch = 0
+        }
         rebuildGeometry()
+    }
+
+    private static func preferredCameraPosition(for plan: FloorPlan) -> SIMD3<Float> {
+        let d = plan.dimensions
+        let candidates = [
+            PlanPoint(x: d.roomWidth / 2, z: 1.60),
+            PlanPoint(x: min(0.42, d.roomWidth / 2), z: min(0.60, d.roomLength / 2)),
+            PlanPoint(x: min(0.42, d.roomWidth / 2), z: min(2.00, d.roomLength / 2)),
+            PlanPoint(x: d.roomWidth / 2, z: d.roomLength / 2)
+        ]
+        let point = candidates.first {
+            isCameraPositionClear(SIMD3<Float>($0.x, 1.65, $0.z), in: plan)
+        } ?? candidates[0]
+        return SIMD3<Float>(point.x, min(1.65, d.clearHeight - 0.20), point.z)
+    }
+
+    private static func isCameraPositionClear(_ position: SIMD3<Float>, in plan: FloorPlan) -> Bool {
+        let point = PlanPoint(x: position.x, z: position.z)
+        let d = plan.dimensions
+        let edgeClearance: Float = 0.22
+        guard point.x >= edgeClearance, point.x <= d.roomWidth - edgeClearance,
+              point.z >= edgeClearance, point.z <= d.roomLength - edgeClearance,
+              !plan.furniture.contains(where: { $0.contains(point, tolerance: 0.18) }),
+              !plan.partitions.contains(where: {
+                  $0.projection(of: point).distance < max(edgeClearance, d.drywallThickness / 2 + 0.12)
+              }) else { return false }
+
+        let fixed = StairBathroomLayout(dimensions: d)
+        return ![fixed.bathroom, fixed.upperFlight, fixed.lowerOpening].contains { rectangle in
+            point.x >= rectangle.minX - edgeClearance && point.x <= rectangle.maxX + edgeClearance
+                && point.z >= rectangle.minZ - edgeClearance && point.z <= rectangle.maxZ + edgeClearance
+        }
     }
 
     func rotate(deltaX: Float, deltaY: Float) {

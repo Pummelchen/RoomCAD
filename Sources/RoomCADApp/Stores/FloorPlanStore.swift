@@ -683,7 +683,7 @@ final class FloorPlanStore {
         selectedWallID = nil
         selectedDoorID = nil
         selectedFurnitureID = nil
-        statusMessage = "Loaded example room layout"
+        statusMessage = "Loaded optimized 8-room demo"
         persist()
     }
 

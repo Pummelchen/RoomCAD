@@ -66,6 +66,82 @@ struct FloorPlanTests {
         #expect(abs((layout.rearWindowEndX - layout.rearWindowStartX) - 1.52) < 0.001)
     }
 
+    @Test("Optimized demo fits eight furnished rooms with direct corridor doors")
+    func optimizedEightRoomDemo() throws {
+        let dimensions = SurveyDimensions()
+        let demo = SpaceOptimizedDemoLayout(dimensions: dimensions)
+
+        #expect(demo.rooms.count == 8)
+        #expect(demo.doors.count == 8)
+        #expect(demo.labels.count == 8)
+        #expect(demo.furniture.count == 24)
+        #expect(demo.partitions.count == 17)
+
+        for (index, room) in demo.rooms.enumerated() {
+            #expect(room.name == "Room \(index + 1)")
+            #expect(room.area >= 5.90)
+            #expect(room.area <= 6.10)
+
+            let entrance = try #require(demo.partitions.first { $0.id == room.entranceWallID })
+            let door = try #require(demo.doors.first { $0.id == room.entranceDoorID })
+            #expect(abs(entrance.start.x - SpaceOptimizedDemoLayout.corridorWidth) < 0.001)
+            #expect(abs(entrance.end.x - SpaceOptimizedDemoLayout.corridorWidth) < 0.001)
+            #expect(abs(entrance.start.z - room.bounds.minZ) < 0.001)
+            #expect(abs(entrance.end.z - room.bounds.maxZ) < 0.001)
+            #expect(door.wallID == entrance.id)
+            #expect(door.hinge == .right)
+            #expect(abs(door.width - 0.90) < 0.001)
+            #expect(door.offset >= 0)
+            #expect(door.offset + door.width <= entrance.length)
+
+            let set = demo.furniture.filter { room.furnitureIDs.contains($0.id) }
+            #expect(set.count == 3)
+            #expect(Set(set.map(\.kind)) == [.singleBed, .chair, .twoDoorWardrobe])
+            for item in set {
+                let footprint = item.footprint
+                #expect(footprint.minX >= room.bounds.minX)
+                #expect(footprint.maxX <= room.bounds.maxX)
+                #expect(footprint.minZ >= room.bounds.minZ)
+                #expect(footprint.maxZ <= room.bounds.maxZ)
+                #expect(item.isOnUsableFloor(dimensions))
+            }
+            for first in set.indices {
+                for second in set.indices where second > first {
+                    #expect(!set[first].footprint.intersects(set[second].footprint))
+                }
+            }
+
+            let label = try #require(demo.labels.first { $0.name.hasPrefix(room.name) })
+            #expect(label.name.contains("m²"))
+            #expect(label.position.x >= room.bounds.minX && label.position.x <= room.bounds.maxX)
+            #expect(label.position.z >= room.bounds.minZ && label.position.z <= room.bounds.maxZ)
+        }
+
+        var restoredDemo = FloorPlan.example
+        restoredDemo.sanitize()
+        #expect(restoredDemo.partitions.count == 17)
+        #expect(restoredDemo.doors.count == 8)
+        #expect(restoredDemo.furniture.count == 24)
+        #expect(restoredDemo.roomLabels.count == 8)
+    }
+
+    @Test("Loading the eight-room demo remains undoable") @MainActor
+    func loadEightRoomDemo() {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        let emptyPlan = store.plan
+
+        store.resetToSurvey()
+        #expect(store.plan.roomLabels.count == 8)
+        #expect(store.plan.doors.count == 8)
+        #expect(store.statusMessage == "Loaded optimized 8-room demo")
+
+        store.undo()
+        #expect(store.plan == emptyPlan)
+    }
+
     @Test("Wall projection supplies a physical door offset")
     func wallProjection() {
         let wall = PartitionWall(start: PlanPoint(x: 1, z: 2), end: PlanPoint(x: 4, z: 2))

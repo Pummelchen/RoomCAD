@@ -220,6 +220,162 @@ struct RoomLabel: Identifiable, Codable, Equatable, Sendable {
     var position: PlanPoint
 }
 
+/// A dense, corridor-accessed concept for demonstrating RoomCAD's manual
+/// editing tools. It is intentionally a planning example, not a claim of local
+/// building-code, accessibility, fire-egress, or rental approval.
+struct SpaceOptimizedDemoLayout: Sendable {
+    struct Room: Sendable {
+        var name: String
+        var bounds: PlanRectangle
+        var entranceWallID: UUID
+        var entranceDoorID: UUID
+        var furnitureIDs: Set<UUID>
+
+        var area: Float { bounds.width * bounds.length }
+    }
+
+    static let corridorWidth: Float = 0.85
+    static let frontRoomCount = 7
+    static let rearRoomDepth: Float = 4.00
+
+    var rooms: [Room] = []
+    var partitions: [PartitionWall] = []
+    var doors: [DoorOpening] = []
+    var furniture: [FurnitureItem] = []
+    var labels: [RoomLabel] = []
+
+    init(dimensions d: SurveyDimensions) {
+        let core = StairBathroomLayout(dimensions: d)
+        let frontRoomDepth = core.core.minZ / Float(Self.frontRoomCount)
+
+        for index in 0..<Self.frontRoomCount {
+            let startZ = Float(index) * frontRoomDepth
+            let endZ = Float(index + 1) * frontRoomDepth
+            let bounds = PlanRectangle(
+                minX: Self.corridorWidth,
+                maxX: d.roomWidth,
+                minZ: startZ,
+                maxZ: endZ
+            )
+            let entranceWall = PartitionWall(
+                start: PlanPoint(x: Self.corridorWidth, z: startZ),
+                end: PlanPoint(x: Self.corridorWidth, z: endZ)
+            )
+            let entranceDoor = DoorOpening(
+                wallID: entranceWall.id,
+                offset: frontRoomDepth - 1.00,
+                width: 0.90,
+                hinge: .right
+            )
+            let roomEndWall = PartitionWall(
+                start: PlanPoint(x: Self.corridorWidth, z: endZ),
+                end: PlanPoint(x: d.roomWidth, z: endZ)
+            )
+            let set = Self.frontFurnitureSet(startZ: startZ)
+            let name = "Room \(index + 1)"
+
+            partitions.append(contentsOf: [entranceWall, roomEndWall])
+            doors.append(entranceDoor)
+            furniture.append(contentsOf: set)
+            labels.append(RoomLabel(
+                name: Self.labelText(name: name, area: bounds.width * bounds.length),
+                position: PlanPoint(x: 2.75, z: startZ + 1.20)
+            ))
+            rooms.append(Room(
+                name: name,
+                bounds: bounds,
+                entranceWallID: entranceWall.id,
+                entranceDoorID: entranceDoor.id,
+                furnitureIDs: Set(set.map(\.id))
+            ))
+        }
+
+        let rearStartZ = core.core.minZ
+        let rearEndZ = min(d.roomLength, rearStartZ + Self.rearRoomDepth)
+        let rearBounds = PlanRectangle(
+            minX: Self.corridorWidth,
+            maxX: core.core.minX,
+            minZ: rearStartZ,
+            maxZ: rearEndZ
+        )
+        let rearEntranceWall = PartitionWall(
+            start: PlanPoint(x: Self.corridorWidth, z: rearStartZ),
+            end: PlanPoint(x: Self.corridorWidth, z: rearEndZ)
+        )
+        let rearDoor = DoorOpening(
+            wallID: rearEntranceWall.id,
+            offset: 2.15,
+            width: 0.90,
+            hinge: .right
+        )
+        let rearSideWall = PartitionWall(
+            start: PlanPoint(x: core.core.minX, z: rearStartZ),
+            end: PlanPoint(x: core.core.minX, z: rearEndZ)
+        )
+        let rearEndWall = PartitionWall(
+            start: PlanPoint(x: Self.corridorWidth, z: rearEndZ),
+            end: PlanPoint(x: core.core.minX, z: rearEndZ)
+        )
+        let rearSet = Self.rearFurnitureSet(startZ: rearStartZ)
+        let rearName = "Room 8"
+
+        partitions.append(contentsOf: [rearEntranceWall, rearSideWall, rearEndWall])
+        doors.append(rearDoor)
+        furniture.append(contentsOf: rearSet)
+        labels.append(RoomLabel(
+            name: Self.labelText(name: rearName, area: rearBounds.width * rearBounds.length),
+            position: PlanPoint(x: 1.45, z: rearStartZ + 3.55)
+        ))
+        rooms.append(Room(
+            name: rearName,
+            bounds: rearBounds,
+            entranceWallID: rearEntranceWall.id,
+            entranceDoorID: rearDoor.id,
+            furnitureIDs: Set(rearSet.map(\.id))
+        ))
+    }
+
+    private static func frontFurnitureSet(startZ: Float) -> [FurnitureItem] {
+        let centerZ = startZ + 0.55
+        return [
+            FurnitureItem(
+                kind: .singleBed,
+                center: PlanPoint(x: 2.00, z: centerZ),
+                direction: .east
+            ),
+            FurnitureItem(
+                kind: .chair,
+                center: PlanPoint(x: 3.35, z: centerZ)
+            ),
+            FurnitureItem(
+                kind: .twoDoorWardrobe,
+                center: PlanPoint(x: 4.22, z: centerZ)
+            )
+        ]
+    }
+
+    private static func rearFurnitureSet(startZ: Float) -> [FurnitureItem] {
+        [
+            FurnitureItem(
+                kind: .singleBed,
+                center: PlanPoint(x: 1.35, z: startZ + 1.10)
+            ),
+            FurnitureItem(
+                kind: .twoDoorWardrobe,
+                center: PlanPoint(x: 1.35, z: startZ + 2.65)
+            ),
+            FurnitureItem(
+                kind: .chair,
+                center: PlanPoint(x: 2.05, z: startZ + 3.55)
+            )
+        ]
+    }
+
+    private static func labelText(name: String, area: Float) -> String {
+        "\(name) · \(area.formatted(.number.precision(.fractionLength(1)))) m²"
+    }
+}
+
 struct FloorPlan: Codable, Equatable, Sendable {
     var dimensions = SurveyDimensions()
     var partitions: [PartitionWall] = []
@@ -270,12 +426,14 @@ struct FloorPlan: Codable, Equatable, Sendable {
     static let initial = FloorPlan()
 
     static var example: FloorPlan {
-        let first = PartitionWall(start: PlanPoint(x: 0.15, z: 5.20), end: PlanPoint(x: 2.15, z: 5.20))
-        let second = PartitionWall(start: PlanPoint(x: 2.15, z: 5.20), end: PlanPoint(x: 2.15, z: 8.35))
+        let dimensions = SurveyDimensions()
+        let demo = SpaceOptimizedDemoLayout(dimensions: dimensions)
         return FloorPlan(
-            dimensions: SurveyDimensions(),
-            partitions: [first, second],
-            doors: [DoorOpening(wallID: first.id, offset: 0.75)]
+            dimensions: dimensions,
+            partitions: demo.partitions,
+            doors: demo.doors,
+            furniture: demo.furniture,
+            roomLabels: demo.labels
         )
     }
 
