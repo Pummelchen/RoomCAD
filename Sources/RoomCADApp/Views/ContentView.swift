@@ -102,7 +102,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showQuickStart) {
-            QuickStartGuideView {
+            QuickStartGuideView(doNotShowAgain: $hasSeenQuickStart) {
                 hasSeenQuickStart = true
                 store.mode = .plan
                 store.tool = .wall

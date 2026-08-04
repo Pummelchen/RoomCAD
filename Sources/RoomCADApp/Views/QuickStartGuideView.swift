@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct QuickStartGuideView: View {
+    @Binding var doNotShowAgain: Bool
     let startDesigning: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -26,6 +27,11 @@ struct QuickStartGuideView: View {
                 guideRow("5", "Fix anything", "Drag objects to move them. Esc cancels. ⌘Z undoes.")
                 guideRow("6", "Look around", "Use the mouse wheel to zoom, Space-drag to pan, and the turn buttons to rotate.")
             }
+
+            Divider()
+            Toggle("Do not show again", isOn: $doNotShowAgain)
+                .toggleStyle(.checkbox)
+                .help("You can reopen this guide from Workspace in the sidebar")
 
             HStack {
                 Button("Not Now") { dismiss() }

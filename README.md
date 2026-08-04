@@ -60,7 +60,7 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 - **Inspect**: click a wall or furniture object to view exact dimensions and editing controls. Right-click any completed wall to see its length in metres and centimetres or delete it directly.
 - **Erase**: click furniture, a door, or a wall.
 - **Tool keys**: `V` Inspect, `W` Draw Wall, `D` Place Door, and `E` Erase while the 2D plan is active. Delete removes the selected object.
-- **Quick Start**: the first launch opens a five-step, game-style guide; reopen it any time from the Workspace section.
+- **Quick Start**: the first launch opens a game-style guide. Tick **Do not show again** to hide it on future launches; reopen it any time from the Workspace section.
 - **Snapshots and recovery**: name and save stable layout versions from the sidebar, then restore one with a click. Clear and example-replacement actions require confirmation and remain undoable.
 - **Restore example**: loads a small two-wall/one-door layout; a fresh install starts with the measured shell empty.
 - **Undo/redo**: use the arrow icons in the 2D toolbar or press `⌘Z` / `⇧⌘Z`. Every top-right toolbar icon explains its action when hovered.
