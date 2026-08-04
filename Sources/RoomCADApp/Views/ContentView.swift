@@ -46,7 +46,7 @@ struct ContentView: View {
                             Label("Undo", systemImage: "arrow.uturn.backward")
                         }
                         .labelStyle(.iconOnly)
-                        .help("Undo the last layout change (⌘Z)")
+                        .immediateToolbarHelp("Undo the last layout change (⌘Z)")
                         .disabled(!store.canUndo)
 
                         Button {
@@ -55,7 +55,7 @@ struct ContentView: View {
                             Label("Redo", systemImage: "arrow.uturn.forward")
                         }
                         .labelStyle(.iconOnly)
-                        .help("Redo the last undone layout change (⇧⌘Z)")
+                        .immediateToolbarHelp("Redo the last undone layout change (⇧⌘Z)")
                         .disabled(!store.canRedo)
 
                         ForEach(PlanTool.allCases.filter { $0 != .furniture }) { tool in
@@ -65,7 +65,7 @@ struct ContentView: View {
                                 Label(tool.rawValue, systemImage: tool.systemImage)
                             }
                             .labelStyle(.iconOnly)
-                            .help(tool.helpText)
+                            .immediateToolbarHelp(tool.helpText)
                             .buttonStyle(.bordered)
                             .tint(store.tool == tool ? .accentColor : nil)
                         }
@@ -82,7 +82,7 @@ struct ContentView: View {
                             Label("Place Furniture", systemImage: PlanTool.furniture.systemImage)
                         }
                         .menuIndicator(.hidden)
-                        .help("Choose furniture to place on the 2D plan")
+                        .immediateToolbarHelp("Choose furniture to place on the 2D plan")
                     }
                 }
 
@@ -93,7 +93,7 @@ struct ContentView: View {
                         Label("Survey Inspector", systemImage: "sidebar.right")
                     }
                     .labelStyle(.iconOnly)
-                    .help("Show or hide survey measurements")
+                    .immediateToolbarHelp("Show or hide survey measurements")
                 }
             }
         }
