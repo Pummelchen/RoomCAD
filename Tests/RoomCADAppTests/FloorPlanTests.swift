@@ -1,8 +1,8 @@
 import Foundation
 import Testing
-@testable import LaundryRoomsApp
+@testable import RoomCADApp
 
-@Suite("Laundry room plan geometry")
+@Suite("RoomCAD plan geometry")
 struct FloorPlanTests {
     @Test("Confirmed room length remains the default survey value")
     func confirmedLength() {
@@ -206,5 +206,33 @@ struct FloorPlanTests {
 
         let restored = try JSONDecoder().decode(FloorPlan.self, from: JSONEncoder().encode(plan))
         #expect(restored.furniture == plan.furniture)
+    }
+
+    @Test("RoomCAD migrates a legacy LaundryRooms saved layout") @MainActor
+    func legacyPersistenceMigration() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let currentURL = temporary.appending(path: "RoomCAD/layout.json")
+        let legacyURL = temporary.appending(path: "LaundryRooms/layout.json")
+        var legacyPlan = FloorPlan.example
+        legacyPlan.furniture = [
+            FurnitureItem(kind: .singleBed, center: PlanPoint(x: 1.2, z: 2.0))
+        ]
+        try FileManager.default.createDirectory(
+            at: legacyURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(legacyPlan).write(to: legacyURL)
+
+        let store = FloorPlanStore(
+            persistenceURL: currentURL,
+            legacyPersistenceURL: legacyURL
+        )
+
+        #expect(store.plan == legacyPlan)
+        #expect(store.statusMessage == "Migrated saved layout to RoomCAD")
+        #expect(FileManager.default.fileExists(atPath: currentURL.path))
+        let migrated = try JSONDecoder().decode(FloorPlan.self, from: Data(contentsOf: currentURL))
+        #expect(migrated == legacyPlan)
     }
 }

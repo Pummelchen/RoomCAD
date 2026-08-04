@@ -1,4 +1,4 @@
-# Laundry Rooms Planner
+# RoomCAD
 
 A native macOS planning tool for the first floor of an Indonesian shophouse. It combines a realtime Swift + Metal walkthrough with a precise SwiftUI top-down editor for testing women-only rental-room layouts.
 
@@ -65,7 +65,7 @@ Requirements: Apple silicon Mac, macOS 14 or later, and Xcode command-line tools
 ./script/build_and_run.sh
 ```
 
-The script builds a stripped arm64 **release** binary by default, stages `dist/LaundryRooms.app`, and launches it as a normal foreground macOS app. Use `./script/build_and_run.sh --debug` for an LLDB-ready debug build. The Codex **Run** action uses the optimized release path.
+The script builds a stripped arm64 **release** binary by default, stages `dist/RoomCAD.app`, and launches it as a normal foreground macOS app. Use `./script/build_and_run.sh --debug` for an LLDB-ready debug build. The Codex **Run** action uses the optimized release path.
 
 Validation commands:
 

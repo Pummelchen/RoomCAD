@@ -16,14 +16,30 @@ final class FloorPlanStore {
     private var redoStack: [FloorPlan] = []
     private let persistenceURL: URL
 
-    init(persistenceURL: URL? = nil, loadPersisted: Bool = true) {
+    init(
+        persistenceURL: URL? = nil,
+        legacyPersistenceURL: URL? = nil,
+        loadPersisted: Bool = true
+    ) {
         self.persistenceURL = persistenceURL ?? Self.defaultPersistenceURL
-        if loadPersisted,
-           let data = try? Data(contentsOf: self.persistenceURL),
-           var decoded = try? JSONDecoder().decode(FloorPlan.self, from: data) {
+        let legacyURL = legacyPersistenceURL ?? (persistenceURL == nil ? Self.legacyPersistenceURL : nil)
+        let loadURLs = [self.persistenceURL] + (legacyURL.map { [$0] } ?? [])
+        let restored = loadPersisted ? loadURLs.lazy.compactMap { url -> (URL, FloorPlan)? in
+            guard let data = try? Data(contentsOf: url),
+                  let plan = try? JSONDecoder().decode(FloorPlan.self, from: data) else { return nil }
+            return (url, plan)
+        }.first : nil
+
+        if let (sourceURL, restoredPlan) = restored {
+            var decoded = restoredPlan
             decoded.sanitize()
             plan = decoded
-            statusMessage = "Restored saved layout"
+            if sourceURL == self.persistenceURL {
+                statusMessage = "Restored saved layout"
+            } else {
+                statusMessage = "Migrated saved layout to RoomCAD"
+                persist()
+            }
         } else {
             plan = .initial
         }
@@ -251,7 +267,7 @@ final class FloorPlanStore {
 
     func exportPlan() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "LaundryRooms-layout.json"
+        panel.nameFieldStringValue = "RoomCAD-layout.json"
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -341,6 +357,12 @@ final class FloorPlanStore {
     }
 
     private static var defaultPersistenceURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appending(path: "RoomCAD", directoryHint: .isDirectory)
+            .appending(path: "layout.json")
+    }
+
+    private static var legacyPersistenceURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appending(path: "LaundryRooms", directoryHint: .isDirectory)
             .appending(path: "layout.json")

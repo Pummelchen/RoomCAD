@@ -2,23 +2,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "LaundryRooms",
+    name: "RoomCAD",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "LaundryRooms", targets: ["LaundryRoomsApp"])
+        .executable(name: "RoomCAD", targets: ["RoomCADApp"])
     ],
     targets: [
         .executableTarget(
-            name: "LaundryRoomsApp",
-            path: "Sources/LaundryRoomsApp",
+            name: "RoomCADApp",
+            path: "Sources/RoomCADApp",
             swiftSettings: [
                 .unsafeFlags(["-strict-memory-safety"])
             ]
         ),
         .testTarget(
-            name: "LaundryRoomsAppTests",
-            dependencies: ["LaundryRoomsApp"],
-            path: "Tests/LaundryRoomsAppTests",
+            name: "RoomCADAppTests",
+            dependencies: ["RoomCADApp"],
+            path: "Tests/RoomCADAppTests",
             swiftSettings: [
                 .unsafeFlags(["-strict-memory-safety"])
             ]

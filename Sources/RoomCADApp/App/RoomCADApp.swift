@@ -9,12 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct LaundryRoomsApp: App {
+struct RoomCADApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = FloorPlanStore()
 
     var body: some Scene {
-        WindowGroup("Laundry Rooms Planner") {
+        WindowGroup("RoomCAD") {
             ContentView(store: store)
                 .frame(minWidth: 1_180, minHeight: 720)
         }
