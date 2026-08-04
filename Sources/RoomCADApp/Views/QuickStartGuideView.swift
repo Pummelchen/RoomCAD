@@ -23,7 +23,7 @@ struct QuickStartGuideView: View {
                 guideRow("2", "Add doors", "Choose Add Door and click a wall. Inspect lets you slide it.")
                 guideRow("3", "Place furniture", "Pick an item on the left, move the green ghost, and click.")
                 guideRow("4", "Fix anything", "Drag objects to move them. Esc cancels. ⌘Z undoes.")
-                guideRow("5", "Look around", "Use the mouse wheel to zoom and Space-drag to pan.")
+                guideRow("5", "Look around", "Use the mouse wheel to zoom, Space-drag to pan, and the turn buttons to rotate.")
             }
 
             HStack {

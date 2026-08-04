@@ -29,7 +29,8 @@ struct TopDownEditorView: View {
                 size: geometry.size,
                 dimensions: store.plan.dimensions,
                 zoomScale: store.planZoomScale,
-                viewportCenter: viewportCenter
+                viewportCenter: viewportCenter,
+                rotation: store.planRotation
             )
             let snapshot = PlanDrawingSnapshot(
                 plan: previewPlan,
@@ -191,6 +192,34 @@ struct TopDownEditorView: View {
             .overlay(alignment: .bottomTrailing) {
                 HStack(spacing: 5) {
                     Button {
+                        store.rotatePlanLeft()
+                    } label: {
+                        Label("Turn Plan Left", systemImage: "rotate.left")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Turn the 2D plan 90° left (⌘[)")
+
+                    Button {
+                        store.resetPlanRotation()
+                    } label: {
+                        Text("\(store.planRotation.degrees)°")
+                            .monospacedDigit()
+                            .frame(minWidth: 30)
+                    }
+                    .help("Reset plan orientation")
+                    .disabled(store.planRotation == .zero)
+
+                    Button {
+                        store.rotatePlanRight()
+                    } label: {
+                        Label("Turn Plan Right", systemImage: "rotate.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Turn the 2D plan 90° right (⌘])")
+
+                    Divider().frame(height: 18)
+
+                    Button {
                         store.zoomPlanOut()
                     } label: {
                         Label("Zoom Out", systemImage: "minus.magnifyingglass")
@@ -250,7 +279,8 @@ struct TopDownEditorView: View {
                             z: store.plan.dimensions.roomLength / 2
                         ),
                         viewportSize: geometry.size,
-                        mainScale: transform.scale
+                        mainScale: transform.scale,
+                        rotation: store.planRotation
                     ) { point in
                         viewportCenter = constrainedViewportCenter(
                             point,
@@ -269,6 +299,25 @@ struct TopDownEditorView: View {
             }
             .onChange(of: store.mode) { _, _ in resetTransientInteraction() }
             .onChange(of: store.plan.dimensions.gridSpacing) { _, _ in resetTransientInteraction() }
+            .onChange(of: store.planRotation) { _, newRotation in
+                resetTransientInteraction()
+                if store.planZoomScale == 1 {
+                    viewportCenter = nil
+                } else if let viewportCenter {
+                    let rotatedTransform = PlanTransform(
+                        size: geometry.size,
+                        dimensions: store.plan.dimensions,
+                        zoomScale: store.planZoomScale,
+                        viewportCenter: viewportCenter,
+                        rotation: newRotation
+                    )
+                    self.viewportCenter = constrainedViewportCenter(
+                        viewportCenter,
+                        size: geometry.size,
+                        scale: rotatedTransform.scale
+                    )
+                }
+            }
             .onChange(of: store.planZoomScale) { _, zoomScale in
                 if zoomScale == 1 {
                     viewportCenter = nil
@@ -296,11 +345,13 @@ struct TopDownEditorView: View {
         guard abs(nextZoom - store.planZoomScale) > 0.0001 else { return }
 
         let anchor = transform.planPoint(from: location)
+        let displayAnchor = transform.displayPoint(anchor)
         let nextScale = transform.baseScale * CGFloat(nextZoom)
-        let nextCenter = PlanPoint(
-            x: anchor.x - Float((location.x - size.width / 2) / nextScale),
-            z: anchor.z + Float((location.y - size.height / 2) / nextScale)
+        let nextDisplayCenter = PlanPoint(
+            x: displayAnchor.x - Float((location.x - size.width / 2) / nextScale),
+            z: displayAnchor.z + Float((location.y - size.height / 2) / nextScale)
         )
+        let nextCenter = transform.planPoint(fromDisplay: nextDisplayCenter)
         viewportCenter = constrainedViewportCenter(nextCenter, size: size, scale: nextScale)
         store.setPlanZoomScale(nextZoom)
     }
@@ -316,10 +367,14 @@ struct TopDownEditorView: View {
             return value.clamped(to: halfVisible...(length - halfVisible))
         }
 
-        return PlanPoint(
-            x: coordinate(center.x, length: store.plan.dimensions.roomWidth, pixels: size.width),
-            z: coordinate(center.z, length: store.plan.dimensions.roomLength, pixels: size.height)
+        let rotation = store.planRotation
+        let displaySize = rotation.displaySize(for: store.plan.dimensions)
+        let displayCenter = rotation.displayPoint(center, dimensions: store.plan.dimensions)
+        let constrainedDisplay = PlanPoint(
+            x: coordinate(displayCenter.x, length: displaySize.width, pixels: size.width),
+            z: coordinate(displayCenter.z, length: displaySize.height, pixels: size.height)
         )
+        return rotation.planPoint(constrainedDisplay, dimensions: store.plan.dimensions)
     }
 
     private func panViewport(by delta: CGSize, size: CGSize, transform: PlanTransform) {
@@ -327,10 +382,12 @@ struct TopDownEditorView: View {
             x: store.plan.dimensions.roomWidth / 2,
             z: store.plan.dimensions.roomLength / 2
         )
-        let moved = PlanPoint(
-            x: center.x - Float(delta.width / transform.scale),
-            z: center.z + Float(delta.height / transform.scale)
+        let displayCenter = transform.displayPoint(center)
+        let movedDisplay = PlanPoint(
+            x: displayCenter.x - Float(delta.width / transform.scale),
+            z: displayCenter.z + Float(delta.height / transform.scale)
         )
+        let moved = transform.planPoint(fromDisplay: movedDisplay)
         viewportCenter = constrainedViewportCenter(moved, size: size, scale: transform.scale)
     }
 
@@ -348,9 +405,13 @@ struct TopDownEditorView: View {
         ) else { return }
         let availableWidth = max(100, size.width - 180)
         let availableHeight = max(100, size.height - 150)
+        let displayBounds = store.planRotation.displayRectangle(
+            bounds,
+            dimensions: store.plan.dimensions
+        )
         let selectionScale = min(
-            availableWidth / CGFloat(max(bounds.width, 0.40)),
-            availableHeight / CGFloat(max(bounds.length, 0.40))
+            availableWidth / CGFloat(max(displayBounds.width, 0.40)),
+            availableHeight / CGFloat(max(displayBounds.length, 0.40))
         )
         let zoom = Float(selectionScale / transform.baseScale).clamped(
             to: FloorPlanStore.minimumPlanZoom...FloorPlanStore.maximumPlanZoom
@@ -918,12 +979,14 @@ struct TopDownEditorView: View {
 
         let center = transform.point(item.center)
         let directionLength = max(4, min(rectangle.width, rectangle.height) * 0.30)
-        let directionEnd: CGPoint = switch item.direction {
-        case .north: CGPoint(x: center.x, y: center.y - directionLength)
-        case .east: CGPoint(x: center.x + directionLength, y: center.y)
-        case .south: CGPoint(x: center.x, y: center.y + directionLength)
-        case .west: CGPoint(x: center.x - directionLength, y: center.y)
+        let planDirectionLength = Float(directionLength / max(transform.scale, 0.001))
+        let directionPlanPoint: PlanPoint = switch item.direction {
+        case .north: item.center + PlanPoint(x: 0, z: planDirectionLength)
+        case .east: item.center + PlanPoint(x: planDirectionLength, z: 0)
+        case .south: item.center + PlanPoint(x: 0, z: -planDirectionLength)
+        case .west: item.center + PlanPoint(x: -planDirectionLength, z: 0)
         }
+        let directionEnd = transform.point(directionPlanPoint)
         var directionPath = Path()
         directionPath.move(to: center)
         directionPath.addLine(to: directionEnd)
@@ -1060,26 +1123,56 @@ struct TopDownEditorView: View {
         let coreLabel = Font.system(size: 7, weight: .semibold, design: .rounded)
         let compactMeasurement = FloatingPointFormatStyle<Float>.number.precision(.fractionLength(2))
         context.draw(Text("BATH\n1.75 m DEEP").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
-        context.draw(Text("UP →").font(coreLabel).foregroundStyle(.brown), at: CGPoint(x: upperFlight.midX, y: upperFlight.midY))
+        context.draw(
+            Text("UP \(transform.rotation.positiveXArrow)")
+                .font(coreLabel)
+                .foregroundStyle(.brown),
+            at: CGPoint(x: upperFlight.midX, y: upperFlight.midY)
+        )
         context.draw(Text("LOWER OPENING\n\(layout.lowerOpening.width.formatted(compactMeasurement)) × \(layout.lowerOpening.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.primary), at: CGPoint(x: lowerOpening.midX, y: lowerOpening.midY))
     }
 
     private static func drawDimensions(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
         let d = dimensions
+        let shellEdgesAreVertical = transform.rotation == .right90 || transform.rotation == .left90
+        let widthLabelX = shellEdgesAreVertical ? d.roomWidth * 0.25 : d.roomWidth / 2
+        let frontLabelX = shellEdgesAreVertical ? d.roomWidth * 0.72 : d.roomWidth / 2
+        let widthLabelZ: Float = transform.rotation == .zero ? 0.25 : -0.45
+        let frontLabelZ: Float = switch transform.rotation {
+        case .zero: 0.60
+        case .right90, .left90: -0.25
+        case .halfTurn: -0.60
+        }
         context.draw(
             Text(d.roomLength.formattedMeters).font(.caption.monospacedDigit()).foregroundStyle(.secondary),
-            at: CGPoint(x: transform.roomRect.maxX + 34, y: transform.roomRect.midY),
+            at: transform.point(PlanPoint(x: d.roomWidth + 0.65, z: d.roomLength / 2)),
             anchor: .center
         )
         context.draw(
             Text(d.roomWidth.formattedMeters).font(.caption.monospacedDigit()).foregroundStyle(.secondary),
-            at: CGPoint(x: transform.roomRect.midX, y: transform.roomRect.maxY + 18),
+            at: transform.point(PlanPoint(x: widthLabelX, z: widthLabelZ)),
             anchor: .center
         )
-        context.draw(Text("4-PANE FRONT WINDOW").font(.caption2).foregroundStyle(.blue), at: CGPoint(x: transform.roomRect.midX, y: transform.roomRect.maxY + 38))
+        context.draw(
+            Text("4-PANE FRONT WINDOW").font(.caption2).foregroundStyle(.blue),
+            at: transform.point(PlanPoint(x: frontLabelX, z: frontLabelZ))
+        )
         let rearWindow = StairBathroomLayout(dimensions: d)
         let rearWindowWidth = rearWindow.rearWindowEndX - rearWindow.rearWindowStartX
-        context.draw(Text("2-PANE REAR ≈\(rearWindowWidth.formattedMeters)").font(.caption2).foregroundStyle(.blue), at: CGPoint(x: transform.roomRect.minX + transform.roomRect.width * 0.28, y: transform.roomRect.minY - 14))
+        let rearLabelZ: Float = switch transform.rotation {
+        case .zero: d.roomLength + 0.35
+        case .right90, .left90: d.roomLength + 0.30
+        case .halfTurn: d.roomLength - 0.60
+        }
+        context.draw(
+            Text("2-PANE REAR ≈\(rearWindowWidth.formattedMeters)")
+                .font(.caption2)
+                .foregroundStyle(.blue),
+            at: transform.point(PlanPoint(
+                x: (rearWindow.rearWindowStartX + rearWindow.rearWindowEndX) / 2,
+                z: rearLabelZ
+            ))
+        )
     }
 }
 
@@ -1101,55 +1194,74 @@ private struct PlanTransform: Sendable {
     let baseScale: CGFloat
     let scale: CGFloat
     let dimensions: SurveyDimensions
+    let rotation: PlanRotation
 
     init(
         size: CGSize,
         dimensions: SurveyDimensions,
         zoomScale: Float,
-        viewportCenter: PlanPoint?
+        viewportCenter: PlanPoint?,
+        rotation: PlanRotation
     ) {
         self.dimensions = dimensions
+        self.rotation = rotation
+        let displaySize = rotation.displaySize(for: dimensions)
         let available = CGSize(width: max(1, size.width - 150), height: max(1, size.height - 110))
         baseScale = min(
-            available.width / CGFloat(dimensions.roomWidth),
-            available.height / CGFloat(dimensions.roomLength)
+            available.width / CGFloat(displaySize.width),
+            available.height / CGFloat(displaySize.height)
         )
         scale = baseScale * CGFloat(zoomScale)
         let center = viewportCenter ?? PlanPoint(
             x: dimensions.roomWidth / 2,
             z: dimensions.roomLength / 2
         )
-        let roomSize = CGSize(width: CGFloat(dimensions.roomWidth) * scale, height: CGFloat(dimensions.roomLength) * scale)
+        let displayCenter = rotation.displayPoint(center, dimensions: dimensions)
+        let roomSize = CGSize(
+            width: CGFloat(displaySize.width) * scale,
+            height: CGFloat(displaySize.height) * scale
+        )
         roomRect = CGRect(
-            x: size.width / 2 - CGFloat(center.x) * scale,
-            y: size.height / 2 - CGFloat(dimensions.roomLength - center.z) * scale,
+            x: size.width / 2 - CGFloat(displayCenter.x) * scale,
+            y: size.height / 2 - CGFloat(displaySize.height - displayCenter.z) * scale,
             width: roomSize.width,
             height: roomSize.height
         )
     }
 
     func point(_ point: PlanPoint) -> CGPoint {
-        CGPoint(
-            x: roomRect.minX + CGFloat(point.x) * scale,
-            y: roomRect.maxY - CGFloat(point.z) * scale
+        let displayPoint = displayPoint(point)
+        return CGPoint(
+            x: roomRect.minX + CGFloat(displayPoint.x) * scale,
+            y: roomRect.maxY - CGFloat(displayPoint.z) * scale
         )
     }
 
     func rect(_ rectangle: PlanRectangle) -> CGRect {
-        let topLeft = point(PlanPoint(x: rectangle.minX, z: rectangle.maxZ))
+        let displayRectangle = rotation.displayRectangle(rectangle, dimensions: dimensions)
         return CGRect(
-            x: topLeft.x,
-            y: topLeft.y,
-            width: CGFloat(rectangle.width) * scale,
-            height: CGFloat(rectangle.length) * scale
+            x: roomRect.minX + CGFloat(displayRectangle.minX) * scale,
+            y: roomRect.maxY - CGFloat(displayRectangle.maxZ) * scale,
+            width: CGFloat(displayRectangle.width) * scale,
+            height: CGFloat(displayRectangle.length) * scale
         )
     }
 
     func planPoint(from point: CGPoint) -> PlanPoint {
-        PlanPoint(
-            x: Float((point.x - roomRect.minX) / scale).clamped(to: 0...dimensions.roomWidth),
-            z: Float((roomRect.maxY - point.y) / scale).clamped(to: 0...dimensions.roomLength)
+        let displaySize = rotation.displaySize(for: dimensions)
+        let display = PlanPoint(
+            x: Float((point.x - roomRect.minX) / scale).clamped(to: 0...displaySize.width),
+            z: Float((roomRect.maxY - point.y) / scale).clamped(to: 0...displaySize.height)
         )
+        return planPoint(fromDisplay: display)
+    }
+
+    func displayPoint(_ point: PlanPoint) -> PlanPoint {
+        rotation.displayPoint(point, dimensions: dimensions)
+    }
+
+    func planPoint(fromDisplay point: PlanPoint) -> PlanPoint {
+        rotation.planPoint(point, dimensions: dimensions).clamped(to: dimensions)
     }
 
     func snappedPlanPoint(from point: CGPoint) -> PlanPoint {
@@ -1162,28 +1274,31 @@ private struct PlanOverviewView: View {
     let viewportCenter: PlanPoint
     let viewportSize: CGSize
     let mainScale: CGFloat
+    let rotation: PlanRotation
     let navigate: (PlanPoint) -> Void
 
     var body: some View {
         GeometryReader { geometry in
+            let displaySize = rotation.displaySize(for: plan.dimensions)
             let scale = min(
-                geometry.size.width / CGFloat(plan.dimensions.roomWidth),
-                geometry.size.height / CGFloat(plan.dimensions.roomLength)
+                geometry.size.width / CGFloat(displaySize.width),
+                geometry.size.height / CGFloat(displaySize.height)
             )
-            Canvas { context, size in
-                let room = CGRect(
-                    x: (size.width - CGFloat(plan.dimensions.roomWidth) * scale) / 2,
-                    y: 0,
-                    width: CGFloat(plan.dimensions.roomWidth) * scale,
-                    height: CGFloat(plan.dimensions.roomLength) * scale
-                )
+            let room = CGRect(
+                x: (geometry.size.width - CGFloat(displaySize.width) * scale) / 2,
+                y: (geometry.size.height - CGFloat(displaySize.height) * scale) / 2,
+                width: CGFloat(displaySize.width) * scale,
+                height: CGFloat(displaySize.height) * scale
+            )
+            Canvas { context, _ in
                 context.fill(Path(room), with: .color(.black.opacity(0.08)))
                 context.stroke(Path(room), with: .color(.primary.opacity(0.65)), lineWidth: 1)
 
                 func point(_ value: PlanPoint) -> CGPoint {
-                    CGPoint(
-                        x: room.minX + CGFloat(value.x) * scale,
-                        y: room.maxY - CGFloat(value.z) * scale
+                    let display = rotation.displayPoint(value, dimensions: plan.dimensions)
+                    return CGPoint(
+                        x: room.minX + CGFloat(display.x) * scale,
+                        y: room.maxY - CGFloat(display.z) * scale
                     )
                 }
                 for wall in plan.partitions {
@@ -1193,26 +1308,34 @@ private struct PlanOverviewView: View {
                     context.stroke(path, with: .color(.primary), lineWidth: 1.5)
                 }
                 for item in plan.furniture {
+                    let displayRectangle = rotation.displayRectangle(
+                        item.footprint,
+                        dimensions: plan.dimensions
+                    )
                     let rect = CGRect(
-                        x: room.minX + CGFloat(item.footprint.minX) * scale,
-                        y: room.maxY - CGFloat(item.footprint.maxZ) * scale,
-                        width: CGFloat(item.footprint.width) * scale,
-                        height: CGFloat(item.footprint.length) * scale
+                        x: room.minX + CGFloat(displayRectangle.minX) * scale,
+                        y: room.maxY - CGFloat(displayRectangle.maxZ) * scale,
+                        width: CGFloat(displayRectangle.width) * scale,
+                        height: CGFloat(displayRectangle.length) * scale
                     )
                     context.fill(Path(rect), with: .color(.accentColor.opacity(0.5)))
                 }
 
                 let visibleWidth = min(
-                    plan.dimensions.roomWidth,
+                    displaySize.width,
                     Float(viewportSize.width / max(mainScale, 0.001))
                 )
                 let visibleLength = min(
-                    plan.dimensions.roomLength,
+                    displaySize.height,
                     Float(viewportSize.height / max(mainScale, 0.001))
                 )
+                let displayCenter = rotation.displayPoint(
+                    viewportCenter,
+                    dimensions: plan.dimensions
+                )
                 let visible = CGRect(
-                    x: room.minX + CGFloat(viewportCenter.x - visibleWidth / 2) * scale,
-                    y: room.maxY - CGFloat(viewportCenter.z + visibleLength / 2) * scale,
+                    x: room.minX + CGFloat(displayCenter.x - visibleWidth / 2) * scale,
+                    y: room.maxY - CGFloat(displayCenter.z + visibleLength / 2) * scale,
                     width: CGFloat(visibleWidth) * scale,
                     height: CGFloat(visibleLength) * scale
                 )
@@ -1220,15 +1343,17 @@ private struct PlanOverviewView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { location in
-                let roomWidth = CGFloat(plan.dimensions.roomWidth) * scale
-                let roomX = (geometry.size.width - roomWidth) / 2
-                navigate(PlanPoint(
-                    x: Float((location.x - roomX) / scale).clamped(to: 0...plan.dimensions.roomWidth),
-                    z: Float((geometry.size.height - location.y) / scale).clamped(to: 0...plan.dimensions.roomLength)
-                ))
+                let display = PlanPoint(
+                    x: Float((location.x - room.minX) / scale).clamped(to: 0...displaySize.width),
+                    z: Float((room.maxY - location.y) / scale).clamped(to: 0...displaySize.height)
+                )
+                navigate(rotation.planPoint(display, dimensions: plan.dimensions))
             }
         }
-        .frame(width: 92, height: 180)
+        .frame(
+            width: rotation == .right90 || rotation == .left90 ? 180 : 92,
+            height: rotation == .right90 || rotation == .left90 ? 92 : 180
+        )
         .padding(7)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .help("Plan overview · click to jump")

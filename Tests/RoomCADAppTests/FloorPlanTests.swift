@@ -245,6 +245,50 @@ struct FloorPlanTests {
         #expect(store.canZoomOut)
     }
 
+    @Test("Plan rotation preserves coordinates through all four orientations")
+    func planRotationRoundTrip() {
+        let dimensions = SurveyDimensions()
+        let points = [
+            PlanPoint.zero,
+            PlanPoint(x: dimensions.roomWidth, z: dimensions.roomLength),
+            PlanPoint(x: 1.25, z: 7.80)
+        ]
+
+        for rotation in PlanRotation.allCases {
+            for point in points {
+                let display = rotation.displayPoint(point, dimensions: dimensions)
+                let restored = rotation.planPoint(display, dimensions: dimensions)
+                #expect(restored.distance(to: point) < 0.001)
+            }
+        }
+
+        let rightSize = PlanRotation.right90.displaySize(for: dimensions)
+        #expect(rightSize.width == dimensions.roomLength)
+        #expect(rightSize.height == dimensions.roomWidth)
+
+        let source = PlanRectangle(minX: 1, maxX: 3, minZ: 4, maxZ: 9)
+        let rotated = PlanRotation.right90.displayRectangle(source, dimensions: dimensions)
+        #expect(abs(rotated.width - source.length) < 0.001)
+        #expect(abs(rotated.length - source.width) < 0.001)
+    }
+
+    @Test("Plan rotation controls turn left, right, and reset") @MainActor
+    func planRotationControls() {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+
+        store.rotatePlanRight()
+        #expect(store.planRotation == .right90)
+        store.rotatePlanLeft()
+        #expect(store.planRotation == .zero)
+        store.rotatePlanLeft()
+        #expect(store.planRotation == .left90)
+        store.resetPlanRotation()
+        #expect(store.planRotation == .zero)
+    }
+
     @Test("Furniture uses measured planning footprints and four cardinal rotations")
     func furnitureDimensionsAndRotation() {
         var bed = FurnitureItem(kind: .singleBed, center: PlanPoint(x: 1, z: 2))

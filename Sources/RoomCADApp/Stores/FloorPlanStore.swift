@@ -12,6 +12,7 @@ final class FloorPlanStore {
     var mode: WorkspaceMode = .walkthrough
     var tool: PlanTool = .wall
     var planZoomScale: Float = 1.00
+    var planRotation: PlanRotation = .zero
     var selectedWallID: UUID?
     var selectedDoorID: UUID?
     var selectedFurnitureIDs: Set<UUID> = []
@@ -400,6 +401,21 @@ final class FloorPlanStore {
 
     func resetPlanZoom() {
         planZoomScale = 1.00
+    }
+
+    func rotatePlanLeft() {
+        planRotation = planRotation.turnedLeft
+        statusMessage = "Rotated plan left · labels stay upright"
+    }
+
+    func rotatePlanRight() {
+        planRotation = planRotation.turnedRight
+        statusMessage = "Rotated plan right · labels stay upright"
+    }
+
+    func resetPlanRotation() {
+        planRotation = .zero
+        statusMessage = "Reset plan orientation"
     }
 
     func placeDoor(near point: PlanPoint) {

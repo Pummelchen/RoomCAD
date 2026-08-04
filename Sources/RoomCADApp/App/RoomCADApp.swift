@@ -43,6 +43,14 @@ struct RoomCADApp: App {
                 Button("Reset Zoom") { store.resetPlanZoom() }
                     .keyboardShortcut("0", modifiers: .command)
                     .disabled(store.mode != .plan || store.planZoomScale == 1)
+                Button("Turn Plan Left") { store.rotatePlanLeft() }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .disabled(store.mode != .plan)
+                Button("Turn Plan Right") { store.rotatePlanRight() }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .disabled(store.mode != .plan)
+                Button("Reset Plan Orientation") { store.resetPlanRotation() }
+                    .disabled(store.mode != .plan || store.planRotation == .zero)
                 Divider()
                 Button("Inspect Tool") { store.tool = .select }
                     .disabled(store.mode != .plan)

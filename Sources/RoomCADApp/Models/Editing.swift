@@ -1,5 +1,94 @@
 import Foundation
 
+enum PlanRotation: Int, CaseIterable, Sendable {
+    case zero
+    case right90
+    case halfTurn
+    case left90
+
+    var degrees: Int {
+        switch self {
+        case .zero: 0
+        case .right90: 90
+        case .halfTurn: 180
+        case .left90: -90
+        }
+    }
+
+    var turnedRight: PlanRotation {
+        PlanRotation(rawValue: (rawValue + 1) % Self.allCases.count) ?? .zero
+    }
+
+    var turnedLeft: PlanRotation {
+        PlanRotation(rawValue: (rawValue + Self.allCases.count - 1) % Self.allCases.count) ?? .zero
+    }
+
+    var positiveXArrow: String {
+        switch self {
+        case .zero: "→"
+        case .right90: "↓"
+        case .halfTurn: "←"
+        case .left90: "↑"
+        }
+    }
+
+    func displaySize(for dimensions: SurveyDimensions) -> (width: Float, height: Float) {
+        switch self {
+        case .zero, .halfTurn:
+            (dimensions.roomWidth, dimensions.roomLength)
+        case .right90, .left90:
+            (dimensions.roomLength, dimensions.roomWidth)
+        }
+    }
+
+    func displayPoint(_ point: PlanPoint, dimensions: SurveyDimensions) -> PlanPoint {
+        switch self {
+        case .zero:
+            point
+        case .right90:
+            PlanPoint(x: point.z, z: dimensions.roomWidth - point.x)
+        case .halfTurn:
+            PlanPoint(
+                x: dimensions.roomWidth - point.x,
+                z: dimensions.roomLength - point.z
+            )
+        case .left90:
+            PlanPoint(x: dimensions.roomLength - point.z, z: point.x)
+        }
+    }
+
+    func planPoint(_ displayPoint: PlanPoint, dimensions: SurveyDimensions) -> PlanPoint {
+        switch self {
+        case .zero:
+            displayPoint
+        case .right90:
+            PlanPoint(x: dimensions.roomWidth - displayPoint.z, z: displayPoint.x)
+        case .halfTurn:
+            PlanPoint(
+                x: dimensions.roomWidth - displayPoint.x,
+                z: dimensions.roomLength - displayPoint.z
+            )
+        case .left90:
+            PlanPoint(x: displayPoint.z, z: dimensions.roomLength - displayPoint.x)
+        }
+    }
+
+    func displayRectangle(_ rectangle: PlanRectangle, dimensions: SurveyDimensions) -> PlanRectangle {
+        let corners = [
+            PlanPoint(x: rectangle.minX, z: rectangle.minZ),
+            PlanPoint(x: rectangle.maxX, z: rectangle.minZ),
+            PlanPoint(x: rectangle.minX, z: rectangle.maxZ),
+            PlanPoint(x: rectangle.maxX, z: rectangle.maxZ)
+        ].map { displayPoint($0, dimensions: dimensions) }
+        return PlanRectangle(
+            minX: corners.map(\.x).min() ?? 0,
+            maxX: corners.map(\.x).max() ?? 0,
+            minZ: corners.map(\.z).min() ?? 0,
+            maxZ: corners.map(\.z).max() ?? 0
+        )
+    }
+}
+
 enum WallEditPart: Sendable {
     case start
     case end
