@@ -218,6 +218,33 @@ struct FloorPlanTests {
         #expect(store.plan.partitions.count == 1)
     }
 
+    @Test("Plan zoom steps, resets, and remains within safe bounds") @MainActor
+    func planZoomBounds() {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+
+        #expect(store.planZoomScale == 1)
+        store.zoomPlanIn()
+        #expect(abs(store.planZoomScale - 1.25) < 0.001)
+        store.zoomPlanOut()
+        #expect(abs(store.planZoomScale - 1.00) < 0.001)
+
+        for _ in 0..<20 { store.zoomPlanIn() }
+        #expect(store.planZoomScale == FloorPlanStore.maximumPlanZoom)
+        #expect(!store.canZoomIn)
+
+        for _ in 0..<40 { store.zoomPlanOut() }
+        #expect(store.planZoomScale == FloorPlanStore.minimumPlanZoom)
+        #expect(!store.canZoomOut)
+
+        store.resetPlanZoom()
+        #expect(store.planZoomScale == 1)
+        #expect(store.canZoomIn)
+        #expect(store.canZoomOut)
+    }
+
     @Test("Furniture uses measured planning footprints and four cardinal rotations")
     func furnitureDimensionsAndRotation() {
         var bed = FurnitureItem(kind: .singleBed, center: PlanPoint(x: 1, z: 2))

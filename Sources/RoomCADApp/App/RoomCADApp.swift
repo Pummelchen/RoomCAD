@@ -34,6 +34,16 @@ struct RoomCADApp: App {
                 Button("2D Plan") { store.mode = .plan }
                     .keyboardShortcut("2", modifiers: .command)
                 Divider()
+                Button("Zoom In") { store.zoomPlanIn() }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(store.mode != .plan || !store.canZoomIn)
+                Button("Zoom Out") { store.zoomPlanOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(store.mode != .plan || !store.canZoomOut)
+                Button("Reset Zoom") { store.resetPlanZoom() }
+                    .keyboardShortcut("0", modifiers: .command)
+                    .disabled(store.mode != .plan || store.planZoomScale == 1)
+                Divider()
                 Button("Export Layout…") { store.exportPlan() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }

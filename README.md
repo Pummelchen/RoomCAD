@@ -45,6 +45,7 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 ### 2D plan
 
 - **Configure the grid**: enter any spacing from 1–50 cm in the Editor Grid inspector, or choose a 1, 2.5, 5, or 10 cm preset. The default is 5 cm. The visible grid and pointer coordinate follow the setting, while the exact measured shell edges remain available as snap targets.
+- **Zoom the plan**: roll the mouse wheel over the 2D canvas, use the bottom-right zoom controls, or press `⌘+` / `⌘−`. Wheel zoom stays anchored to the pointer so the area under the mouse remains in view. Press `⌘0` or click the percentage to return to 100%; zoom is limited to 50–400%.
 - **Draw walls**: click one grid point and then another. Continue clicking to chain connected free-form wall segments, then choose **Finish**; alternatively, drag between two points to create one wall. Every endpoint snaps to the configured grid. Press `Esc` at any time to cancel the active wall chain or drag without creating a wall.
 - **Place and position doors**: choose **Add Door** above Furniture in the sidebar (or use the Place Door toolbar icon), then click close to a wall. Each wall supports one 90 cm single-leaf door. The editor immediately switches to Inspect so the door can be dragged along the wall. Live labels show the door width and the remaining wall length in centimetres on both sides.
 - **Furniture**: click a furniture-palette button for automatic placement, or drag it directly onto usable floor in the plan. The selected-object controls keep Rotate and Delete next to the canvas.

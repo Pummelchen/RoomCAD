@@ -11,10 +11,16 @@ struct TopDownEditorView: View {
     @State private var doorDragOffset: Float?
     @State private var furnitureDragID: UUID?
     @State private var furnitureDragCenter: PlanPoint?
+    @State private var viewportCenter: PlanPoint?
 
     var body: some View {
         GeometryReader { geometry in
-            let transform = PlanTransform(size: geometry.size, dimensions: store.plan.dimensions)
+            let transform = PlanTransform(
+                size: geometry.size,
+                dimensions: store.plan.dimensions,
+                zoomScale: store.planZoomScale,
+                viewportCenter: viewportCenter
+            )
             let snapshot = PlanDrawingSnapshot(
                 plan: previewPlan,
                 selectedWallID: store.selectedWallID,
@@ -73,12 +79,22 @@ struct TopDownEditorView: View {
                 }
             }
             .background {
-                EscapeKeyMonitor(
-                    isEnabled: store.tool == .wall
-                        && (wallAnchor != nil || dragStart != nil || dragCurrent != nil),
-                    action: cancelWallDrawing
-                )
-                .frame(width: 0, height: 0)
+                ZStack {
+                    ScrollWheelMonitor { delta, location in
+                        zoomWithWheel(
+                            delta: delta,
+                            location: location,
+                            size: geometry.size,
+                            transform: transform
+                        )
+                    }
+                    EscapeKeyMonitor(
+                        isEnabled: store.tool == .wall
+                            && (wallAnchor != nil || dragStart != nil || dragCurrent != nil),
+                        action: cancelWallDrawing
+                    )
+                    .frame(width: 0, height: 0)
+                }
             }
             .dropDestination(for: String.self) { values, location in
                 guard let rawKind = values.first,
@@ -117,10 +133,96 @@ struct TopDownEditorView: View {
                 selectionControls
                     .padding(14)
             }
+            .overlay(alignment: .bottomTrailing) {
+                HStack(spacing: 5) {
+                    Button {
+                        store.zoomPlanOut()
+                    } label: {
+                        Label("Zoom Out", systemImage: "minus.magnifyingglass")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Zoom out (⌘−)")
+                    .disabled(!store.canZoomOut)
+
+                    Button {
+                        store.resetPlanZoom()
+                    } label: {
+                        Text("\(Int((store.planZoomScale * 100).rounded()))%")
+                            .monospacedDigit()
+                            .frame(minWidth: 42)
+                    }
+                    .help("Reset the 2D plan to 100% (⌘0)")
+                    .disabled(store.planZoomScale == 1)
+
+                    Button {
+                        store.zoomPlanIn()
+                    } label: {
+                        Label("Zoom In", systemImage: "plus.magnifyingglass")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Zoom in (⌘+)")
+                    .disabled(!store.canZoomIn)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(8)
+                .background(.regularMaterial, in: Capsule())
+                .padding(14)
+            }
             .onChange(of: store.tool) { _, _ in resetTransientInteraction() }
             .onChange(of: store.mode) { _, _ in resetTransientInteraction() }
             .onChange(of: store.plan.dimensions.gridSpacing) { _, _ in resetTransientInteraction() }
+            .onChange(of: store.planZoomScale) { _, zoomScale in
+                if zoomScale == 1 {
+                    viewportCenter = nil
+                } else if let viewportCenter {
+                    self.viewportCenter = constrainedViewportCenter(
+                        viewportCenter,
+                        size: geometry.size,
+                        scale: transform.baseScale * CGFloat(zoomScale)
+                    )
+                }
+            }
         }
+    }
+
+    private func zoomWithWheel(
+        delta: CGFloat,
+        location: CGPoint,
+        size: CGSize,
+        transform: PlanTransform
+    ) {
+        let factor = pow(1.12, Float(delta))
+        let nextZoom = (store.planZoomScale * factor).clamped(
+            to: FloorPlanStore.minimumPlanZoom...FloorPlanStore.maximumPlanZoom
+        )
+        guard abs(nextZoom - store.planZoomScale) > 0.0001 else { return }
+
+        let anchor = transform.planPoint(from: location)
+        let nextScale = transform.baseScale * CGFloat(nextZoom)
+        let nextCenter = PlanPoint(
+            x: anchor.x - Float((location.x - size.width / 2) / nextScale),
+            z: anchor.z + Float((location.y - size.height / 2) / nextScale)
+        )
+        viewportCenter = constrainedViewportCenter(nextCenter, size: size, scale: nextScale)
+        store.setPlanZoomScale(nextZoom)
+    }
+
+    private func constrainedViewportCenter(
+        _ center: PlanPoint,
+        size: CGSize,
+        scale: CGFloat
+    ) -> PlanPoint {
+        func coordinate(_ value: Float, length: Float, pixels: CGFloat) -> Float {
+            let halfVisible = Float(pixels / max(scale, 0.001) / 2)
+            guard halfVisible < length / 2 else { return length / 2 }
+            return value.clamped(to: halfVisible...(length - halfVisible))
+        }
+
+        return PlanPoint(
+            x: coordinate(center.x, length: store.plan.dimensions.roomWidth, pixels: size.width),
+            z: coordinate(center.z, length: store.plan.dimensions.roomLength, pixels: size.height)
+        )
     }
 
     private var instruction: String {
@@ -633,17 +735,31 @@ private struct PlanDrawingSnapshot: Sendable {
 
 private struct PlanTransform: Sendable {
     let roomRect: CGRect
+    let baseScale: CGFloat
     let scale: CGFloat
     let dimensions: SurveyDimensions
 
-    init(size: CGSize, dimensions: SurveyDimensions) {
+    init(
+        size: CGSize,
+        dimensions: SurveyDimensions,
+        zoomScale: Float,
+        viewportCenter: PlanPoint?
+    ) {
         self.dimensions = dimensions
         let available = CGSize(width: max(1, size.width - 150), height: max(1, size.height - 110))
-        scale = min(available.width / CGFloat(dimensions.roomWidth), available.height / CGFloat(dimensions.roomLength))
+        baseScale = min(
+            available.width / CGFloat(dimensions.roomWidth),
+            available.height / CGFloat(dimensions.roomLength)
+        )
+        scale = baseScale * CGFloat(zoomScale)
+        let center = viewportCenter ?? PlanPoint(
+            x: dimensions.roomWidth / 2,
+            z: dimensions.roomLength / 2
+        )
         let roomSize = CGSize(width: CGFloat(dimensions.roomWidth) * scale, height: CGFloat(dimensions.roomLength) * scale)
         roomRect = CGRect(
-            x: (size.width - roomSize.width) / 2,
-            y: (size.height - roomSize.height) / 2,
+            x: size.width / 2 - CGFloat(center.x) * scale,
+            y: size.height / 2 - CGFloat(dimensions.roomLength - center.z) * scale,
             width: roomSize.width,
             height: roomSize.height
         )

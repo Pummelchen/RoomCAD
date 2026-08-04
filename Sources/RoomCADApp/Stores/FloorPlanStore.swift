@@ -5,9 +5,13 @@ import Observation
 @MainActor
 @Observable
 final class FloorPlanStore {
+    static let minimumPlanZoom: Float = 0.50
+    static let maximumPlanZoom: Float = 4.00
+
     var plan: FloorPlan
     var mode: WorkspaceMode = .walkthrough
     var tool: PlanTool = .wall
+    var planZoomScale: Float = 1.00
     var selectedWallID: UUID?
     var selectedDoorID: UUID?
     var selectedFurnitureID: UUID?
@@ -48,6 +52,8 @@ final class FloorPlanStore {
 
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
+    var canZoomIn: Bool { planZoomScale < Self.maximumPlanZoom }
+    var canZoomOut: Bool { planZoomScale > Self.minimumPlanZoom }
     var selectedFurniture: FurnitureItem? {
         guard let selectedFurnitureID else { return nil }
         return plan.furniture.first { $0.id == selectedFurnitureID }
@@ -155,6 +161,22 @@ final class FloorPlanStore {
         statusMessage = plan.partitions.isEmpty
             ? "Draw a wall first, then choose Add Door"
             : "Click a wall to place a 90 cm door"
+    }
+
+    func setPlanZoomScale(_ scale: Float) {
+        planZoomScale = scale.clamped(to: Self.minimumPlanZoom...Self.maximumPlanZoom)
+    }
+
+    func zoomPlanIn() {
+        setPlanZoomScale(planZoomScale * 1.25)
+    }
+
+    func zoomPlanOut() {
+        setPlanZoomScale(planZoomScale / 1.25)
+    }
+
+    func resetPlanZoom() {
+        planZoomScale = 1.00
     }
 
     func placeDoor(near point: PlanPoint) {
