@@ -16,9 +16,10 @@ struct RoomCADApp: App {
     var body: some Scene {
         WindowGroup("RoomCAD") {
             ContentView(store: store)
-                .frame(minWidth: 1_180, minHeight: 720)
+                .frame(minWidth: 720, minHeight: 520)
         }
         .defaultSize(width: 1_440, height: 900)
+        .windowResizability(.automatic)
         .commands {
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { store.undo() }

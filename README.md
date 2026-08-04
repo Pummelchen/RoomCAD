@@ -44,6 +44,7 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 
 ### 2D plan
 
+- **Resize the workspace**: drag any app border or corner to make RoomCAD as wide, narrow, tall, or short as needed. The window keeps only a compact safety minimum so its essential controls remain usable, while the normal launch size stays comfortably large.
 - **Configure the grid**: enter any spacing from 1–50 cm in the Editor Grid inspector, or choose a 1, 2.5, 5, or 10 cm preset. The default is 5 cm. The visible grid and pointer coordinate follow the setting, while the exact measured shell edges remain available as snap targets.
 - **Zoom the plan**: roll the mouse wheel over the 2D canvas, use the bottom-right zoom controls, or press `⌘+` / `⌘−`. Wheel zoom stays anchored to the pointer so the area under the mouse remains in view. Press `⌘0` or click the percentage to return to 100%; zoom is limited to 50–400%.
 - **Rotate the plan**: use the left/right turn buttons beside the zoom controls, or press `⌘[` / `⌘]`, to rotate the entire 2D workspace in 90° steps. Geometry, snapping, panning, furniture direction arrows, dimensions, and the overview map follow the chosen orientation while every text label stays upright. Click the degree value to return to 0°.
