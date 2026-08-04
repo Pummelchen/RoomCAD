@@ -46,14 +46,14 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 
 - **Configure the grid**: enter any spacing from 1–50 cm in the Editor Grid inspector, or choose a 1, 2.5, 5, or 10 cm preset. The default is 5 cm. The visible grid and pointer coordinate follow the setting, while the exact measured shell edges remain available as snap targets.
 - **Draw walls**: click one grid point and then another. Continue clicking to chain connected free-form wall segments, then choose **Finish**; alternatively, drag between two points to create one wall. Every endpoint snaps to the configured grid. Press `Esc` at any time to cancel the active wall chain or drag without creating a wall.
-- **Place and position doors**: choose Place Door and click close to a wall. Each wall supports one 90 cm single-leaf door. The editor immediately switches to Inspect so the door can be dragged along the wall. Live labels show the door width and the remaining wall length in centimetres on both sides.
+- **Place and position doors**: choose **Add Door** above Furniture in the sidebar (or use the Place Door toolbar icon), then click close to a wall. Each wall supports one 90 cm single-leaf door. The editor immediately switches to Inspect so the door can be dragged along the wall. Live labels show the door width and the remaining wall length in centimetres on both sides.
 - **Furniture**: click a furniture-palette button for automatic placement, or drag it directly onto usable floor in the plan. The selected-object controls keep Rotate and Delete next to the canvas.
 - **Move furniture**: choose Inspect, then click and drag an object; positions snap to the active grid. Every object is locked to floor level in 3D and cannot be placed over the bathroom, upper stair flight, or lower stair opening.
 - **Rotate furniture**: click an object to select it and press `B` to rotate clockwise through north, east, south, and west.
-- **Inspect**: click a wall or furniture object to view exact dimensions and editing controls.
+- **Inspect**: click a wall or furniture object to view exact dimensions and editing controls. Right-click any completed wall to see its length in metres and centimetres or delete it directly.
 - **Erase**: click furniture, a door, or a wall.
 - **Restore example**: loads a small two-wall/one-door layout; a fresh install starts with the measured shell empty.
-- Undo/redo: `⌘Z` / `⇧⌘Z`.
+- **Undo/redo**: use the arrow icons in the 2D toolbar or press `⌘Z` / `⇧⌘Z`. Every top-right toolbar icon explains its action when hovered.
 - Layouts autosave in Application Support and can be exported as readable JSON.
 
 Furniture uses compact Indonesian-market planning dimensions: a 90 × 200 cm single bed ([IKEA Indonesia example](https://www.ikea.co.id/en/catalog/products/30278708)), 70 × 70 cm square table ([local product example](https://www.ikea.co.id/in/produk/luar-ruang/kursi-makan-luar-ruang/visingso-visingso-spr-59621540)), 45 × 47 cm chair ([VIHALS](https://www.ikea.co.id/en/products/dining-chairs/non-upholstered-chairs/vihals-art-80592734)), and 100 × 60 cm two-door wardrobe (within [IKEA Indonesia's common two-door range](https://www.ikea.co.id/en/inspirations/how-to-measure-a-wardrobe-that-fits-your-bedroom)). These are editable-layout defaults rather than a legal furniture standard. Furniture position and orientation are included in autosave, JSON export, undo, and redo.

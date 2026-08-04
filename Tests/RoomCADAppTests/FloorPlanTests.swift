@@ -136,6 +136,46 @@ struct FloorPlanTests {
         #expect(store.plan.doors[0].offset > 1.8)
     }
 
+    @Test("Add Door opens the plan with the door tool active") @MainActor
+    func beginDoorPlacement() {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        store.mode = .walkthrough
+        store.tool = .select
+
+        store.beginDoorPlacement()
+
+        #expect(store.mode == .plan)
+        #expect(store.tool == .door)
+        #expect(store.statusMessage.contains("Draw a wall first"))
+    }
+
+    @Test("Wall context lookup and deletion target the nearest wall") @MainActor
+    func targetedWallDeletion() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        #expect(store.addWall(from: PlanPoint(x: 0.5, z: 2), to: PlanPoint(x: 4, z: 2)))
+        let firstWallID = try #require(store.plan.partitions.first?.id)
+        store.placeDoor(near: PlanPoint(x: 2, z: 2.1))
+        #expect(store.addWall(from: PlanPoint(x: 0.5, z: 4), to: PlanPoint(x: 4, z: 4)))
+        let secondWallID = try #require(store.plan.partitions.last?.id)
+
+        #expect(store.wall(near: PlanPoint(x: 2.5, z: 2.15), tolerance: 0.25)?.id == firstWallID)
+        store.deleteWall(id: firstWallID)
+
+        #expect(store.plan.partitions.map(\.id) == [secondWallID])
+        #expect(store.plan.doors.isEmpty)
+        #expect(store.canUndo)
+
+        store.undo()
+        #expect(store.plan.partitions.count == 2)
+        #expect(store.plan.doors.count == 1)
+    }
+
     @Test("Selected doors slide on their wall and report both side lengths") @MainActor
     func doorSliding() throws {
         let temporary = FileManager.default.temporaryDirectory
@@ -173,6 +213,9 @@ struct FloorPlanTests {
         store.addWall(from: PlanPoint(x: 0.2, z: 2), to: PlanPoint(x: 3, z: 2))
         store.undo()
         #expect(store.plan == original)
+        #expect(store.canRedo)
+        store.redo()
+        #expect(store.plan.partitions.count == 1)
     }
 
     @Test("Furniture uses measured planning footprints and four cardinal rotations")

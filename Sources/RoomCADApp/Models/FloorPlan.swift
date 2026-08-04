@@ -317,6 +317,15 @@ enum PlanTool: String, CaseIterable, Identifiable {
         case .erase: "eraser"
         }
     }
+
+    var helpText: String {
+        switch self {
+        case .select: "Inspect and drag walls, doors, or furniture"
+        case .wall: "Draw walls that snap to the configured grid"
+        case .door: "Place a 90 cm door on a wall"
+        case .erase: "Erase a wall, door, or furniture item"
+        }
+    }
 }
 
 extension Comparable {

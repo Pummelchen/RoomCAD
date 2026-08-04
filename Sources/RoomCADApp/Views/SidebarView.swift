@@ -41,6 +41,11 @@ struct SidebarView: View {
                 Button("Restore example", systemImage: "arrow.counterclockwise") {
                     store.resetToSurvey()
                 }
+
+                Button("Add Door", systemImage: "door.left.hand.open") {
+                    store.beginDoorPlacement()
+                }
+                .help("Switch to the 2D plan and place a 90 cm door on a wall")
             }
 
             Section("Furniture") {

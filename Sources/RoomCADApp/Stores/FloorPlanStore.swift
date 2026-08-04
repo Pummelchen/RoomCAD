@@ -146,6 +146,17 @@ final class FloorPlanStore {
         return true
     }
 
+    func beginDoorPlacement() {
+        mode = .plan
+        tool = .door
+        selectedWallID = nil
+        selectedDoorID = nil
+        selectedFurnitureID = nil
+        statusMessage = plan.partitions.isEmpty
+            ? "Draw a wall first, then choose Add Door"
+            : "Click a wall to place a 90 cm door"
+    }
+
     func placeDoor(near point: PlanPoint) {
         let candidate = plan.partitions
             .map { ($0, $0.projection(of: point)) }
@@ -208,6 +219,26 @@ final class FloorPlanStore {
         )
     }
 
+    func wall(near point: PlanPoint, tolerance: Float = 0.35) -> PartitionWall? {
+        plan.partitions
+            .map { ($0, $0.projection(of: point).distance) }
+            .filter { $0.1 <= tolerance }
+            .min { $0.1 < $1.1 }?.0
+    }
+
+    func deleteWall(id: UUID) {
+        guard let wall = plan.partitions.first(where: { $0.id == id }) else { return }
+        commit(message: "Removed \(wall.length.formattedMeters) wall") { plan in
+            plan.partitions.removeAll { $0.id == id }
+            plan.doors.removeAll { $0.wallID == id }
+        }
+        if selectedWallID == id { selectedWallID = nil }
+        if let selectedDoorID,
+           !plan.doors.contains(where: { $0.id == selectedDoorID }) {
+            self.selectedDoorID = nil
+        }
+    }
+
     func erase(near point: PlanPoint) {
         if let furniture = plan.furniture.last(where: { $0.contains(point, tolerance: 0.08) }) {
             commit(message: "Removed \(furniture.kind.title.lowercased())") {
@@ -221,22 +252,11 @@ final class FloorPlanStore {
             if selectedDoorID == door.id { selectedDoorID = nil }
             return
         }
-        guard let wall = plan.partitions
-            .map({ ($0, $0.projection(of: point).distance) })
-            .filter({ $0.1 <= 0.35 })
-            .min(by: { $0.1 < $1.1 })?.0 else {
+        guard let wall = wall(near: point) else {
             statusMessage = "Nothing to erase here"
             return
         }
-        commit(message: "Removed wall") { plan in
-            plan.partitions.removeAll { $0.id == wall.id }
-            plan.doors.removeAll { $0.wallID == wall.id }
-        }
-        if selectedWallID == wall.id { selectedWallID = nil }
-        if let selectedDoorID,
-           !plan.doors.contains(where: { $0.id == selectedDoorID }) {
-            self.selectedDoorID = nil
-        }
+        deleteWall(id: wall.id)
     }
 
     func select(near point: PlanPoint) {
@@ -258,21 +278,13 @@ final class FloorPlanStore {
 
         selectedFurnitureID = nil
         selectedDoorID = nil
-        selectedWallID = plan.partitions
-            .map({ ($0, $0.projection(of: point).distance) })
-            .filter({ $0.1 <= 0.35 })
-            .min(by: { $0.1 < $1.1 })?.0.id
+        selectedWallID = wall(near: point)?.id
         statusMessage = selectedWallID == nil ? "No wall selected" : "Wall selected"
     }
 
     func deleteSelectedWall() {
         guard let id = selectedWallID else { return }
-        commit(message: "Removed selected wall") { plan in
-            plan.partitions.removeAll { $0.id == id }
-            plan.doors.removeAll { $0.wallID == id }
-        }
-        selectedWallID = nil
-        selectedDoorID = nil
+        deleteWall(id: id)
         selectedFurnitureID = nil
     }
 

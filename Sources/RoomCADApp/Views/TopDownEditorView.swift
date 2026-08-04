@@ -61,6 +61,17 @@ struct TopDownEditorView: View {
                     hoverPoint = nil
                 }
             }
+            .contextMenu {
+                if let hoverPoint,
+                   let wall = store.wall(near: hoverPoint, tolerance: 0.25) {
+                    Text("Wall · \(wall.length.formattedMeters) (\(wall.length.formattedCentimeters))")
+                    Button("Delete Wall", systemImage: "trash", role: .destructive) {
+                        store.deleteWall(id: wall.id)
+                    }
+                } else {
+                    Text("Right-click a wall to see its size")
+                }
+            }
             .background {
                 EscapeKeyMonitor(
                     isEnabled: store.tool == .wall

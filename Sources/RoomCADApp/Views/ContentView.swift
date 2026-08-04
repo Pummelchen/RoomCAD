@@ -30,17 +30,37 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 270)
+                    .help("Switch between the 3D walkthrough and 2D plan")
                 }
 
                 if store.mode == .plan {
                     ToolbarItemGroup(placement: .primaryAction) {
+                        Button {
+                            store.undo()
+                        } label: {
+                            Label("Undo", systemImage: "arrow.uturn.backward")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Undo the last layout change (⌘Z)")
+                        .disabled(!store.canUndo)
+
+                        Button {
+                            store.redo()
+                        } label: {
+                            Label("Redo", systemImage: "arrow.uturn.forward")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Redo the last undone layout change (⇧⌘Z)")
+                        .disabled(!store.canRedo)
+
                         ForEach(PlanTool.allCases) { tool in
                             Button {
                                 store.tool = tool
                             } label: {
                                 Label(tool.rawValue, systemImage: tool.systemImage)
                             }
-                            .help(tool.rawValue)
+                            .labelStyle(.iconOnly)
+                            .help(tool.helpText)
                             .buttonStyle(.bordered)
                             .tint(store.tool == tool ? .accentColor : nil)
                         }
@@ -53,6 +73,7 @@ struct ContentView: View {
                     } label: {
                         Label("Survey Inspector", systemImage: "sidebar.right")
                     }
+                    .labelStyle(.iconOnly)
                     .help("Show or hide survey measurements")
                 }
             }
