@@ -74,6 +74,45 @@ struct FloorPlanTests {
         #expect(abs(result.distance - 0.4) < 0.001)
     }
 
+    @Test("Configurable grid snapping preserves exact measured shell edges")
+    func configurableGridSnapping() {
+        var dimensions = SurveyDimensions()
+        dimensions.gridSpacing = 0.05
+
+        let fiveCentimeterPoint = dimensions.snapped(PlanPoint(x: 1.023, z: 2.076))
+        #expect(abs(fiveCentimeterPoint.x - 1.00) < 0.001)
+        #expect(abs(fiveCentimeterPoint.z - 2.10) < 0.001)
+        #expect(
+            dimensions.snapped(PlanPoint(x: dimensions.roomWidth, z: dimensions.roomLength))
+                == PlanPoint(x: 4.87, z: 16.44)
+        )
+
+        dimensions.gridSpacing = 0.10
+        let tenCentimeterPoint = dimensions.snapped(PlanPoint(x: 1.04, z: 2.06))
+        #expect(abs(tenCentimeterPoint.x - 1.00) < 0.001)
+        #expect(abs(tenCentimeterPoint.z - 2.10) < 0.001)
+    }
+
+    @Test("Walls use the configured grid for both endpoints") @MainActor
+    func wallsUseConfiguredGrid() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        var dimensions = store.plan.dimensions
+        dimensions.gridSpacing = 0.10
+        store.updateDimensions(dimensions)
+
+        #expect(store.addWall(
+            from: PlanPoint(x: 0.04, z: 1.04),
+            to: PlanPoint(x: 2.06, z: 3.07)
+        ))
+        let wall = try #require(store.plan.partitions.first)
+        #expect(wall.start == PlanPoint(x: 0, z: 1.0))
+        #expect(abs(wall.end.x - 2.1) < 0.001)
+        #expect(abs(wall.end.z - 3.1) < 0.001)
+    }
+
     @Test("Sanitizing removes orphaned doors")
     func orphanedDoor() {
         var plan = FloorPlan()
@@ -95,6 +134,33 @@ struct FloorPlanTests {
         #expect(store.plan.partitions.count == 1)
         #expect(store.plan.doors.count == 1)
         #expect(store.plan.doors[0].offset > 1.8)
+    }
+
+    @Test("Selected doors slide on their wall and report both side lengths") @MainActor
+    func doorSliding() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        store.addWall(from: PlanPoint(x: 0.5, z: 3), to: PlanPoint(x: 4.0, z: 3))
+        store.placeDoor(near: PlanPoint(x: 1.47, z: 3.1))
+
+        let doorID = try #require(store.selectedDoorID)
+        let originalDoor = try #require(store.selectedDoor)
+        #expect(abs(originalDoor.offset - 0.5) < 0.001)
+        #expect(store.tool == .select)
+
+        store.select(near: PlanPoint(x: 1.45, z: 3.0))
+        #expect(store.selectedDoorID == doorID)
+        store.moveDoor(id: doorID, to: PlanPoint(x: 3.03, z: 3.2))
+
+        let movedDoor = try #require(store.selectedDoor)
+        let sides = try #require(store.doorSideLengths(movedDoor))
+        #expect(abs(sides.leading - 2.1) < 0.001)
+        #expect(abs(sides.trailing - 0.5) < 0.001)
+
+        store.undo()
+        #expect(abs((store.plan.doors.first?.offset ?? 0) - 0.5) < 0.001)
     }
 
     @Test("Undo restores the previous complete plan") @MainActor
@@ -143,6 +209,21 @@ struct FloorPlanTests {
             z: (fixed.lowerOpening.minZ + fixed.lowerOpening.maxZ) / 2
         )
         #expect(!bed.isOnUsableFloor(dimensions))
+    }
+
+    @Test("Furniture remains on the configured grid near shell edges") @MainActor
+    func furnitureGridAtShellEdge() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+
+        store.addFurniture(.chair, at: PlanPoint(x: 4.86, z: 2.03))
+        let chair = try #require(store.selectedFurniture)
+        let spacing = store.plan.dimensions.gridSpacing
+        #expect(chair.footprint.maxX <= store.plan.dimensions.roomWidth)
+        #expect(abs(chair.center.x / spacing - (chair.center.x / spacing).rounded()) < 0.001)
+        #expect(abs(chair.center.z / spacing - (chair.center.z / spacing).rounded()) < 0.001)
     }
 
     @Test("Store adds, rotates, moves, rejects stair overlap, and undoes furniture") @MainActor

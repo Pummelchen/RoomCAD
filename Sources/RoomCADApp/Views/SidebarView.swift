@@ -27,12 +27,13 @@ struct SidebarView: View {
                 )
             }
 
-            Section("Test layout") {
+            Section("Editable layout") {
+                metric("Snap grid", store.plan.dimensions.gridSpacing.formattedCentimeters)
                 metric("Dry walls", "\(store.plan.partitions.count)")
                 metric("Wall length", store.plan.totalPartitionLength.formattedMeters)
                 metric("Doors", "\(store.plan.doors.count)")
 
-                Button("Clear test layout", systemImage: "trash") {
+                Button("Clear walls and doors", systemImage: "trash") {
                     store.clearPartitions()
                 }
                 .disabled(store.plan.partitions.isEmpty)
@@ -54,7 +55,7 @@ struct SidebarView: View {
                             .padding(8)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                     }
-                    .help("Click to place, or drag into the 2D plan · \(kind.footprintLabel)")
+                    .help("Click to place, or drag into the 2D plan; then drag to move and use B to rotate · \(kind.footprintLabel)")
                 }
 
                 metric("Placed", "\(store.plan.furniture.count)")

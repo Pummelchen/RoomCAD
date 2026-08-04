@@ -28,7 +28,34 @@ struct SurveyInspectorView: View {
             Section("Construction") {
                 measurement("Exterior wall", value: $draft.exteriorWallThickness)
                 measurement("Dry-wall thickness", value: $draft.drywallThickness)
-                measurement("Drawing grid", value: $draft.gridSpacing)
+            }
+
+            Section("Editor grid") {
+                LabeledContent("Grid spacing") {
+                    HStack(spacing: 4) {
+                        TextField("", value: gridCentimeters, format: .number.precision(.fractionLength(0...1)))
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 64)
+                            .accessibilityLabel("Grid spacing in centimetres")
+                        Text("cm").foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    ForEach([Float(1), 2.5, 5, 10], id: \.self) { centimeters in
+                        Button(centimeters.formatted(.number.precision(.fractionLength(0...1))) + " cm") {
+                            draft.gridSpacing = centimeters / 100
+                            applyGridSpacing()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                Button("Apply grid spacing", systemImage: "grid") {
+                    applyGridSpacing()
+                }
+                .buttonStyle(.borderedProminent)
+                Text("Walls, doors, and furniture snap to this spacing. Values from 1 to 50 cm are supported; measured shell edges remain exact snap targets.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Floor tiles · photo estimate") {
@@ -66,6 +93,25 @@ struct SurveyInspectorView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let door = store.selectedDoor,
+               let sides = store.doorSideLengths(door) {
+                Section("Selected door") {
+                    LabeledContent("Width", value: door.width.formattedCentimeters)
+                    LabeledContent("From wall start", value: sides.leading.formattedCentimeters)
+                    LabeledContent("To wall end", value: sides.trailing.formattedCentimeters)
+                    LabeledContent("Hinge", value: door.hinge.rawValue.capitalized)
+                    Text("Drag the door along its wall in Inspect mode. Its centre snaps to the active editor grid.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Flip door hinge", systemImage: "arrow.left.arrow.right") {
+                        store.toggleSelectedDoorHinge()
+                    }
+                    Button("Delete door", systemImage: "trash", role: .destructive) {
+                        store.deleteSelectedDoor()
+                    }
+                }
+            }
+
             if let item = store.selectedFurniture {
                 Section("Selected furniture") {
                     LabeledContent("Object", value: item.kind.title)
@@ -86,11 +132,6 @@ struct SurveyInspectorView: View {
                     LabeledContent("Length", value: wall.length.formattedMeters)
                     LabeledContent("Start", value: pointText(wall.start))
                     LabeledContent("End", value: pointText(wall.end))
-                    if store.plan.doors.contains(where: { $0.wallID == wall.id }) {
-                        Button("Flip door hinge", systemImage: "arrow.left.arrow.right") {
-                            store.toggleSelectedDoorHinge()
-                        }
-                    }
                     Button("Delete wall", systemImage: "trash", role: .destructive) {
                         store.deleteSelectedWall()
                     }
@@ -122,6 +163,18 @@ struct SurveyInspectorView: View {
 
     private var floorTiles: FloorTileLayout {
         FloorTileLayout(dimensions: draft)
+    }
+
+    private var gridCentimeters: Binding<Float> {
+        Binding(
+            get: { draft.gridSpacing * 100 },
+            set: { draft.gridSpacing = $0 / 100 }
+        )
+    }
+
+    private func applyGridSpacing() {
+        store.updateGridSpacing(draft.gridSpacing)
+        draft = store.plan.dimensions
     }
 
     private func measurement(_ title: String, value: Binding<Float>) -> some View {

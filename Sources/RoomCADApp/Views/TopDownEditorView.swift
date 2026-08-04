@@ -2,8 +2,12 @@ import SwiftUI
 
 struct TopDownEditorView: View {
     let store: FloorPlanStore
+    @State private var wallAnchor: PlanPoint?
     @State private var dragStart: PlanPoint?
     @State private var dragCurrent: PlanPoint?
+    @State private var hoverPoint: PlanPoint?
+    @State private var doorDragID: UUID?
+    @State private var doorDragOffset: Float?
     @State private var furnitureDragID: UUID?
     @State private var furnitureDragCenter: PlanPoint?
 
@@ -13,9 +17,11 @@ struct TopDownEditorView: View {
             let snapshot = PlanDrawingSnapshot(
                 plan: previewPlan,
                 selectedWallID: store.selectedWallID,
+                selectedDoorID: store.selectedDoorID,
                 selectedFurnitureID: store.selectedFurnitureID,
-                dragStart: dragStart,
-                dragCurrent: dragCurrent
+                dragStart: wallAnchor ?? dragStart,
+                dragCurrent: dragCurrent ?? (wallAnchor == nil ? nil : hoverPoint),
+                snapPoint: hoverPoint
             )
 
             ZStack {
@@ -46,6 +52,14 @@ struct TopDownEditorView: View {
                         }
                 }
             }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    hoverPoint = transform.snappedPlanPoint(from: location)
+                case .ended:
+                    hoverPoint = nil
+                }
+            }
             .dropDestination(for: String.self) { values, location in
                 guard let rawKind = values.first,
                       let kind = FurnitureKind(rawValue: rawKind) else { return false }
@@ -53,33 +67,76 @@ struct TopDownEditorView: View {
                 return true
             }
             .overlay(alignment: .bottomLeading) {
-                Label(instruction, systemImage: store.tool.systemImage)
+                HStack(spacing: 8) {
+                    Label(instruction, systemImage: store.tool.systemImage)
+                    Text("Grid \(store.plan.dimensions.gridSpacing.formattedCentimeters)")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .font(.callout)
+                .padding(10)
+                .background(.regularMaterial, in: Capsule())
+                .padding(14)
+            }
+            .overlay(alignment: .topLeading) {
+                if wallAnchor != nil {
+                    HStack(spacing: 10) {
+                        Label("Wall chain active", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        Button("Finish") { cancelWallChain() }
+                            .buttonStyle(.bordered)
+                    }
                     .font(.callout)
                     .padding(10)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(14)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                selectionControls
                     .padding(14)
             }
+            .onChange(of: store.tool) { _, _ in resetTransientInteraction() }
+            .onChange(of: store.mode) { _, _ in resetTransientInteraction() }
+            .onChange(of: store.plan.dimensions.gridSpacing) { _, _ in resetTransientInteraction() }
         }
     }
 
     private var instruction: String {
         switch store.tool {
-        case .wall: "Drag to draw; endpoints snap to \(store.plan.dimensions.gridSpacing.formattedCentimeters)"
-        case .door: "Click a wall to place one 90 cm door"
+        case .wall: "Click points to chain walls, or drag one wall"
+        case .door: "Click a wall to place a 90 cm door, then Inspect to slide it"
         case .erase: "Click furniture, a door, or a wall to remove it"
-        case .select: "Click or drag furniture · B rotates selected furniture"
+        case .select: "Drag doors along walls or furniture across the grid"
         }
     }
 
     private func wallGesture(transform: PlanTransform) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if dragStart == nil { dragStart = transform.planPoint(from: value.startLocation) }
-                dragCurrent = transform.planPoint(from: value.location)
+                if dragStart == nil {
+                    dragStart = wallAnchor ?? transform.snappedPlanPoint(from: value.startLocation)
+                }
+                dragCurrent = transform.snappedPlanPoint(from: value.location)
             }
             .onEnded { value in
-                let end = transform.planPoint(from: value.location)
-                if let start = dragStart { store.addWall(from: start, to: end) }
+                let end = transform.snappedPlanPoint(from: value.location)
+                let travel = hypot(value.translation.width, value.translation.height)
+                if travel < 3 {
+                    if let wallAnchor {
+                        if store.addWall(from: wallAnchor, to: end) {
+                            self.wallAnchor = end
+                            store.statusMessage = "Wall added · click the next grid point or Finish"
+                        }
+                    } else {
+                        wallAnchor = end
+                        store.statusMessage = "Wall start set · click another grid point"
+                    }
+                } else if let start = dragStart {
+                    let continuesChain = wallAnchor != nil
+                    if store.addWall(from: start, to: end) {
+                        wallAnchor = continuesChain ? end : nil
+                    }
+                }
                 dragStart = nil
                 dragCurrent = nil
             }
@@ -88,34 +145,110 @@ struct TopDownEditorView: View {
     private func selectionGesture(transform: PlanTransform) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if furnitureDragID == nil {
+                if furnitureDragID == nil && doorDragID == nil {
                     store.select(near: transform.planPoint(from: value.startLocation))
                     furnitureDragID = store.selectedFurnitureID
+                    doorDragID = store.selectedDoorID
                 }
-                guard let furnitureDragID,
-                      let center = store.constrainedFurnitureCenter(
+                if let furnitureDragID,
+                   let center = store.constrainedFurnitureCenter(
                         id: furnitureDragID,
                         near: transform.planPoint(from: value.location)
-                      ) else { return }
-                furnitureDragCenter = center
+                   ) {
+                    furnitureDragCenter = center
+                } else if let doorDragID,
+                          let offset = store.constrainedDoorOffset(
+                            id: doorDragID,
+                            near: transform.planPoint(from: value.location)
+                          ) {
+                    doorDragOffset = offset
+                }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 if let furnitureDragID, let furnitureDragCenter {
                     store.moveFurniture(id: furnitureDragID, to: furnitureDragCenter)
                 }
+                if let doorDragID {
+                    store.moveDoor(
+                        id: doorDragID,
+                        to: transform.planPoint(from: value.location)
+                    )
+                }
                 furnitureDragID = nil
                 furnitureDragCenter = nil
+                doorDragID = nil
+                doorDragOffset = nil
             }
     }
 
     private var previewPlan: FloorPlan {
-        guard let furnitureDragID, let furnitureDragCenter,
-              let index = store.plan.furniture.firstIndex(where: { $0.id == furnitureDragID }) else {
-            return store.plan
-        }
         var plan = store.plan
-        plan.furniture[index].center = furnitureDragCenter
+        if let furnitureDragID, let furnitureDragCenter,
+           let index = plan.furniture.firstIndex(where: { $0.id == furnitureDragID }) {
+            plan.furniture[index].center = furnitureDragCenter
+        }
+        if let doorDragID, let doorDragOffset,
+           let index = plan.doors.firstIndex(where: { $0.id == doorDragID }) {
+            plan.doors[index].offset = doorDragOffset
+        }
         return plan
+    }
+
+    @ViewBuilder
+    private var selectionControls: some View {
+        if let item = store.selectedFurniture {
+            HStack(spacing: 8) {
+                Label(item.kind.title, systemImage: item.kind.systemImage)
+                Text(item.kind.footprintLabel)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button("Rotate", systemImage: "rotate.right") { store.rotateSelectedFurniture() }
+                    .buttonStyle(.bordered)
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    store.deleteSelectedFurniture()
+                }
+                .buttonStyle(.bordered)
+            }
+            .font(.callout)
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        } else if let door = store.selectedDoor,
+                  let sides = store.doorSideLengths(door) {
+            HStack(spacing: 8) {
+                Label("Door", systemImage: "door.left.hand.open")
+                Text("\(sides.leading.formattedCentimeters) | \(door.width.formattedCentimeters) | \(sides.trailing.formattedCentimeters)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button("Flip", systemImage: "arrow.left.arrow.right") {
+                    store.toggleSelectedDoorHinge()
+                }
+                .buttonStyle(.bordered)
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    store.deleteSelectedDoor()
+                }
+                .buttonStyle(.bordered)
+            }
+            .font(.callout)
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func cancelWallChain() {
+        wallAnchor = nil
+        dragStart = nil
+        dragCurrent = nil
+        store.statusMessage = "Wall chain finished"
+    }
+
+    private func resetTransientInteraction() {
+        wallAnchor = nil
+        dragStart = nil
+        dragCurrent = nil
+        furnitureDragID = nil
+        furnitureDragCenter = nil
+        doorDragID = nil
+        doorDragOffset = nil
     }
 
     private static func drawPlan(context: inout GraphicsContext, transform: PlanTransform, snapshot: PlanDrawingSnapshot) {
@@ -132,7 +265,13 @@ struct TopDownEditorView: View {
             drawWall(wall, context: &context, transform: transform, dimensions: snapshot.plan.dimensions, selectedWallID: snapshot.selectedWallID, preview: false)
         }
         for door in snapshot.plan.doors {
-            drawDoor(door, context: &context, transform: transform, plan: snapshot.plan)
+            drawDoor(
+                door,
+                context: &context,
+                transform: transform,
+                plan: snapshot.plan,
+                selected: door.id == snapshot.selectedDoorID
+            )
         }
         for item in snapshot.plan.furniture {
             drawFurniture(
@@ -147,25 +286,41 @@ struct TopDownEditorView: View {
             drawWall(PartitionWall(start: start, end: end), context: &context, transform: transform, dimensions: snapshot.plan.dimensions, selectedWallID: snapshot.selectedWallID, preview: true)
         }
 
+        if let snapPoint = snapshot.snapPoint {
+            drawSnapPoint(snapPoint, context: &context, transform: transform)
+        }
+
         drawDimensions(context: &context, transform: transform, dimensions: snapshot.plan.dimensions)
     }
 
     private static func drawGrid(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
-        let step: Float = 0.5
-        var path = Path()
-        var x: Float = 0
-        while x <= dimensions.roomWidth + 0.001 {
-            path.move(to: transform.point(PlanPoint(x: x, z: 0)))
-            path.addLine(to: transform.point(PlanPoint(x: x, z: dimensions.roomLength)))
-            x += step
+        let configuredStep = max(0.01, dimensions.gridSpacing)
+        let pixelStep = CGFloat(configuredStep) * transform.scale
+        let visibilityMultiplier = max(1, Int(ceil(2.5 / max(pixelStep, 0.1))))
+        let visibleStep = configuredStep * Float(visibilityMultiplier)
+        let majorEvery = max(1, Int((0.50 / visibleStep).rounded()))
+        let xCount = Int((dimensions.roomWidth / visibleStep).rounded(.down))
+        let zCount = Int((dimensions.roomLength / visibleStep).rounded(.down))
+        var minor = Path()
+        var major = Path()
+
+        for index in 0...xCount {
+            let x = Float(index) * visibleStep
+            var line = index % majorEvery == 0 ? major : minor
+            line.move(to: transform.point(PlanPoint(x: x, z: 0)))
+            line.addLine(to: transform.point(PlanPoint(x: x, z: dimensions.roomLength)))
+            if index % majorEvery == 0 { major = line } else { minor = line }
         }
-        var z: Float = 0
-        while z <= dimensions.roomLength + 0.001 {
-            path.move(to: transform.point(PlanPoint(x: 0, z: z)))
-            path.addLine(to: transform.point(PlanPoint(x: dimensions.roomWidth, z: z)))
-            z += step
+        for index in 0...zCount {
+            let z = Float(index) * visibleStep
+            var line = index % majorEvery == 0 ? major : minor
+            line.move(to: transform.point(PlanPoint(x: 0, z: z)))
+            line.addLine(to: transform.point(PlanPoint(x: dimensions.roomWidth, z: z)))
+            if index % majorEvery == 0 { major = line } else { minor = line }
         }
-        context.stroke(path, with: .color(.secondary.opacity(0.12)), lineWidth: 0.5)
+
+        context.stroke(minor, with: .color(.secondary.opacity(0.10)), lineWidth: 0.5)
+        context.stroke(major, with: .color(.secondary.opacity(0.22)), lineWidth: 0.75)
     }
 
     private static func drawWall(_ wall: PartitionWall, context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions, selectedWallID: UUID?, preview: Bool) {
@@ -177,24 +332,91 @@ struct TopDownEditorView: View {
         context.stroke(path, with: .color(color.opacity(preview ? 0.8 : 1)), style: StrokeStyle(lineWidth: max(4, transform.scale * CGFloat(dimensions.drywallThickness)), lineCap: .square, dash: preview ? [8, 5] : []))
     }
 
-    private static func drawDoor(_ door: DoorOpening, context: inout GraphicsContext, transform: PlanTransform, plan: FloorPlan) {
+    private static func drawDoor(
+        _ door: DoorOpening,
+        context: inout GraphicsContext,
+        transform: PlanTransform,
+        plan: FloorPlan,
+        selected: Bool
+    ) {
         guard let wall = plan.partitions.first(where: { $0.id == door.wallID }), wall.length > 0 else { return }
         let dx = (wall.end.x - wall.start.x) / wall.length
         let dz = (wall.end.z - wall.start.z) / wall.length
+        let openingStart = PlanPoint(
+            x: wall.start.x + dx * door.offset,
+            z: wall.start.z + dz * door.offset
+        )
+        let openingEnd = PlanPoint(
+            x: wall.start.x + dx * (door.offset + door.width),
+            z: wall.start.z + dz * (door.offset + door.width)
+        )
         let hingeOffset = door.hinge == .left ? door.offset : door.offset + door.width
         let hinge = PlanPoint(x: wall.start.x + dx * hingeOffset, z: wall.start.z + dz * hingeOffset)
         let sign: Float = door.hinge == .left ? 1 : -1
         let openEnd = PlanPoint(x: hinge.x - dz * door.width * sign, z: hinge.z + dx * door.width * sign)
 
+        var opening = Path()
+        opening.move(to: transform.point(openingStart))
+        opening.addLine(to: transform.point(openingEnd))
+        context.stroke(
+            opening,
+            with: .color(Color(nsColor: .textBackgroundColor)),
+            style: StrokeStyle(
+                lineWidth: max(6, transform.scale * CGFloat(plan.dimensions.drywallThickness) + 2),
+                lineCap: .square
+            )
+        )
+
         var leaf = Path()
         leaf.move(to: transform.point(hinge))
         leaf.addLine(to: transform.point(openEnd))
-        context.stroke(leaf, with: .color(.cyan), lineWidth: 2.5)
+        let doorColor: Color = selected ? .accentColor : .cyan
+        context.stroke(leaf, with: .color(doorColor), lineWidth: selected ? 3.5 : 2.5)
 
         let centerOffset = door.offset + door.width / 2
         let center = PlanPoint(x: wall.start.x + dx * centerOffset, z: wall.start.z + dz * centerOffset)
         let gapRect = CGRect(x: transform.point(center).x - 5, y: transform.point(center).y - 5, width: 10, height: 10)
-        context.fill(Path(ellipseIn: gapRect), with: .color(.cyan))
+        context.fill(Path(ellipseIn: gapRect), with: .color(doorColor))
+
+        guard selected else { return }
+        let normal = PlanPoint(x: -dz * 0.20, z: dx * 0.20)
+        func labelPoint(at offset: Float) -> CGPoint {
+            transform.point(PlanPoint(
+                x: wall.start.x + dx * offset + normal.x,
+                z: wall.start.z + dz * offset + normal.z
+            ))
+        }
+        let trailing = max(0, wall.length - door.offset - door.width)
+        context.draw(
+            Text(door.offset.formattedCentimeters).font(.caption2.monospacedDigit()).foregroundStyle(Color.accentColor),
+            at: labelPoint(at: door.offset / 2)
+        )
+        context.draw(
+            Text(door.width.formattedCentimeters).font(.caption2.bold().monospacedDigit()).foregroundStyle(Color.accentColor),
+            at: labelPoint(at: door.offset + door.width / 2)
+        )
+        context.draw(
+            Text(trailing.formattedCentimeters).font(.caption2.monospacedDigit()).foregroundStyle(Color.accentColor),
+            at: labelPoint(at: door.offset + door.width + trailing / 2)
+        )
+    }
+
+    private static func drawSnapPoint(
+        _ point: PlanPoint,
+        context: inout GraphicsContext,
+        transform: PlanTransform
+    ) {
+        let screenPoint = transform.point(point)
+        let marker = CGRect(x: screenPoint.x - 4, y: screenPoint.y - 4, width: 8, height: 8)
+        context.fill(Path(ellipseIn: marker), with: .color(.accentColor.opacity(0.30)))
+        context.stroke(Path(ellipseIn: marker), with: .color(.accentColor), lineWidth: 1.5)
+        context.draw(
+            Text("\(point.x.formattedCentimeters), \(point.z.formattedCentimeters)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary),
+            at: CGPoint(x: screenPoint.x + 8, y: screenPoint.y - 10),
+            anchor: .leading
+        )
     }
 
     private static func drawFurniture(
@@ -362,9 +584,11 @@ struct TopDownEditorView: View {
 private struct PlanDrawingSnapshot: Sendable {
     var plan: FloorPlan
     var selectedWallID: UUID?
+    var selectedDoorID: UUID?
     var selectedFurnitureID: UUID?
     var dragStart: PlanPoint?
     var dragCurrent: PlanPoint?
+    var snapPoint: PlanPoint?
 }
 
 private struct PlanTransform: Sendable {
@@ -407,5 +631,9 @@ private struct PlanTransform: Sendable {
             x: Float((point.x - roomRect.minX) / scale).clamped(to: 0...dimensions.roomWidth),
             z: Float((roomRect.maxY - point.y) / scale).clamped(to: 0...dimensions.roomLength)
         )
+    }
+
+    func snappedPlanPoint(from point: CGPoint) -> PlanPoint {
+        dimensions.snapped(planPoint(from: point))
     }
 }

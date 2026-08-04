@@ -9,14 +9,6 @@ struct PlanPoint: Codable, Equatable, Hashable, Sendable {
     func distance(to other: PlanPoint) -> Float {
         hypot(other.x - x, other.z - z)
     }
-
-    func snapped(to grid: Float) -> PlanPoint {
-        guard grid > 0 else { return self }
-        return PlanPoint(
-            x: (x / grid).rounded() * grid,
-            z: (z / grid).rounded() * grid
-        )
-    }
 }
 
 struct SurveyDimensions: Codable, Equatable, Sendable {
@@ -30,6 +22,24 @@ struct SurveyDimensions: Codable, Equatable, Sendable {
     var gridSpacing: Float = 0.05
 
     var floorArea: Float { roomWidth * roomLength }
+
+    /// Returns the closest editable grid point while preserving the exact
+    /// measured shell edges as valid snap targets. This matters when a room
+    /// dimension is not an exact multiple of the configured grid spacing.
+    func snapped(_ point: PlanPoint) -> PlanPoint {
+        func snappedCoordinate(_ value: Float, maximum: Float) -> Float {
+            let bounded = value.clamped(to: 0...maximum)
+            let spacing = max(gridSpacing, 0.001)
+            let gridValue = ((bounded / spacing).rounded() * spacing).clamped(to: 0...maximum)
+            return [Float(0), gridValue, maximum]
+                .min(by: { abs($0 - bounded) < abs($1 - bounded) }) ?? gridValue
+        }
+
+        return PlanPoint(
+            x: snappedCoordinate(point.x, maximum: roomWidth),
+            z: snappedCoordinate(point.z, maximum: roomLength)
+        )
+    }
 
     mutating func sanitize() {
         roomWidth = roomWidth.clamped(to: 3...12)
