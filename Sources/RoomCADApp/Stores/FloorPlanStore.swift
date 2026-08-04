@@ -75,7 +75,7 @@ final class FloorPlanStore {
         } else {
             plan = loadPersisted ? .example : .initial
             if loadPersisted {
-                statusMessage = "Loaded stair-aligned 7-room demo"
+                statusMessage = "Loaded bathroom-connected 7-room demo"
             }
         }
         snapshots = loadSnapshots()
@@ -705,7 +705,7 @@ final class FloorPlanStore {
         selectedDoorID = nil
         selectedFurnitureID = nil
         documentIsEdited = true
-        statusMessage = "Loaded stair-aligned 7-room demo"
+        statusMessage = "Loaded bathroom-connected 7-room demo"
         persist()
     }
 
@@ -960,7 +960,7 @@ final class FloorPlanStore {
 
     private var suggestedDocumentName: String {
         guard currentDocumentURL == nil,
-              plan.partitions.count == 14,
+              plan.partitions.count == 16,
               plan.doors.count == 7,
               plan.furniture.count == 21,
               plan.roomLabels.count == 7 else {

@@ -254,7 +254,7 @@ struct SidebarView: View {
             Text("You can undo this immediately with ⌘Z.")
         }
         .confirmationDialog(
-            "Replace the current layout with the stair-aligned 7-room demo?",
+            "Replace the current layout with the bathroom-connected 7-room demo?",
             isPresented: $showRestoreExample,
             titleVisibility: .visible
         ) {

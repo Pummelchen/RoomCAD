@@ -464,7 +464,6 @@ private struct RoomMeshBuilder: Sendable {
 
         let opening = layout.lowerOpening
         addGuardRail(from: SIMD3<Float>(opening.minX, 0, opening.minZ), to: SIMD3<Float>(opening.minX, 0, opening.maxZ), color: metal)
-        addGuardRail(from: SIMD3<Float>(opening.minX, 0, opening.minZ), to: SIMD3<Float>(opening.maxX, 0, opening.minZ), color: metal)
     }
 
     private mutating func addLowerStairs(layout: StairBathroomLayout, color: SIMD4<Float>) {

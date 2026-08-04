@@ -20,7 +20,7 @@ struct QuickStartGuideView: View {
             }
 
             VStack(alignment: .leading, spacing: 16) {
-                guideRow("1", "Explore the demo", "Seven furnished rooms and a stair-aligned walkway are ready.")
+                guideRow("1", "Explore the demo", "Seven furnished rooms share a clear route to the bathroom.")
                 guideRow("2", "Draw walls", "Choose Draw Wall, then click grid dots. Hold Shift for clean 45° angles.")
                 guideRow("3", "Add doors", "Choose Add Door and click a wall. Inspect lets you slide it.")
                 guideRow("4", "Place furniture", "Pick an item on the left, move the green ghost, and click.")

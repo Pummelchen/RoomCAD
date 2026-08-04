@@ -1208,8 +1208,6 @@ struct TopDownEditorView: View {
         var openingRail = Path()
         openingRail.move(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.minZ)))
         openingRail.addLine(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.maxZ)))
-        openingRail.move(to: transform.point(PlanPoint(x: layout.lowerOpening.minX, z: layout.lowerOpening.minZ)))
-        openingRail.addLine(to: transform.point(PlanPoint(x: layout.lowerOpening.maxX, z: layout.lowerOpening.minZ)))
         context.stroke(openingRail, with: .color(.primary), lineWidth: 4)
 
         let bathroomDoorWidth = min(0.72, layout.bathroom.length - 0.20)

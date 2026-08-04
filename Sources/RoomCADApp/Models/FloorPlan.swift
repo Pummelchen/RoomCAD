@@ -98,6 +98,7 @@ struct PlanRectangle: Equatable, Sendable {
 
     var width: Float { maxX - minX }
     var length: Float { maxZ - minZ }
+    var area: Float { width * length }
     var centerX: Float { (minX + maxX) / 2 }
     var centerZ: Float { (minZ + maxZ) / 2 }
 }
@@ -230,16 +231,23 @@ struct SpaceOptimizedDemoLayout: Sendable {
         var entranceWallID: UUID
         var entranceDoorID: UUID
         var furnitureIDs: Set<UUID>
+        var circulationCutouts: [PlanRectangle] = []
 
-        var area: Float { bounds.width * bounds.length }
+        var area: Float {
+            bounds.area - circulationCutouts.reduce(0) { $0 + $1.area }
+        }
     }
 
     static let corridorWidth: Float = 1.15
     static let frontRoomCount = 6
-    static let rearRoomDepth: Float = 2.75
+    static let standardFrontRoomDepth: Float = 1.70
+    static let turnPathWidth: Float = 0.90
+    static let stairSidePathWidth: Float = 1.05
+    static let rearRoomWidth: Float = 1.35
     static let furnitureWallClearance: Float = 0.05
 
     var walkway: PlanRectangle
+    var circulationPath: [PlanRectangle]
     var rooms: [Room] = []
     var partitions: [PartitionWall] = []
     var doors: [DoorOpening] = []
@@ -249,45 +257,111 @@ struct SpaceOptimizedDemoLayout: Sendable {
     init(dimensions d: SurveyDimensions) {
         let core = StairBathroomLayout(dimensions: d)
         let corridorMinX = core.lowerOpening.minX
-        let frontRoomDepth = core.core.minZ / Float(Self.frontRoomCount)
+        let lastFrontRoomStart = Self.standardFrontRoomDepth * Float(Self.frontRoomCount - 1)
+        let turnConnector = PlanRectangle(
+            minX: core.upperFlight.minX,
+            maxX: core.lowerOpening.maxX,
+            minZ: core.core.minZ - Self.turnPathWidth,
+            maxZ: core.core.minZ
+        )
         walkway = PlanRectangle(
             minX: corridorMinX,
             maxX: core.lowerOpening.maxX,
             minZ: 0,
             maxZ: core.lowerOpening.minZ
         )
+        circulationPath = [
+            walkway,
+            turnConnector,
+            PlanRectangle(
+                minX: Self.rearRoomWidth,
+                maxX: core.lowerOpening.minX,
+                minZ: core.core.minZ,
+                maxZ: core.upperFlight.minZ
+            ),
+            PlanRectangle(
+                minX: Self.rearRoomWidth,
+                maxX: core.upperFlight.minX,
+                minZ: core.upperFlight.minZ,
+                maxZ: core.upperFlight.maxZ
+            ),
+            PlanRectangle(
+                minX: Self.rearRoomWidth,
+                maxX: core.bathroom.minX,
+                minZ: core.upperFlight.maxZ,
+                maxZ: d.roomLength
+            )
+        ]
 
         for index in 0..<Self.frontRoomCount {
-            let startZ = Float(index) * frontRoomDepth
-            let endZ = Float(index + 1) * frontRoomDepth
+            let isLastFrontRoom = index == Self.frontRoomCount - 1
+            let startZ = isLastFrontRoom
+                ? lastFrontRoomStart
+                : Float(index) * Self.standardFrontRoomDepth
+            let endZ = isLastFrontRoom
+                ? core.core.minZ
+                : Float(index + 1) * Self.standardFrontRoomDepth
             let bounds = PlanRectangle(
                 minX: 0,
                 maxX: corridorMinX,
                 minZ: startZ,
                 maxZ: endZ
             )
+            let entranceEndZ = isLastFrontRoom ? turnConnector.minZ : endZ
             let entranceWall = PartitionWall(
                 start: PlanPoint(x: corridorMinX, z: startZ),
-                end: PlanPoint(x: corridorMinX, z: endZ)
+                end: PlanPoint(x: corridorMinX, z: entranceEndZ)
             )
             let entranceDoor = DoorOpening(
                 wallID: entranceWall.id,
-                offset: frontRoomDepth - 1.00,
+                offset: max(0, (entranceWall.length - 0.90) / 2),
                 width: 0.90,
                 hinge: .left
             )
-            let roomEndWall = PartitionWall(
-                start: PlanPoint(x: 0, z: endZ),
-                end: PlanPoint(x: corridorMinX, z: endZ)
-            )
+            let circulationCutouts: [PlanRectangle]
+            let roomWalls: [PartitionWall]
+            if isLastFrontRoom {
+                let cutout = PlanRectangle(
+                    minX: core.upperFlight.minX,
+                    maxX: corridorMinX,
+                    minZ: turnConnector.minZ,
+                    maxZ: endZ
+                )
+                circulationCutouts = [cutout]
+                roomWalls = [
+                    entranceWall,
+                    PartitionWall(
+                        start: PlanPoint(x: core.upperFlight.minX, z: turnConnector.minZ),
+                        end: PlanPoint(x: corridorMinX, z: turnConnector.minZ)
+                    ),
+                    PartitionWall(
+                        start: PlanPoint(x: core.upperFlight.minX, z: turnConnector.minZ),
+                        end: PlanPoint(x: core.upperFlight.minX, z: endZ)
+                    ),
+                    PartitionWall(
+                        start: PlanPoint(x: 0, z: endZ),
+                        end: PlanPoint(x: core.upperFlight.minX, z: endZ)
+                    )
+                ]
+            } else {
+                circulationCutouts = []
+                roomWalls = [
+                    entranceWall,
+                    PartitionWall(
+                        start: PlanPoint(x: 0, z: endZ),
+                        end: PlanPoint(x: corridorMinX, z: endZ)
+                    )
+                ]
+            }
             let set = Self.frontFurnitureSet(in: bounds)
             let name = "Room \(index + 1)"
+            let roomArea = bounds.area - circulationCutouts.reduce(0) { $0 + $1.area }
 
-            partitions.append(contentsOf: [entranceWall, roomEndWall])
+            partitions.append(contentsOf: roomWalls)
             doors.append(entranceDoor)
             furniture.append(contentsOf: set)
             labels.append(RoomLabel(
-                name: Self.labelText(name: name, area: bounds.width * bounds.length),
+                name: Self.labelText(name: name, area: roomArea),
                 position: PlanPoint(x: 1.90, z: startZ + 1.40)
             ))
             rooms.append(Room(
@@ -295,31 +369,32 @@ struct SpaceOptimizedDemoLayout: Sendable {
                 bounds: bounds,
                 entranceWallID: entranceWall.id,
                 entranceDoorID: entranceDoor.id,
-                furnitureIDs: Set(set.map(\.id))
+                furnitureIDs: Set(set.map(\.id)),
+                circulationCutouts: circulationCutouts
             ))
         }
 
         let rearStartZ = core.core.minZ
-        let rearEndZ = min(d.roomLength, rearStartZ + Self.rearRoomDepth)
+        let rearEndZ = core.upperFlight.maxZ
         let rearBounds = PlanRectangle(
             minX: 0,
-            maxX: core.core.minX,
+            maxX: Self.rearRoomWidth,
             minZ: rearStartZ,
             maxZ: rearEndZ
         )
         let rearEntranceWall = PartitionWall(
-            start: PlanPoint(x: core.core.minX, z: rearStartZ),
-            end: PlanPoint(x: core.core.minX, z: rearEndZ)
+            start: PlanPoint(x: Self.rearRoomWidth, z: rearStartZ),
+            end: PlanPoint(x: Self.rearRoomWidth, z: rearEndZ)
         )
         let rearDoor = DoorOpening(
             wallID: rearEntranceWall.id,
-            offset: 1.00,
+            offset: core.upperFlight.minZ - rearStartZ - 0.30,
             width: 0.90,
             hinge: .left
         )
         let rearEndWall = PartitionWall(
             start: PlanPoint(x: 0, z: rearEndZ),
-            end: PlanPoint(x: core.core.minX, z: rearEndZ)
+            end: PlanPoint(x: Self.rearRoomWidth, z: rearEndZ)
         )
         let rearSet = Self.rearFurnitureSet(in: rearBounds)
         let rearName = "Room 7"
@@ -329,7 +404,7 @@ struct SpaceOptimizedDemoLayout: Sendable {
         furniture.append(contentsOf: rearSet)
         labels.append(RoomLabel(
             name: Self.labelText(name: rearName, area: rearBounds.width * rearBounds.length),
-            position: PlanPoint(x: 1.40, z: rearStartZ + 2.45)
+            position: PlanPoint(x: Self.rearRoomWidth / 2, z: rearStartZ + 3.15)
         ))
         rooms.append(Room(
             name: rearName,
@@ -376,7 +451,7 @@ struct SpaceOptimizedDemoLayout: Sendable {
     private static func rearFurnitureSet(in bounds: PlanRectangle) -> [FurnitureItem] {
         let clearance = Self.furnitureWallClearance
         let bed = FurnitureItem(kind: .singleBed, center: .zero)
-        let wardrobe = FurnitureItem(kind: .twoDoorWardrobe, center: .zero)
+        let wardrobe = FurnitureItem(kind: .twoDoorWardrobe, center: .zero, direction: .east)
         let chair = FurnitureItem(kind: .chair, center: .zero)
         let bedCenter = PlanPoint(
             x: bounds.minX + clearance + bed.orientedWidth / 2,
@@ -392,13 +467,14 @@ struct SpaceOptimizedDemoLayout: Sendable {
                 center: PlanPoint(
                     x: bounds.minX + clearance + wardrobe.orientedWidth / 2,
                     z: bounds.maxZ - clearance - wardrobe.orientedDepth / 2
-                )
+                ),
+                direction: .east
             ),
             FurnitureItem(
                 kind: .chair,
                 center: PlanPoint(
-                    x: bedCenter.x + bed.orientedWidth / 2 + 0.15 + chair.orientedWidth / 2,
-                    z: bounds.minZ + clearance + chair.orientedDepth / 2
+                    x: bounds.minX + clearance + chair.orientedWidth / 2,
+                    z: bounds.minZ + 2.90
                 )
             )
         ]
