@@ -516,6 +516,125 @@ struct FloorPlanTests {
         #expect(restored.furniture == plan.furniture)
     }
 
+    @Test("RoomCAD files use a readable versioned envelope and round-trip every object")
+    func roomCADFileRoundTrip() throws {
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let savedAt = Date(timeIntervalSince1970: 1_700_000_100)
+        let plan = FloorPlan.example
+        let data = try RoomCADFile(
+            plan: plan,
+            createdAt: createdAt,
+            savedAt: savedAt
+        ).encoded()
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(json["formatIdentifier"] as? String == RoomCADFile.formatIdentifier)
+        #expect(json["formatVersion"] as? Int == RoomCADFile.currentFormatVersion)
+        #expect(json["units"] as? String == "metres")
+        #expect(json["plan"] != nil)
+
+        let decoded = try RoomCADFile.decode(data)
+        #expect(decoded.plan == plan)
+        #expect(decoded.createdAt == createdAt)
+        #expect(decoded.savedAt == savedAt)
+        #expect(!decoded.isLegacyJSON)
+        #expect(!decoded.repairedInvalidObjects)
+    }
+
+    @Test("Future RoomCAD file versions fail with an actionable error")
+    func futureRoomCADFileVersion() throws {
+        let data = try RoomCADFile(plan: .example).encoded()
+        var json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["formatVersion"] = RoomCADFile.currentFormatVersion + 1
+        let futureData = try JSONSerialization.data(withJSONObject: json)
+
+        do {
+            _ = try RoomCADFile.decode(futureData)
+            Issue.record("A future file version should not decode silently")
+        } catch let error as RoomCADDocumentError {
+            #expect(error == .unsupportedVersion(RoomCADFile.currentFormatVersion + 1))
+        }
+    }
+
+    @Test("Legacy raw JSON plans remain importable")
+    func legacyJSONDocumentImport() throws {
+        let plan = FloorPlan.example
+        let data = try JSONEncoder().encode(plan)
+        let decoded = try RoomCADFile.decode(data)
+
+        #expect(decoded.plan == plan)
+        #expect(decoded.isLegacyJSON)
+        #expect(decoded.savedAt == nil)
+    }
+
+    @Test("Duplicate object identifiers are rejected instead of loading ambiguously")
+    func duplicateDocumentIdentifiers() throws {
+        var plan = FloorPlan.example
+        var duplicate = try #require(plan.furniture.first)
+        duplicate.center = PlanPoint(x: 3, z: 3)
+        plan.furniture.append(duplicate)
+
+        do {
+            _ = try RoomCADFile.decode(try RoomCADFile(plan: plan).encoded())
+            Issue.record("Duplicate identifiers should be rejected")
+        } catch let error as RoomCADDocumentError {
+            #expect(error == .duplicateObjectIdentifiers)
+        }
+    }
+
+    @Test("Store saves and opens complete RoomCAD design files") @MainActor
+    func storeDocumentSaveAndLoad() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let designURL = temporaryDirectory.appending(path: "Eight Rooms.roomcad")
+        let recoveryURL = temporaryDirectory.appending(path: "recovery/layout.json")
+        let store = FloorPlanStore(persistenceURL: recoveryURL, loadPersisted: false)
+        store.resetToSurvey()
+        let savedPlan = store.plan
+
+        try store.saveDocument(to: designURL)
+        #expect(store.currentDocumentURL == designURL.standardizedFileURL)
+        #expect(store.documentDisplayName == "Eight Rooms")
+        #expect(!store.documentIsEdited)
+        #expect(store.statusMessage == "Saved Eight Rooms.roomcad")
+
+        store.clearPartitions()
+        #expect(store.documentIsEdited)
+        try store.loadDocument(from: designURL)
+        #expect(store.plan == savedPlan)
+        #expect(store.currentDocumentURL == designURL.standardizedFileURL)
+        #expect(!store.documentIsEdited)
+        #expect(!store.canUndo)
+        #expect(store.statusMessage == "Opened Eight Rooms.roomcad")
+    }
+
+    @Test("Opening a legacy JSON design requires saving it in the RoomCAD format") @MainActor
+    func storeLegacyDocumentImport() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let legacyURL = temporaryDirectory.appending(path: "old-layout.json")
+        let plan = FloorPlan.example
+        try JSONEncoder().encode(plan).write(to: legacyURL)
+        let store = FloorPlanStore(
+            persistenceURL: temporaryDirectory.appending(path: "recovery.json"),
+            loadPersisted: false
+        )
+
+        try store.loadDocument(from: legacyURL)
+        #expect(store.plan == plan)
+        #expect(store.currentDocumentURL == nil)
+        #expect(store.documentIsEdited)
+        #expect(store.statusMessage == "Imported legacy JSON · save it as a RoomCAD design")
+    }
+
     @Test("RoomCAD migrates a legacy LaundryRooms saved layout") @MainActor
     func legacyPersistenceMigration() throws {
         let temporary = FileManager.default.temporaryDirectory

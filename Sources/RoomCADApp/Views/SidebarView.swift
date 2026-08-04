@@ -180,19 +180,42 @@ struct SidebarView: View {
             }
 
             Section("File") {
-                Button("Export JSON…", systemImage: "square.and.arrow.up") {
+                Label(store.documentDisplayName, systemImage: "doc")
+                    .lineLimit(1)
+                    .help(store.currentDocumentURL?.path ?? "Not saved as a RoomCAD design yet")
+                if store.documentIsEdited {
+                    Label("Unsaved design changes", systemImage: "pencil.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Button("Open Design…", systemImage: "folder") {
+                    store.openDocument()
+                }
+                Button("Save Design", systemImage: "square.and.arrow.down") {
+                    store.saveDocument()
+                }
+                Button("Save Design As…", systemImage: "doc.badge.plus") {
+                    store.saveDocumentAs()
+                }
+                Button("Export JSON Copy…", systemImage: "square.and.arrow.up") {
                     store.exportPlan()
+                }
+                .help("Export a legacy-compatible JSON copy; use Save Design for normal RoomCAD files")
+                if let lastDocumentSavedAt = store.lastDocumentSavedAt {
+                    Text("Design saved \(lastDocumentSavedAt, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let lastSavedAt = store.lastSavedAt {
                     Label {
-                        Text("Autosaved \(lastSavedAt, style: .relative)")
+                        Text("Recovery autosaved \(lastSavedAt, style: .relative)")
                     } icon: {
                         Image(systemName: "checkmark.icloud")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 } else {
-                    Label("Autosave is on", systemImage: "checkmark.icloud")
+                    Label("Recovery autosave is on", systemImage: "checkmark.icloud")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

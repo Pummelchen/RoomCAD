@@ -21,6 +21,16 @@ struct RoomCADApp: App {
         .defaultSize(width: 1_440, height: 900)
         .windowResizability(.automatic)
         .commands {
+            CommandGroup(after: .newItem) {
+                Button("Open Design…") { store.openDocument() }
+                    .keyboardShortcut("o", modifiers: .command)
+            }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save Design") { store.saveDocument() }
+                    .keyboardShortcut("s", modifiers: .command)
+                Button("Save Design As…") { store.saveDocumentAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { store.undo() }
                     .keyboardShortcut("z")
@@ -84,7 +94,7 @@ struct RoomCADApp: App {
                 }
                 .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
                 Divider()
-                Button("Export Layout…") { store.exportPlan() }
+                Button("Export JSON Copy…") { store.exportPlan() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }
             CommandMenu("Furniture") {

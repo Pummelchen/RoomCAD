@@ -46,6 +46,48 @@ cat >"$INFO_PLIST" <<PLIST
   <string>RoomCAD</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>RoomCAD Design</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>roomcad</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.maria.roomcad.design</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.maria.roomcad.design</string>
+      <key>UTTypeDescription</key>
+      <string>RoomCAD Design</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.json</string>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>roomcad</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>application/vnd.roomcad+json</string>
+      </dict>
+    </dict>
+  </array>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSArchitecturePriority</key>

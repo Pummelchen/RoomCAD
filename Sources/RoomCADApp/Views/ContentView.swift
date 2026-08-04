@@ -96,6 +96,7 @@ struct ContentView: View {
                 }
             }
         }
+        .navigationTitle(store.documentDisplayName + (store.documentIsEdited ? " — Edited" : ""))
         .task {
             if !hasSeenQuickStart {
                 showQuickStart = true
@@ -108,6 +109,20 @@ struct ContentView: View {
                 store.tool = .wall
                 store.statusMessage = "Click a grid point to start your first wall"
             }
+        }
+        .onOpenURL { url in
+            store.openDocument(at: url)
+        }
+        .alert(
+            "RoomCAD Couldn't Finish",
+            isPresented: Binding(
+                get: { store.documentErrorMessage != nil },
+                set: { if !$0 { store.documentErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { store.documentErrorMessage = nil }
+        } message: {
+            Text(store.documentErrorMessage ?? "Unknown file error")
         }
     }
 }

@@ -64,9 +64,14 @@ The renderer targets 60 fps at Retina resolution with physically-inspired lighti
 - **Snapshots and recovery**: name and save stable layout versions from the sidebar, then restore one with a click. Clear and example-replacement actions require confirmation and remain undoable.
 - **8-room demo**: loads a space-optimized concept with seven approximately 6.0 m² rooms in the front rectangle and one approximately 6.1 m² room beside the stair core. Every room opens directly onto the common corridor and includes a single bed, wardrobe, and chair. This dense example demonstrates the editor; verify hallway width, accessibility, ventilation, fire egress, and all local building or rental rules before treating it as a construction plan. A fresh install still starts with the measured shell empty.
 - **Undo/redo**: use the arrow icons in the 2D toolbar or press `⌘Z` / `⇧⌘Z`. Every top-right toolbar icon explains its action when hovered.
-- Layouts autosave in Application Support with visible saved status and can be exported as readable JSON.
+- **Save and open designs**: use **File → Save Design** (`⌘S`), **Save Design As** (`⇧⌘S`), or **Open Design** (`⌘O`). Normal files use the `.roomcad` extension and reopen with walls, doors, furniture, room labels, dimensions, and grid settings intact. The window title and sidebar show the active filename and whether it has unsaved changes. RoomCAD asks before replacing edited work.
+- **Recovery and compatibility**: RoomCAD continuously keeps a private recovery copy in Application Support. Older raw JSON exports can still be opened, then saved safely as `.roomcad`; **Export JSON Copy** remains available for interoperability.
 
-Furniture uses compact Indonesian-market planning dimensions: a 90 × 200 cm single bed ([IKEA Indonesia example](https://www.ikea.co.id/en/catalog/products/30278708)), 70 × 70 cm square table ([local product example](https://www.ikea.co.id/in/produk/luar-ruang/kursi-makan-luar-ruang/visingso-visingso-spr-59621540)), 45 × 47 cm chair ([VIHALS](https://www.ikea.co.id/en/products/dining-chairs/non-upholstered-chairs/vihals-art-80592734)), and 100 × 60 cm two-door wardrobe (within [IKEA Indonesia's common two-door range](https://www.ikea.co.id/en/inspirations/how-to-measure-a-wardrobe-that-fits-your-bedroom)). These are editable-layout defaults rather than a legal furniture standard. Furniture position and orientation are included in autosave, JSON export, undo, and redo.
+Furniture uses compact Indonesian-market planning dimensions: a 90 × 200 cm single bed ([IKEA Indonesia example](https://www.ikea.co.id/en/catalog/products/30278708)), 70 × 70 cm square table ([local product example](https://www.ikea.co.id/in/produk/luar-ruang/kursi-makan-luar-ruang/visingso-visingso-spr-59621540)), 45 × 47 cm chair ([VIHALS](https://www.ikea.co.id/en/products/dining-chairs/non-upholstered-chairs/vihals-art-80592734)), and 100 × 60 cm two-door wardrobe (within [IKEA Indonesia's common two-door range](https://www.ikea.co.id/en/inspirations/how-to-measure-a-wardrobe-that-fits-your-bedroom)). These are editable-layout defaults rather than a legal furniture standard. Furniture position and orientation are included in RoomCAD files, recovery autosave, JSON export, undo, and redo.
+
+## RoomCAD file format
+
+`.roomcad` is UTF-8 JSON with media type `application/vnd.roomcad+json` and exported type identifier `com.maria.roomcad.design`. Version 1 stores a format identifier, schema version, metre unit declaration, creation/save timestamps, and the complete `FloorPlan` payload. The loader rejects unknown future versions, unsupported units, duplicate object identifiers, corrupt content, and files above the 50 MB safety limit. The packaged app registers RoomCAD as the editor for `.roomcad` files, so designs can also be opened from Finder.
 
 ## Build and run
 
@@ -102,7 +107,7 @@ On the target MacBook Air M3 (8-core CPU, 16 GB), the corrected stacked-core sce
 ## Project structure
 
 - `Models/`: survey, wall, door, and floor-aligned furniture geometry in real-world units
-- `Stores/`: layout editing, validation, undo/redo, autosave, and export
+- `Stores/`: layout editing, validation, undo/redo, recovery autosave, and document workflows
 - `Views/`: desktop split layout, survey inspector, walkthrough HUD, and 2D editor
 - `Metal/`: `MTKView` bridge, camera controls, procedural mesh builder, and Metal shaders
 - `Tests/`: survey, geometry, editing invariant, and undo coverage

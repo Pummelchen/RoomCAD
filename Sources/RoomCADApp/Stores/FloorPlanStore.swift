@@ -19,11 +19,20 @@ final class FloorPlanStore {
     var pendingFurnitureKind: FurnitureKind?
     var snapshots: [LayoutSnapshot] = []
     var lastSavedAt: Date?
+    var currentDocumentURL: URL?
+    var lastDocumentSavedAt: Date?
+    var documentIsEdited = false
+    var documentErrorMessage: String?
     var statusMessage = "Ready"
 
     private var undoStack: [FloorPlan] = []
     private var redoStack: [FloorPlan] = []
     private let persistenceURL: URL
+    private var documentCreatedAt = Date()
+
+    var documentDisplayName: String {
+        currentDocumentURL?.deletingPathExtension().lastPathComponent ?? "Untitled Design"
+    }
 
     var selectedFurnitureID: UUID? {
         get { selectedFurnitureIDs.count == 1 ? selectedFurnitureIDs.first : nil }
@@ -54,6 +63,7 @@ final class FloorPlanStore {
                 statusMessage = "Migrated saved layout to RoomCAD"
                 persist()
             }
+            documentIsEdited = true
         } else {
             plan = .initial
         }
@@ -683,6 +693,7 @@ final class FloorPlanStore {
         selectedWallID = nil
         selectedDoorID = nil
         selectedFurnitureID = nil
+        documentIsEdited = true
         statusMessage = "Loaded optimized 8-room demo"
         persist()
     }
@@ -694,6 +705,7 @@ final class FloorPlanStore {
         selectedWallID = nil
         selectedDoorID = nil
         selectedFurnitureID = nil
+        documentIsEdited = true
         statusMessage = "Undid change"
         persist()
     }
@@ -705,8 +717,118 @@ final class FloorPlanStore {
         selectedWallID = nil
         selectedDoorID = nil
         selectedFurnitureID = nil
+        documentIsEdited = true
         statusMessage = "Redid change"
         persist()
+    }
+
+    func openDocument() {
+        guard confirmDiscardingDocumentChanges() else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Open RoomCAD Design"
+        panel.message = "Choose a .roomcad design or an older RoomCAD JSON export."
+        panel.prompt = "Open"
+        panel.allowedContentTypes = [.roomCADDesign, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openDocument(at: url, confirmUnsavedChanges: false)
+    }
+
+    func openDocument(at url: URL, confirmUnsavedChanges: Bool = true) {
+        guard !confirmUnsavedChanges || confirmDiscardingDocumentChanges() else { return }
+        do {
+            try loadDocument(from: url)
+        } catch {
+            documentErrorMessage = error.localizedDescription
+            statusMessage = "Could not open \(url.lastPathComponent)"
+        }
+    }
+
+    func loadDocument(from url: URL) throws {
+        if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > RoomCADFile.maximumFileSize {
+            throw RoomCADDocumentError.fileTooLarge
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+        let decoded = try RoomCADFile.decode(Data(contentsOf: url, options: .mappedIfSafe))
+
+        plan = decoded.plan
+        undoStack.removeAll()
+        redoStack.removeAll()
+        clearSelection()
+        pendingFurnitureKind = nil
+        mode = .plan
+        tool = .select
+        documentCreatedAt = decoded.createdAt
+        lastDocumentSavedAt = decoded.savedAt
+        currentDocumentURL = decoded.isLegacyJSON ? nil : url.standardizedFileURL
+        documentIsEdited = decoded.isLegacyJSON || decoded.repairedInvalidObjects
+
+        if decoded.isLegacyJSON {
+            statusMessage = "Imported legacy JSON · save it as a RoomCAD design"
+        } else if decoded.repairedInvalidObjects {
+            statusMessage = "Opened \(url.lastPathComponent) · repaired invalid objects"
+        } else {
+            statusMessage = "Opened \(url.lastPathComponent)"
+        }
+        persist()
+    }
+
+    @discardableResult
+    func saveDocument() -> Bool {
+        guard let currentDocumentURL else { return saveDocumentAs() }
+        do {
+            try saveDocument(to: currentDocumentURL)
+            return true
+        } catch {
+            documentErrorMessage = error.localizedDescription
+            statusMessage = "Could not save \(currentDocumentURL.lastPathComponent)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func saveDocumentAs() -> Bool {
+        let panel = NSSavePanel()
+        panel.title = "Save RoomCAD Design"
+        panel.message = "RoomCAD designs include walls, doors, furniture, labels, and measurements."
+        panel.prompt = "Save"
+        panel.allowedContentTypes = [.roomCADDesign]
+        panel.allowsOtherFileTypes = false
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = documentDisplayName + "." + RoomCADFile.fileExtension
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        do {
+            try saveDocument(to: url)
+            return true
+        } catch {
+            documentErrorMessage = error.localizedDescription
+            statusMessage = "Could not save \(url.lastPathComponent)"
+            return false
+        }
+    }
+
+    func saveDocument(to url: URL) throws {
+        let savedAt = Date()
+        let data = try RoomCADFile(
+            plan: plan,
+            createdAt: documentCreatedAt,
+            savedAt: savedAt
+        ).encoded()
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+        try data.write(to: url, options: .atomic)
+        currentDocumentURL = url.standardizedFileURL
+        lastDocumentSavedAt = savedAt
+        documentIsEdited = false
+        statusMessage = "Saved \(url.lastPathComponent)"
     }
 
     func exportPlan() {
@@ -753,6 +875,7 @@ final class FloorPlanStore {
         plan.sanitize()
         redoStack.removeAll()
         clearSelection()
+        documentIsEdited = true
         statusMessage = "Restored snapshot “\(snapshot.name)”"
         persist()
     }
@@ -776,8 +899,28 @@ final class FloorPlanStore {
         mutation(&plan)
         plan.sanitize()
         redoStack.removeAll()
+        documentIsEdited = true
         statusMessage = message
         persist()
+    }
+
+    private func confirmDiscardingDocumentChanges() -> Bool {
+        guard documentIsEdited else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to \(documentDisplayName)?"
+        alert.informativeText = "Opening another design replaces the current workspace. Choose Save to keep your latest changes in a RoomCAD design file."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don't Save")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return saveDocument()
+        case .alertThirdButtonReturn:
+            return true
+        default:
+            return false
+        }
     }
 
     private func recordUndo() {
