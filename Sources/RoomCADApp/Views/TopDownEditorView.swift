@@ -1011,7 +1011,6 @@ struct TopDownEditorView: View {
         let layout = StairBathroomLayout(dimensions: dimensions)
         let bathroom = transform.rect(layout.bathroom)
         let upperFlight = transform.rect(layout.upperFlight)
-        let landing = transform.rect(layout.landing)
         let lowerOpening = transform.rect(layout.lowerOpening)
         let lowerCovered = transform.rect(layout.lowerCoveredFlight)
         let lowerUnderBathroom = transform.rect(layout.lowerUnderBathroom)
@@ -1023,14 +1022,6 @@ struct TopDownEditorView: View {
         context.stroke(Path(lowerCovered), with: .color(.purple.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
         context.fill(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.08)))
         context.stroke(Path(lowerUnderBathroom), with: .color(.purple.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-
-        // This is usable floor, not a constructed block. Keep the floor/grid
-        // visible and use only a light dashed survey boundary.
-        context.stroke(
-            Path(landing),
-            with: .color(.green.opacity(0.60)),
-            style: StrokeStyle(lineWidth: 1.25, dash: [5, 4])
-        )
 
         context.fill(Path(upperFlight), with: .color(.brown.opacity(0.18)))
         context.stroke(Path(upperFlight), with: .color(.brown), lineWidth: 2)
@@ -1071,7 +1062,6 @@ struct TopDownEditorView: View {
         context.draw(Text("BATH\n1.75 m DEEP").font(coreLabel).foregroundStyle(.teal), at: CGPoint(x: bathroom.midX, y: bathroom.midY))
         context.draw(Text("UP →").font(coreLabel).foregroundStyle(.brown), at: CGPoint(x: upperFlight.midX, y: upperFlight.midY))
         context.draw(Text("LOWER OPENING\n\(layout.lowerOpening.width.formatted(compactMeasurement)) × \(layout.lowerOpening.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.primary), at: CGPoint(x: lowerOpening.midX, y: lowerOpening.midY))
-        context.draw(Text("FREE LANDING SPACE\n\(layout.landing.width.formatted(compactMeasurement)) × \(layout.landing.length.formatted(compactMeasurement))").font(coreLabel).foregroundStyle(.green), at: CGPoint(x: landing.midX, y: landing.midY))
     }
 
     private static func drawDimensions(context: inout GraphicsContext, transform: PlanTransform, dimensions: SurveyDimensions) {
