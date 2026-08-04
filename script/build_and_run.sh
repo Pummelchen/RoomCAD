@@ -53,6 +53,7 @@ cat >"$INFO_PLIST" <<PLIST
       <string>RoomCAD Design</string>
       <key>CFBundleTypeExtensions</key>
       <array>
+        <string>rcad</string>
         <string>roomcad</string>
       </array>
       <key>CFBundleTypeRole</key>
@@ -81,6 +82,7 @@ cat >"$INFO_PLIST" <<PLIST
       <dict>
         <key>public.filename-extension</key>
         <array>
+          <string>rcad</string>
           <string>roomcad</string>
         </array>
         <key>public.mime-type</key>

@@ -567,6 +567,8 @@ struct FloorPlanTests {
         ).encoded()
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
+        #expect(RoomCADFile.fileExtension == "rcad")
+        #expect(RoomCADFile.legacyFileExtension == "roomcad")
         #expect(json["formatIdentifier"] as? String == RoomCADFile.formatIdentifier)
         #expect(json["formatVersion"] as? Int == RoomCADFile.currentFormatVersion)
         #expect(json["units"] as? String == "metres")
@@ -634,7 +636,7 @@ struct FloorPlanTests {
             at: temporaryDirectory,
             withIntermediateDirectories: true
         )
-        let designURL = temporaryDirectory.appending(path: "Eight Rooms.roomcad")
+        let designURL = temporaryDirectory.appending(path: "Eight Rooms.rcad")
         let recoveryURL = temporaryDirectory.appending(path: "recovery/layout.json")
         let store = FloorPlanStore(persistenceURL: recoveryURL, loadPersisted: false)
         store.resetToSurvey()
@@ -644,7 +646,7 @@ struct FloorPlanTests {
         #expect(store.currentDocumentURL == designURL.standardizedFileURL)
         #expect(store.documentDisplayName == "Eight Rooms")
         #expect(!store.documentIsEdited)
-        #expect(store.statusMessage == "Saved Eight Rooms.roomcad · 17 walls, 8 doors, 24 furniture")
+        #expect(store.statusMessage == "Saved Eight Rooms.rcad · 17 walls, 8 doors, 24 furniture")
 
         store.clearPartitions()
         #expect(store.documentIsEdited)
@@ -653,7 +655,7 @@ struct FloorPlanTests {
         #expect(store.currentDocumentURL == designURL.standardizedFileURL)
         #expect(!store.documentIsEdited)
         #expect(!store.canUndo)
-        #expect(store.statusMessage == "Opened Eight Rooms.roomcad")
+        #expect(store.statusMessage == "Opened Eight Rooms.rcad")
     }
 
     @Test("Opening a legacy JSON design requires saving it in the RoomCAD format") @MainActor
@@ -676,7 +678,32 @@ struct FloorPlanTests {
         #expect(store.plan == plan)
         #expect(store.currentDocumentURL == nil)
         #expect(store.documentIsEdited)
-        #expect(store.statusMessage == "Imported legacy JSON · save it as a RoomCAD design")
+        #expect(store.statusMessage == "Imported legacy JSON · save it as .rcad")
+    }
+
+    @Test("Older roomcad files open and request a safe rcad migration") @MainActor
+    func legacyRoomCADExtensionMigration() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let legacyURL = temporaryDirectory.appending(path: "My Design.roomcad")
+        let plan = FloorPlan.example
+        try RoomCADFile(plan: plan).encoded().write(to: legacyURL)
+        let store = FloorPlanStore(
+            persistenceURL: temporaryDirectory.appending(path: "recovery.json"),
+            loadPersisted: false
+        )
+
+        try store.loadDocument(from: legacyURL)
+        #expect(store.plan == plan)
+        #expect(store.currentDocumentURL == nil)
+        #expect(store.documentDisplayName == "My Design")
+        #expect(store.documentIsEdited)
+        #expect(store.statusMessage == "Opened older .roomcad design · save it as .rcad")
+        #expect(FileManager.default.fileExists(atPath: legacyURL.path))
     }
 
     @Test("RoomCAD migrates a legacy LaundryRooms saved layout") @MainActor

@@ -39,7 +39,8 @@ enum RoomCADDocumentError: LocalizedError, Equatable, Sendable {
 struct RoomCADFile: Codable, Equatable, Sendable {
     static let formatIdentifier = "com.maria.roomcad.design"
     static let currentFormatVersion = 1
-    static let fileExtension = "roomcad"
+    static let fileExtension = "rcad"
+    static let legacyFileExtension = "roomcad"
     static let maximumFileSize = 50 * 1_024 * 1_024
 
     var formatIdentifier: String

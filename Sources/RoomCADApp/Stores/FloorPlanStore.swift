@@ -30,9 +30,12 @@ final class FloorPlanStore {
     private var redoStack: [FloorPlan] = []
     private let persistenceURL: URL
     private var documentCreatedAt = Date()
+    private var importedDocumentName: String?
 
     var documentDisplayName: String {
-        currentDocumentURL?.deletingPathExtension().lastPathComponent ?? "Untitled Design"
+        currentDocumentURL?.deletingPathExtension().lastPathComponent
+            ?? importedDocumentName
+            ?? "Untitled Design"
     }
 
     var documentContentsSummary: String {
@@ -743,7 +746,7 @@ final class FloorPlanStore {
         guard confirmDiscardingDocumentChanges() else { return }
         let panel = NSOpenPanel()
         panel.title = "Open RoomCAD Design"
-        panel.message = "Choose a .roomcad design or an older RoomCAD JSON export."
+        panel.message = "Choose an .rcad design, an older .roomcad design, or a RoomCAD JSON export."
         panel.prompt = "Open"
         panel.allowedContentTypes = [.roomCADDesign, .json]
         panel.allowsMultipleSelection = false
@@ -772,6 +775,9 @@ final class FloorPlanStore {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
         let decoded = try RoomCADFile.decode(Data(contentsOf: url, options: .mappedIfSafe))
+        let usesLegacyExtension = url.pathExtension.caseInsensitiveCompare(
+            RoomCADFile.legacyFileExtension
+        ) == .orderedSame
 
         plan = decoded.plan
         undoStack.removeAll()
@@ -783,11 +789,20 @@ final class FloorPlanStore {
         documentCreatedAt = decoded.createdAt
         lastDocumentSavedAt = decoded.savedAt
         currentDocumentFileSize = fileSize
-        currentDocumentURL = decoded.isLegacyJSON ? nil : url.standardizedFileURL
-        documentIsEdited = decoded.isLegacyJSON || decoded.repairedInvalidObjects
+        currentDocumentURL = decoded.isLegacyJSON || usesLegacyExtension
+            ? nil
+            : url.standardizedFileURL
+        importedDocumentName = decoded.isLegacyJSON || usesLegacyExtension
+            ? url.deletingPathExtension().lastPathComponent
+            : nil
+        documentIsEdited = decoded.isLegacyJSON
+            || usesLegacyExtension
+            || decoded.repairedInvalidObjects
 
         if decoded.isLegacyJSON {
-            statusMessage = "Imported legacy JSON · save it as a RoomCAD design"
+            statusMessage = "Imported legacy JSON · save it as .rcad"
+        } else if usesLegacyExtension {
+            statusMessage = "Opened older .roomcad design · save it as .rcad"
         } else if decoded.repairedInvalidObjects {
             statusMessage = "Opened \(url.lastPathComponent) · repaired invalid objects"
         } else {
@@ -844,6 +859,7 @@ final class FloorPlanStore {
         }
         try data.write(to: url, options: .atomic)
         currentDocumentURL = url.standardizedFileURL
+        importedDocumentName = nil
         lastDocumentSavedAt = savedAt
         currentDocumentFileSize = data.count
         documentIsEdited = false
