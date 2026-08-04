@@ -16,10 +16,15 @@ struct RoomCADApp: App {
     var body: some Scene {
         WindowGroup("RoomCAD") {
             ContentView(store: store)
-                .frame(minWidth: 720, minHeight: 520)
+                .frame(
+                    minWidth: 720,
+                    maxWidth: .infinity,
+                    minHeight: 520,
+                    maxHeight: .infinity
+                )
         }
         .defaultSize(width: 1_440, height: 900)
-        .windowResizability(.automatic)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Open Design…") { store.openDocument() }

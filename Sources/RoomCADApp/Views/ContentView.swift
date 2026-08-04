@@ -98,6 +98,12 @@ struct ContentView: View {
             }
         }
         .navigationTitle(store.documentDisplayName + (store.documentIsEdited ? " — Edited" : ""))
+        .background {
+            ResizableWindowConfigurator(
+                minimumContentSize: NSSize(width: 720, height: 520)
+            )
+            .frame(width: 0, height: 0)
+        }
         .task {
             if !hasSeededStairAlignedDemo {
                 store.loadDemoIfEmpty()
