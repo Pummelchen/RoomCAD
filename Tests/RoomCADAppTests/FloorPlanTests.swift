@@ -76,7 +76,7 @@ struct FloorPlanTests {
         #expect(demo.doors.count == 7)
         #expect(demo.labels.count == 7)
         #expect(demo.furniture.count == 21)
-        #expect(demo.partitions.count == 16)
+        #expect(demo.partitions.count == 17)
         #expect(abs(demo.walkway.width - SpaceOptimizedDemoLayout.corridorWidth) < 0.001)
         #expect(abs(demo.walkway.width - fixed.lowerOpening.width) < 0.001)
         #expect(abs(demo.walkway.minX - fixed.lowerOpening.minX) < 0.001)
@@ -90,13 +90,24 @@ struct FloorPlanTests {
         let bathroomApproach = demo.circulationPath[4]
         #expect(abs(turnConnector.length - SpaceOptimizedDemoLayout.turnPathWidth) < 0.001)
         #expect(abs(turnConnector.maxZ - fixed.lowerOpening.minZ) < 0.001)
-        #expect(abs(landingRoute.minX - SpaceOptimizedDemoLayout.rearRoomWidth) < 0.001)
+        #expect(abs(landingRoute.minX - SpaceOptimizedDemoLayout.rearRoomMainWidth) < 0.001)
         #expect(abs(landingRoute.maxX - fixed.lowerOpening.minX) < 0.001)
         #expect(abs(upperStairBypass.width - SpaceOptimizedDemoLayout.stairSidePathWidth) < 0.001)
         #expect(abs(upperStairBypass.maxX - fixed.upperFlight.minX) < 0.001)
+        #expect(abs(bathroomApproach.minX - fixed.rearWindowEndX) < 0.001)
         #expect(abs(bathroomApproach.maxX - fixed.bathroom.minX) < 0.001)
         #expect(abs(bathroomApproach.minZ - fixed.upperFlight.maxZ) < 0.001)
         #expect(abs(bathroomApproach.maxZ - dimensions.roomLength) < 0.001)
+
+        let rearWindowAlcove = PlanRectangle(
+            minX: 0,
+            maxX: fixed.rearWindowEndX,
+            minZ: fixed.upperFlight.maxZ,
+            maxZ: dimensions.roomLength
+        )
+        for item in demo.furniture {
+            #expect(!rearWindowAlcove.intersects(item.footprint))
+        }
 
         for segment in demo.circulationPath {
             #expect(min(segment.width, segment.length) >= SpaceOptimizedDemoLayout.turnPathWidth - 0.001)
@@ -109,21 +120,26 @@ struct FloorPlanTests {
             let current = demo.circulationPath[index]
             let overlapX = min(previous.maxX, current.maxX) - max(previous.minX, current.minX)
             let overlapZ = min(previous.maxZ, current.maxZ) - max(previous.minZ, current.minZ)
-            #expect(overlapX >= SpaceOptimizedDemoLayout.turnPathWidth - 0.001
-                || overlapZ >= SpaceOptimizedDemoLayout.turnPathWidth - 0.001)
+            #expect(overlapX >= SpaceOptimizedDemoLayout.minimumPathConnectionWidth - 0.001
+                || overlapZ >= SpaceOptimizedDemoLayout.minimumPathConnectionWidth - 0.001)
         }
 
         for (index, room) in demo.rooms.enumerated() {
             #expect(room.name == "Room \(index + 1)")
-            #expect(room.area >= 6.00)
-            #expect(room.area <= 6.60)
+            if index < SpaceOptimizedDemoLayout.frontRoomCount {
+                #expect(room.area >= 6.00)
+                #expect(room.area <= 6.60)
+            } else {
+                #expect(room.area >= 7.10)
+                #expect(room.area <= 7.30)
+            }
 
             let entrance = try #require(demo.partitions.first { $0.id == room.entranceWallID })
             let door = try #require(demo.doors.first { $0.id == room.entranceDoorID })
-            #expect(abs(entrance.start.x - room.bounds.maxX) < 0.001)
-            #expect(abs(entrance.end.x - room.bounds.maxX) < 0.001)
             #expect(abs(entrance.start.z - room.bounds.minZ) < 0.001)
             if index < SpaceOptimizedDemoLayout.frontRoomCount {
+                #expect(abs(entrance.start.x - room.bounds.maxX) < 0.001)
+                #expect(abs(entrance.end.x - room.bounds.maxX) < 0.001)
                 #expect(abs(entrance.start.x - demo.walkway.minX) < 0.001)
                 if index == SpaceOptimizedDemoLayout.frontRoomCount - 1 {
                     #expect(abs(entrance.end.z - turnConnector.minZ) < 0.001)
@@ -133,10 +149,15 @@ struct FloorPlanTests {
                     #expect(room.circulationCutouts.isEmpty)
                 }
             } else {
-                #expect(abs(room.bounds.maxX - SpaceOptimizedDemoLayout.rearRoomWidth) < 0.001)
+                #expect(abs(room.bounds.maxX - fixed.rearWindowEndX) < 0.001)
                 #expect(abs(room.bounds.minZ - fixed.core.minZ) < 0.001)
-                #expect(abs(room.bounds.maxZ - fixed.upperFlight.maxZ) < 0.001)
-                #expect(abs(entrance.end.z - room.bounds.maxZ) < 0.001)
+                #expect(abs(room.bounds.maxZ - dimensions.roomLength) < 0.001)
+                #expect(abs(entrance.start.x - SpaceOptimizedDemoLayout.rearRoomMainWidth) < 0.001)
+                #expect(abs(entrance.end.x - SpaceOptimizedDemoLayout.rearRoomMainWidth) < 0.001)
+                #expect(abs(entrance.end.z - fixed.upperFlight.maxZ) < 0.001)
+                #expect(room.circulationCutouts.count == 1)
+                #expect(fixed.rearWindowStartX >= room.bounds.minX)
+                #expect(abs(fixed.rearWindowEndX - room.bounds.maxX) < 0.001)
             }
             #expect(door.wallID == entrance.id)
             #expect(door.hinge == .left)
@@ -191,7 +212,7 @@ struct FloorPlanTests {
 
         var restoredDemo = FloorPlan.example
         restoredDemo.sanitize()
-        #expect(restoredDemo.partitions.count == 16)
+        #expect(restoredDemo.partitions.count == 17)
         #expect(restoredDemo.doors.count == 7)
         #expect(restoredDemo.furniture.count == 21)
         #expect(restoredDemo.roomLabels.count == 7)
@@ -221,7 +242,7 @@ struct FloorPlanTests {
             .appending(path: "missing-layout.json")
         let store = FloorPlanStore(persistenceURL: missingRecovery, loadPersisted: true)
 
-        #expect(store.plan.partitions.count == 16)
+        #expect(store.plan.partitions.count == 17)
         #expect(store.plan.doors.count == 7)
         #expect(store.plan.furniture.count == 21)
         #expect(store.plan.roomLabels.count == 7)
@@ -242,7 +263,7 @@ struct FloorPlanTests {
         let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: true)
 
         #expect(store.loadDemoIfEmpty())
-        #expect(store.plan.partitions.count == 16)
+        #expect(store.plan.partitions.count == 17)
         #expect(store.plan.doors.count == 7)
         #expect(store.plan.furniture.count == 21)
         #expect(store.plan.roomLabels.count == 7)
@@ -669,7 +690,7 @@ struct FloorPlanTests {
         #expect(json["formatVersion"] as? Int == RoomCADFile.currentFormatVersion)
         #expect(json["units"] as? String == "metres")
         let encodedPlan = try #require(json["plan"] as? [String: Any])
-        #expect((encodedPlan["partitions"] as? [Any])?.count == 16)
+        #expect((encodedPlan["partitions"] as? [Any])?.count == 17)
         #expect((encodedPlan["doors"] as? [Any])?.count == 7)
         #expect((encodedPlan["furniture"] as? [Any])?.count == 21)
         #expect((encodedPlan["roomLabels"] as? [Any])?.count == 7)
@@ -742,7 +763,7 @@ struct FloorPlanTests {
         #expect(store.currentDocumentURL == designURL.standardizedFileURL)
         #expect(store.documentDisplayName == "Seven Rooms")
         #expect(!store.documentIsEdited)
-        #expect(store.statusMessage == "Saved Seven Rooms.rcad · 16 walls, 7 doors, 21 furniture")
+        #expect(store.statusMessage == "Saved Seven Rooms.rcad · 17 walls, 7 doors, 21 furniture")
 
         store.clearPartitions()
         #expect(store.documentIsEdited)

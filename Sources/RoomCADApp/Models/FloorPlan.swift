@@ -242,8 +242,9 @@ struct SpaceOptimizedDemoLayout: Sendable {
     static let frontRoomCount = 6
     static let standardFrontRoomDepth: Float = 1.70
     static let turnPathWidth: Float = 0.90
-    static let stairSidePathWidth: Float = 1.05
-    static let rearRoomWidth: Float = 1.35
+    static let stairSidePathWidth: Float = 1.30
+    static let minimumPathConnectionWidth: Float = 0.80
+    static let rearRoomMainWidth: Float = 1.10
     static let furnitureWallClearance: Float = 0.05
 
     var walkway: PlanRectangle
@@ -274,19 +275,19 @@ struct SpaceOptimizedDemoLayout: Sendable {
             walkway,
             turnConnector,
             PlanRectangle(
-                minX: Self.rearRoomWidth,
+                minX: Self.rearRoomMainWidth,
                 maxX: core.lowerOpening.minX,
                 minZ: core.core.minZ,
                 maxZ: core.upperFlight.minZ
             ),
             PlanRectangle(
-                minX: Self.rearRoomWidth,
+                minX: Self.rearRoomMainWidth,
                 maxX: core.upperFlight.minX,
                 minZ: core.upperFlight.minZ,
                 maxZ: core.upperFlight.maxZ
             ),
             PlanRectangle(
-                minX: Self.rearRoomWidth,
+                minX: core.rearWindowEndX,
                 maxX: core.bathroom.minX,
                 minZ: core.upperFlight.maxZ,
                 maxZ: d.roomLength
@@ -375,43 +376,55 @@ struct SpaceOptimizedDemoLayout: Sendable {
         }
 
         let rearStartZ = core.core.minZ
-        let rearEndZ = core.upperFlight.maxZ
+        let rearEndZ = d.roomLength
         let rearBounds = PlanRectangle(
             minX: 0,
-            maxX: Self.rearRoomWidth,
+            maxX: core.rearWindowEndX,
             minZ: rearStartZ,
             maxZ: rearEndZ
         )
+        let rearCirculationCutout = PlanRectangle(
+            minX: Self.rearRoomMainWidth,
+            maxX: core.rearWindowEndX,
+            minZ: rearStartZ,
+            maxZ: core.upperFlight.maxZ
+        )
         let rearEntranceWall = PartitionWall(
-            start: PlanPoint(x: Self.rearRoomWidth, z: rearStartZ),
-            end: PlanPoint(x: Self.rearRoomWidth, z: rearEndZ)
+            start: PlanPoint(x: Self.rearRoomMainWidth, z: rearStartZ),
+            end: PlanPoint(x: Self.rearRoomMainWidth, z: core.upperFlight.maxZ)
         )
         let rearDoor = DoorOpening(
             wallID: rearEntranceWall.id,
-            offset: core.upperFlight.minZ - rearStartZ - 0.30,
+            offset: core.upperFlight.minZ - rearStartZ - 0.80,
             width: 0.90,
             hinge: .left
         )
-        let rearEndWall = PartitionWall(
-            start: PlanPoint(x: 0, z: rearEndZ),
-            end: PlanPoint(x: Self.rearRoomWidth, z: rearEndZ)
+        let rearAlcoveStepWall = PartitionWall(
+            start: PlanPoint(x: Self.rearRoomMainWidth, z: core.upperFlight.maxZ),
+            end: PlanPoint(x: core.rearWindowEndX, z: core.upperFlight.maxZ)
+        )
+        let rearAlcoveSideWall = PartitionWall(
+            start: PlanPoint(x: core.rearWindowEndX, z: core.upperFlight.maxZ),
+            end: PlanPoint(x: core.rearWindowEndX, z: d.roomLength)
         )
         let rearSet = Self.rearFurnitureSet(in: rearBounds)
         let rearName = "Room 7"
+        let rearArea = rearBounds.area - rearCirculationCutout.area
 
-        partitions.append(contentsOf: [rearEntranceWall, rearEndWall])
+        partitions.append(contentsOf: [rearEntranceWall, rearAlcoveStepWall, rearAlcoveSideWall])
         doors.append(rearDoor)
         furniture.append(contentsOf: rearSet)
         labels.append(RoomLabel(
-            name: Self.labelText(name: rearName, area: rearBounds.width * rearBounds.length),
-            position: PlanPoint(x: Self.rearRoomWidth / 2, z: rearStartZ + 3.15)
+            name: Self.labelText(name: rearName, area: rearArea),
+            position: PlanPoint(x: core.rearWindowEndX / 2, z: rearStartZ + 5.40)
         ))
         rooms.append(Room(
             name: rearName,
             bounds: rearBounds,
             entranceWallID: rearEntranceWall.id,
             entranceDoorID: rearDoor.id,
-            furnitureIDs: Set(rearSet.map(\.id))
+            furnitureIDs: Set(rearSet.map(\.id)),
+            circulationCutouts: [rearCirculationCutout]
         ))
     }
 
@@ -466,7 +479,7 @@ struct SpaceOptimizedDemoLayout: Sendable {
                 kind: .twoDoorWardrobe,
                 center: PlanPoint(
                     x: bounds.minX + clearance + wardrobe.orientedWidth / 2,
-                    z: bounds.maxZ - clearance - wardrobe.orientedDepth / 2
+                    z: bounds.minZ + 4.30
                 ),
                 direction: .east
             ),
@@ -474,7 +487,7 @@ struct SpaceOptimizedDemoLayout: Sendable {
                 kind: .chair,
                 center: PlanPoint(
                     x: bounds.minX + clearance + chair.orientedWidth / 2,
-                    z: bounds.minZ + 2.90
+                    z: bounds.minZ + 2.35
                 )
             )
         ]

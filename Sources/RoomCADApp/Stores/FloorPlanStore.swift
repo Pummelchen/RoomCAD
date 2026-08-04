@@ -960,7 +960,7 @@ final class FloorPlanStore {
 
     private var suggestedDocumentName: String {
         guard currentDocumentURL == nil,
-              plan.partitions.count == 16,
+              plan.partitions.count == 17,
               plan.doors.count == 7,
               plan.furniture.count == 21,
               plan.roomLabels.count == 7 else {
