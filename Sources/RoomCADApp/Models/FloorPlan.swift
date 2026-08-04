@@ -212,22 +212,33 @@ struct DoorOpening: Identifiable, Codable, Equatable, Sendable {
     var hinge: DoorHinge = .left
 }
 
+struct RoomLabel: Identifiable, Codable, Equatable, Sendable {
+    static let maximumNameLength = 80
+
+    var id: UUID = UUID()
+    var name: String
+    var position: PlanPoint
+}
+
 struct FloorPlan: Codable, Equatable, Sendable {
     var dimensions = SurveyDimensions()
     var partitions: [PartitionWall] = []
     var doors: [DoorOpening] = []
     var furniture: [FurnitureItem] = []
+    var roomLabels: [RoomLabel] = []
 
     init(
         dimensions: SurveyDimensions = SurveyDimensions(),
         partitions: [PartitionWall] = [],
         doors: [DoorOpening] = [],
-        furniture: [FurnitureItem] = []
+        furniture: [FurnitureItem] = [],
+        roomLabels: [RoomLabel] = []
     ) {
         self.dimensions = dimensions
         self.partitions = partitions
         self.doors = doors
         self.furniture = furniture
+        self.roomLabels = roomLabels
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -235,6 +246,7 @@ struct FloorPlan: Codable, Equatable, Sendable {
         case partitions
         case doors
         case furniture
+        case roomLabels
     }
 
     init(from decoder: Decoder) throws {
@@ -243,6 +255,7 @@ struct FloorPlan: Codable, Equatable, Sendable {
         partitions = try container.decodeIfPresent([PartitionWall].self, forKey: .partitions) ?? []
         doors = try container.decodeIfPresent([DoorOpening].self, forKey: .doors) ?? []
         furniture = try container.decodeIfPresent([FurnitureItem].self, forKey: .furniture) ?? []
+        roomLabels = try container.decodeIfPresent([RoomLabel].self, forKey: .roomLabels) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -251,6 +264,7 @@ struct FloorPlan: Codable, Equatable, Sendable {
         try container.encode(partitions, forKey: .partitions)
         try container.encode(doors, forKey: .doors)
         try container.encode(furniture, forKey: .furniture)
+        try container.encode(roomLabels, forKey: .roomLabels)
     }
 
     static let initial = FloorPlan()
@@ -288,6 +302,15 @@ struct FloorPlan: Codable, Equatable, Sendable {
         furniture = furniture.map { item in
             var copy = item
             copy.sanitize(for: dimensions)
+            return copy
+        }
+        roomLabels = roomLabels.compactMap { label in
+            let trimmed = label.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            var copy = label
+            copy.name = String(trimmed.prefix(RoomLabel.maximumNameLength))
+            copy.position.x = copy.position.x.clamped(to: 0...dimensions.roomWidth)
+            copy.position.z = copy.position.z.clamped(to: 0...dimensions.roomLength)
             return copy
         }
     }

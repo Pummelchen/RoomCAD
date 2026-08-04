@@ -376,16 +376,53 @@ struct FloorPlanTests {
         #expect(store.plan.furniture.first?.direction == .east)
     }
 
-    @Test("Older saved plans decode without a furniture field")
+    @Test("Older saved plans decode without furniture or room-label fields")
     func legacyPlanDecoding() throws {
         let encoded = try JSONEncoder().encode(FloorPlan.example)
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "furniture")
+        object.removeValue(forKey: "roomLabels")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let restored = try JSONDecoder().decode(FloorPlan.self, from: legacyData)
 
         #expect(restored.furniture.isEmpty)
+        #expect(restored.roomLabels.isEmpty)
         #expect(restored.dimensions == FloorPlan.example.dimensions)
+    }
+
+    @Test("Room labels can be added, found, renamed, removed, undone, and persisted") @MainActor
+    func roomLabelFlow() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+
+        #expect(!store.saveRoomLabel(name: "   ", at: PlanPoint(x: 1, z: 2)))
+        #expect(store.plan.roomLabels.isEmpty)
+        #expect(store.saveRoomLabel(
+            name: "  Kids Room  ",
+            at: PlanPoint(x: store.plan.dimensions.roomWidth + 1, z: 2)
+        ))
+
+        let label = try #require(store.plan.roomLabels.first)
+        #expect(label.name == "Kids Room")
+        #expect(label.position == PlanPoint(x: store.plan.dimensions.roomWidth, z: 2))
+        #expect(store.roomLabel(near: label.position, tolerance: 0.01)?.id == label.id)
+
+        let restored = FloorPlanStore(persistenceURL: temporary, loadPersisted: true)
+        #expect(restored.plan.roomLabels == [label])
+
+        #expect(store.saveRoomLabel(name: "Play Room", at: label.position, editingID: label.id))
+        #expect(store.plan.roomLabels.first?.name == "Play Room")
+        store.undo()
+        #expect(store.plan.roomLabels.first?.name == "Kids Room")
+        store.redo()
+        #expect(store.plan.roomLabels.first?.name == "Play Room")
+
+        store.deleteRoomLabel(id: label.id)
+        #expect(store.plan.roomLabels.isEmpty)
+        store.undo()
+        #expect(store.plan.roomLabels.first?.name == "Play Room")
     }
 
     @Test("Furniture survives plan persistence")

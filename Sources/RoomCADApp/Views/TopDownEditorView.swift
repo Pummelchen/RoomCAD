@@ -22,6 +22,10 @@ struct TopDownEditorView: View {
     @State private var selectionGestureStarted = false
     @State private var exactWallLengthCentimeters: Float = 100
     @State private var exactWallAngleDegrees: Float = 0
+    @State private var roomLabelDraft = ""
+    @State private var roomLabelPoint: PlanPoint?
+    @State private var editingRoomLabelID: UUID?
+    @State private var showRoomLabelPrompt = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -74,6 +78,12 @@ struct TopDownEditorView: View {
                         }
                 }
             }
+            .highPriorityGesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { event in
+                        beginRoomLabel(at: event.location, transform: transform)
+                    }
+            )
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
@@ -97,6 +107,12 @@ struct TopDownEditorView: View {
             }
             .contextMenu {
                 if let hoverPoint,
+                   let label = store.roomLabel(near: hoverPoint, tolerance: 0.25) {
+                    Text("Room · \(label.name)")
+                    Button("Delete Room Label", systemImage: "trash", role: .destructive) {
+                        store.deleteRoomLabel(id: label.id)
+                    }
+                } else if let hoverPoint,
                    let wall = store.wall(near: hoverPoint, tolerance: 0.25) {
                     Text("Wall · \(wall.length.formattedMeters) (\(wall.length.formattedCentimeters))")
                     Button("Delete Wall", systemImage: "trash", role: .destructive) {
@@ -105,6 +121,24 @@ struct TopDownEditorView: View {
                 } else {
                     Text("Right-click a wall to see its size")
                 }
+            }
+            .alert(editingRoomLabelID == nil ? "Name This Room" : "Rename Room", isPresented: $showRoomLabelPrompt) {
+                TextField("Room name", text: $roomLabelDraft)
+                Button("Cancel", role: .cancel) {
+                    clearRoomLabelPrompt()
+                }
+                if let editingRoomLabelID {
+                    Button("Remove Label", role: .destructive) {
+                        store.deleteRoomLabel(id: editingRoomLabelID)
+                        clearRoomLabelPrompt()
+                    }
+                }
+                Button(editingRoomLabelID == nil ? "Add Label" : "Save") {
+                    saveRoomLabel()
+                }
+                .disabled(roomLabelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: {
+                Text("Type a simple name, such as Bedroom, Bathroom, or Play Room.")
             }
             .background {
                 ZStack {
@@ -356,6 +390,45 @@ struct TopDownEditorView: View {
         store.setPlanZoomScale(nextZoom)
     }
 
+    private func beginRoomLabel(at screenPoint: CGPoint, transform: PlanTransform) {
+        resetTransientInteraction()
+        let rawPoint = transform.planPoint(from: screenPoint)
+        let point = rawPoint.clamped(to: store.plan.dimensions)
+        guard rawPoint == point else {
+            store.statusMessage = "Double-click inside the room to add a name"
+            return
+        }
+        if let label = store.plan.roomLabels.last(where: {
+            Self.roomLabelRect(for: $0, transform: transform).insetBy(dx: -6, dy: -6).contains(screenPoint)
+        }) {
+            editingRoomLabelID = label.id
+            roomLabelPoint = label.position
+            roomLabelDraft = label.name
+        } else {
+            editingRoomLabelID = nil
+            roomLabelPoint = point
+            roomLabelDraft = ""
+        }
+        showRoomLabelPrompt = true
+    }
+
+    private func saveRoomLabel() {
+        guard let roomLabelPoint else { return }
+        if store.saveRoomLabel(
+            name: roomLabelDraft,
+            at: roomLabelPoint,
+            editingID: editingRoomLabelID
+        ) {
+            clearRoomLabelPrompt()
+        }
+    }
+
+    private func clearRoomLabelPrompt() {
+        roomLabelDraft = ""
+        roomLabelPoint = nil
+        editingRoomLabelID = nil
+    }
+
     private func constrainedViewportCenter(
         _ center: PlanPoint,
         size: CGSize,
@@ -437,7 +510,7 @@ struct TopDownEditorView: View {
         case .wall: "Click points to chain walls, or drag one wall · Esc cancels"
         case .door: "Click a wall to place a 90 cm door, then Inspect to slide it"
         case .erase: "Click furniture, a door, or a wall to remove it"
-        case .select: "Drag objects · Shift-click furniture to select more · Space-drag pans"
+        case .select: "Drag objects · Double-click a room to name it · Space-drag pans"
         case .furniture: "Move the ghost to an open spot, click to place · Esc finishes"
         }
     }
@@ -794,6 +867,9 @@ struct TopDownEditorView: View {
                 selected: snapshot.selectedFurnitureIDs.contains(item.id)
             )
         }
+        for label in snapshot.plan.roomLabels {
+            drawRoomLabel(label, context: &context, transform: transform)
+        }
 
         if let placement = snapshot.placementFurniture {
             drawFurniturePreview(
@@ -953,6 +1029,35 @@ struct TopDownEditorView: View {
                 .foregroundStyle(.secondary),
             at: CGPoint(x: screenPoint.x + 8, y: screenPoint.y - 10),
             anchor: .leading
+        )
+    }
+
+    private static func drawRoomLabel(
+        _ label: RoomLabel,
+        context: inout GraphicsContext,
+        transform: PlanTransform
+    ) {
+        let center = transform.point(label.position)
+        let background = roomLabelRect(for: label, transform: transform)
+        let shape = Path(roundedRect: background, cornerRadius: 9)
+        context.fill(shape, with: .color(Color(nsColor: .controlBackgroundColor).opacity(0.92)))
+        context.stroke(shape, with: .color(.accentColor.opacity(0.75)), lineWidth: 1.5)
+        context.draw(
+            Text(label.name)
+                .font(.callout.bold())
+                .foregroundStyle(.primary),
+            at: center
+        )
+    }
+
+    private static func roomLabelRect(for label: RoomLabel, transform: PlanTransform) -> CGRect {
+        let center = transform.point(label.position)
+        let estimatedWidth = min(220, max(72, CGFloat(label.name.count) * 7.5 + 28))
+        return CGRect(
+            x: center.x - estimatedWidth / 2,
+            y: center.y - 15,
+            width: estimatedWidth,
+            height: 30
         )
     }
 

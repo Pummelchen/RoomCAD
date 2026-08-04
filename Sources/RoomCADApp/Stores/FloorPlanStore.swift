@@ -487,6 +487,46 @@ final class FloorPlanStore {
             .min { $0.1 < $1.1 }?.0
     }
 
+    func roomLabel(near point: PlanPoint, tolerance: Float) -> RoomLabel? {
+        plan.roomLabels
+            .map { ($0, $0.position.distance(to: point)) }
+            .filter { $0.1 <= tolerance }
+            .min { $0.1 < $1.1 }?.0
+    }
+
+    @discardableResult
+    func saveRoomLabel(name rawName: String, at rawPoint: PlanPoint, editingID: UUID? = nil) -> Bool {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = String(trimmed.prefix(RoomLabel.maximumNameLength))
+        guard !name.isEmpty else {
+            statusMessage = "Enter a room name"
+            return false
+        }
+        let position = rawPoint.clamped(to: plan.dimensions)
+
+        if let editingID,
+           let index = plan.roomLabels.firstIndex(where: { $0.id == editingID }) {
+            guard plan.roomLabels[index].name != name || plan.roomLabels[index].position != position else {
+                return true
+            }
+            commit(message: "Renamed room to \(name)") { plan in
+                plan.roomLabels[index].name = name
+                plan.roomLabels[index].position = position
+            }
+        } else {
+            let label = RoomLabel(name: name, position: position)
+            commit(message: "Named room \(name)") { $0.roomLabels.append(label) }
+        }
+        return true
+    }
+
+    func deleteRoomLabel(id: UUID) {
+        guard let label = plan.roomLabels.first(where: { $0.id == id }) else { return }
+        commit(message: "Removed room label \(label.name)") {
+            $0.roomLabels.removeAll { $0.id == id }
+        }
+    }
+
     func deleteWall(id: UUID) {
         guard let wall = plan.partitions.first(where: { $0.id == id }) else { return }
         commit(message: "Removed \(wall.length.formattedMeters) wall") { plan in

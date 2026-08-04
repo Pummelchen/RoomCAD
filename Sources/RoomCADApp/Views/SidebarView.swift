@@ -41,6 +41,7 @@ struct SidebarView: View {
                 metric("Dry walls", "\(store.plan.partitions.count)")
                 metric("Wall length", store.plan.totalPartitionLength.formattedMeters)
                 metric("Doors", "\(store.plan.doors.count)")
+                metric("Room labels", "\(store.plan.roomLabels.count)")
 
                 Button("Clear walls and doors", systemImage: "trash") {
                     showClearWalls = true
@@ -98,8 +99,19 @@ struct SidebarView: View {
                 .disabled(store.plan.furniture.isEmpty)
             }
 
-            if !store.plan.partitions.isEmpty || !store.plan.doors.isEmpty || !store.plan.furniture.isEmpty {
+            if !store.plan.partitions.isEmpty || !store.plan.doors.isEmpty
+                || !store.plan.furniture.isEmpty || !store.plan.roomLabels.isEmpty {
                 Section("Objects") {
+                    ForEach(store.plan.roomLabels) { label in
+                        Button {
+                            store.mode = .plan
+                            store.tool = .select
+                            store.statusMessage = "Double-click \(label.name) on the plan to rename it"
+                        } label: {
+                            Label(label.name, systemImage: "textformat")
+                        }
+                        .help("Double-click this label on the 2D plan to rename or remove it")
+                    }
                     ForEach(store.plan.partitions) { wall in
                         Button {
                             store.mode = .plan
