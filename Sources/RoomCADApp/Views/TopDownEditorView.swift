@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct TopDownEditorView: View {
@@ -12,6 +13,15 @@ struct TopDownEditorView: View {
     @State private var furnitureDragID: UUID?
     @State private var furnitureDragCenter: PlanPoint?
     @State private var viewportCenter: PlanPoint?
+    @State private var wallEditID: UUID?
+    @State private var wallEditPart: WallEditPart?
+    @State private var wallEditOriginal: PartitionWall?
+    @State private var wallEditPreview: PartitionWall?
+    @State private var wallEditPointerStart: PlanPoint?
+    @State private var snapLabel: String?
+    @State private var selectionGestureStarted = false
+    @State private var exactWallLengthCentimeters: Float = 100
+    @State private var exactWallAngleDegrees: Float = 0
 
     var body: some View {
         GeometryReader { geometry in
@@ -25,10 +35,13 @@ struct TopDownEditorView: View {
                 plan: previewPlan,
                 selectedWallID: store.selectedWallID,
                 selectedDoorID: store.selectedDoorID,
-                selectedFurnitureID: store.selectedFurnitureID,
+                selectedFurnitureIDs: store.selectedFurnitureIDs,
                 dragStart: wallAnchor ?? dragStart,
                 dragCurrent: dragCurrent ?? (wallAnchor == nil ? nil : hoverPoint),
-                snapPoint: hoverPoint
+                snapPoint: hoverPoint,
+                snapLabel: snapLabel,
+                placementFurniture: placementPreview?.item,
+                placementValid: placementPreview?.isValid ?? false
             )
 
             ZStack {
@@ -54,6 +67,7 @@ struct TopDownEditorView: View {
                             case .door: store.placeDoor(near: point)
                             case .erase: store.erase(near: point)
                             case .select: store.select(near: point)
+                            case .furniture: store.placePendingFurniture(near: point)
                             case .wall: break
                             }
                         }
@@ -62,9 +76,22 @@ struct TopDownEditorView: View {
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
-                    hoverPoint = transform.snappedPlanPoint(from: location)
+                    let raw = transform.planPoint(from: location)
+                    if store.tool == .wall {
+                        let result = store.plan.smartSnap(
+                            raw,
+                            anchor: wallAnchor ?? dragStart,
+                            lockAngles: NSEvent.modifierFlags.contains(.shift)
+                        )
+                        hoverPoint = result.point
+                        snapLabel = result.label
+                    } else {
+                        hoverPoint = store.plan.dimensions.snapped(raw)
+                        snapLabel = nil
+                    }
                 case .ended:
                     hoverPoint = nil
+                    snapLabel = nil
                 }
             }
             .contextMenu {
@@ -88,10 +115,17 @@ struct TopDownEditorView: View {
                             transform: transform
                         )
                     }
+                    CanvasPanMonitor { delta in
+                        panViewport(by: delta, size: geometry.size, transform: transform)
+                    }
+                    PlanKeyboardMonitor(gridSpacing: store.plan.dimensions.gridSpacing) { command in
+                        handleKeyboardCommand(command)
+                    }
                     EscapeKeyMonitor(
-                        isEnabled: store.tool == .wall
-                            && (wallAnchor != nil || dragStart != nil || dragCurrent != nil),
-                        action: cancelWallDrawing
+                        isEnabled: (store.tool == .wall
+                            && (wallAnchor != nil || dragStart != nil || dragCurrent != nil))
+                            || store.pendingFurnitureKind != nil,
+                        action: cancelCurrentAction
                     )
                     .frame(width: 0, height: 0)
                 }
@@ -120,6 +154,27 @@ struct TopDownEditorView: View {
                         Label("Wall chain active", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                         Button("Finish") { cancelWallChain() }
                             .buttonStyle(.bordered)
+                        Divider().frame(height: 22)
+                        TextField(
+                            "Length",
+                            value: $exactWallLengthCentimeters,
+                            format: .number.precision(.fractionLength(0...1))
+                        )
+                        .frame(width: 62)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Exact wall length in centimetres")
+                        Text("cm").foregroundStyle(.secondary)
+                        TextField(
+                            "Angle",
+                            value: $exactWallAngleDegrees,
+                            format: .number.precision(.fractionLength(0...1))
+                        )
+                        .frame(width: 54)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Exact wall angle in degrees")
+                        Text("°").foregroundStyle(.secondary)
+                        Button("Add Exact") { addExactWall() }
+                            .buttonStyle(.borderedProminent)
                         Text("Esc cancels")
                             .foregroundStyle(.secondary)
                     }
@@ -145,6 +200,23 @@ struct TopDownEditorView: View {
                     .disabled(!store.canZoomOut)
 
                     Button {
+                        fitPlan()
+                    } label: {
+                        Label("Fit Plan", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Fit the whole room in the window")
+
+                    Button {
+                        fitSelection(size: geometry.size, transform: transform)
+                    } label: {
+                        Label("Fit Selection", systemImage: "viewfinder")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Zoom to the selected object")
+                    .disabled(!store.hasSelection)
+
+                    Button {
                         store.resetPlanZoom()
                     } label: {
                         Text("\(Int((store.planZoomScale * 100).rounded()))%")
@@ -167,9 +239,34 @@ struct TopDownEditorView: View {
                 .controlSize(.small)
                 .padding(8)
                 .background(.regularMaterial, in: Capsule())
-                .padding(14)
+                    .padding(14)
             }
-            .onChange(of: store.tool) { _, _ in resetTransientInteraction() }
+            .overlay(alignment: .bottom) {
+                if store.planZoomScale > 1.05 {
+                    PlanOverviewView(
+                        plan: store.plan,
+                        viewportCenter: viewportCenter ?? PlanPoint(
+                            x: store.plan.dimensions.roomWidth / 2,
+                            z: store.plan.dimensions.roomLength / 2
+                        ),
+                        viewportSize: geometry.size,
+                        mainScale: transform.scale
+                    ) { point in
+                        viewportCenter = constrainedViewportCenter(
+                            point,
+                            size: geometry.size,
+                            scale: transform.scale
+                        )
+                    }
+                    .padding(14)
+                }
+            }
+            .onChange(of: store.tool) { _, newTool in
+                if newTool != .furniture {
+                    store.pendingFurnitureKind = nil
+                }
+                resetTransientInteraction()
+            }
             .onChange(of: store.mode) { _, _ in resetTransientInteraction() }
             .onChange(of: store.plan.dimensions.gridSpacing) { _, _ in resetTransientInteraction() }
             .onChange(of: store.planZoomScale) { _, zoomScale in
@@ -225,12 +322,62 @@ struct TopDownEditorView: View {
         )
     }
 
+    private func panViewport(by delta: CGSize, size: CGSize, transform: PlanTransform) {
+        let center = viewportCenter ?? PlanPoint(
+            x: store.plan.dimensions.roomWidth / 2,
+            z: store.plan.dimensions.roomLength / 2
+        )
+        let moved = PlanPoint(
+            x: center.x - Float(delta.width / transform.scale),
+            z: center.z + Float(delta.height / transform.scale)
+        )
+        viewportCenter = constrainedViewportCenter(moved, size: size, scale: transform.scale)
+    }
+
+    private func fitPlan() {
+        viewportCenter = nil
+        store.resetPlanZoom()
+        store.statusMessage = "Fit the whole plan"
+    }
+
+    private func fitSelection(size: CGSize, transform: PlanTransform) {
+        guard let bounds = store.plan.boundsForSelection(
+            wallID: store.selectedWallID,
+            doorID: store.selectedDoorID,
+            furnitureIDs: store.selectedFurnitureIDs
+        ) else { return }
+        let availableWidth = max(100, size.width - 180)
+        let availableHeight = max(100, size.height - 150)
+        let selectionScale = min(
+            availableWidth / CGFloat(max(bounds.width, 0.40)),
+            availableHeight / CGFloat(max(bounds.length, 0.40))
+        )
+        let zoom = Float(selectionScale / transform.baseScale).clamped(
+            to: FloorPlanStore.minimumPlanZoom...FloorPlanStore.maximumPlanZoom
+        )
+        viewportCenter = constrainedViewportCenter(
+            PlanPoint(x: bounds.centerX, z: bounds.centerZ),
+            size: size,
+            scale: transform.baseScale * CGFloat(zoom)
+        )
+        store.setPlanZoomScale(zoom)
+        store.statusMessage = "Fit selected object"
+    }
+
+    private var placementPreview: (item: FurnitureItem, isValid: Bool)? {
+        guard store.tool == .furniture,
+              let kind = store.pendingFurnitureKind,
+              let hoverPoint else { return nil }
+        return store.furniturePreview(kind: kind, near: hoverPoint)
+    }
+
     private var instruction: String {
         switch store.tool {
         case .wall: "Click points to chain walls, or drag one wall · Esc cancels"
         case .door: "Click a wall to place a 90 cm door, then Inspect to slide it"
         case .erase: "Click furniture, a door, or a wall to remove it"
-        case .select: "Drag doors along walls or furniture across the grid"
+        case .select: "Drag objects · Shift-click furniture to select more · Space-drag pans"
+        case .furniture: "Move the ghost to an open spot, click to place · Esc finishes"
         }
     }
 
@@ -239,9 +386,17 @@ struct TopDownEditorView: View {
             .onChanged { value in
                 guard !wallDragCancelled else { return }
                 if dragStart == nil {
-                    dragStart = wallAnchor ?? transform.snappedPlanPoint(from: value.startLocation)
+                    let rawStart = transform.planPoint(from: value.startLocation)
+                    dragStart = wallAnchor ?? store.plan.smartSnap(rawStart).point
                 }
-                dragCurrent = transform.snappedPlanPoint(from: value.location)
+                let raw = transform.planPoint(from: value.location)
+                let result = store.plan.smartSnap(
+                    raw,
+                    anchor: dragStart,
+                    lockAngles: NSEvent.modifierFlags.contains(.shift)
+                )
+                dragCurrent = result.point
+                snapLabel = result.label
             }
             .onEnded { value in
                 if wallDragCancelled {
@@ -250,7 +405,7 @@ struct TopDownEditorView: View {
                     dragCurrent = nil
                     return
                 }
-                let end = transform.snappedPlanPoint(from: value.location)
+                let end = dragCurrent ?? transform.snappedPlanPoint(from: value.location)
                 let travel = hypot(value.translation.width, value.translation.height)
                 if travel < 3 {
                     if let wallAnchor {
@@ -276,10 +431,33 @@ struct TopDownEditorView: View {
     private func selectionGesture(transform: PlanTransform) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if furnitureDragID == nil && doorDragID == nil {
-                    store.select(near: transform.planPoint(from: value.startLocation))
-                    furnitureDragID = store.selectedFurnitureID
-                    doorDragID = store.selectedDoorID
+                if !selectionGestureStarted {
+                    selectionGestureStarted = true
+                    let startPoint = transform.planPoint(from: value.startLocation)
+                    let additive = NSEvent.modifierFlags.contains(.shift)
+                    store.select(
+                        near: startPoint,
+                        additive: additive
+                    )
+                    if !additive {
+                        furnitureDragID = store.selectedFurnitureID
+                        doorDragID = store.selectedDoorID
+                        if furnitureDragID == nil, doorDragID == nil,
+                           let wall = store.selectedWall {
+                            wallEditID = wall.id
+                            wallEditOriginal = wall
+                            wallEditPreview = wall
+                            wallEditPointerStart = startPoint
+                            let tolerance = max(0.12, Float(10 / transform.scale))
+                            if wall.start.distance(to: startPoint) <= tolerance {
+                                wallEditPart = .start
+                            } else if wall.end.distance(to: startPoint) <= tolerance {
+                                wallEditPart = .end
+                            } else {
+                                wallEditPart = .body
+                            }
+                        }
+                    }
                 }
                 if let furnitureDragID,
                    let center = store.constrainedFurnitureCenter(
@@ -293,6 +471,45 @@ struct TopDownEditorView: View {
                             near: transform.planPoint(from: value.location)
                           ) {
                     doorDragOffset = offset
+                } else if let original = wallEditOriginal,
+                          let part = wallEditPart,
+                          let pointerStart = wallEditPointerStart {
+                    let current = transform.planPoint(from: value.location)
+                    switch part {
+                    case .start:
+                        let result = store.plan.smartSnap(
+                            current,
+                            anchor: original.end,
+                            excludingWallID: original.id,
+                            lockAngles: NSEvent.modifierFlags.contains(.shift)
+                        )
+                        wallEditPreview = PartitionWall(id: original.id, start: result.point, end: original.end)
+                        snapLabel = result.label
+                    case .end:
+                        let result = store.plan.smartSnap(
+                            current,
+                            anchor: original.start,
+                            excludingWallID: original.id,
+                            lockAngles: NSEvent.modifierFlags.contains(.shift)
+                        )
+                        wallEditPreview = PartitionWall(id: original.id, start: original.start, end: result.point)
+                        snapLabel = result.label
+                    case .body:
+                        let delta = current - pointerStart
+                        let minX = min(original.start.x, original.end.x)
+                        let maxX = max(original.start.x, original.end.x)
+                        let minZ = min(original.start.z, original.end.z)
+                        let maxZ = max(original.start.z, original.end.z)
+                        let safe = PlanPoint(
+                            x: delta.x.clamped(to: -minX...(store.plan.dimensions.roomWidth - maxX)),
+                            z: delta.z.clamped(to: -minZ...(store.plan.dimensions.roomLength - maxZ))
+                        )
+                        wallEditPreview = PartitionWall(
+                            id: original.id,
+                            start: original.start + safe,
+                            end: original.end + safe
+                        )
+                    }
                 }
             }
             .onEnded { value in
@@ -305,10 +522,22 @@ struct TopDownEditorView: View {
                         to: transform.planPoint(from: value.location)
                     )
                 }
+                if let preview = wallEditPreview,
+                   let original = wallEditOriginal,
+                   preview != original {
+                    _ = store.updateWall(id: preview.id, start: preview.start, end: preview.end)
+                }
                 furnitureDragID = nil
                 furnitureDragCenter = nil
                 doorDragID = nil
                 doorDragOffset = nil
+                wallEditID = nil
+                wallEditPart = nil
+                wallEditOriginal = nil
+                wallEditPreview = nil
+                wallEditPointerStart = nil
+                snapLabel = nil
+                selectionGestureStarted = false
             }
     }
 
@@ -322,12 +551,27 @@ struct TopDownEditorView: View {
            let index = plan.doors.firstIndex(where: { $0.id == doorDragID }) {
             plan.doors[index].offset = doorDragOffset
         }
+        if let wallEditID, let wallEditPreview,
+           let index = plan.partitions.firstIndex(where: { $0.id == wallEditID }) {
+            plan.partitions[index] = wallEditPreview
+        }
         return plan
     }
 
     @ViewBuilder
     private var selectionControls: some View {
-        if let item = store.selectedFurniture {
+        if store.selectedFurnitureIDs.count > 1 {
+            HStack(spacing: 8) {
+                Label("\(store.selectedFurnitureIDs.count) items", systemImage: "square.on.square")
+                Button("Rotate", systemImage: "rotate.right") { store.rotateSelectedFurniture() }
+                Button("Duplicate", systemImage: "plus.square.on.square") { store.duplicateSelectedFurniture() }
+                Button("Delete", systemImage: "trash", role: .destructive) { store.deleteSelectedFurniture() }
+            }
+            .buttonStyle(.bordered)
+            .font(.callout)
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        } else if let item = store.selectedFurniture {
             HStack(spacing: 8) {
                 Label(item.kind.title, systemImage: item.kind.systemImage)
                 Text(item.kind.footprintLabel)
@@ -335,6 +579,10 @@ struct TopDownEditorView: View {
                     .monospacedDigit()
                 Button("Rotate", systemImage: "rotate.right") { store.rotateSelectedFurniture() }
                     .buttonStyle(.bordered)
+                Button("Duplicate", systemImage: "plus.square.on.square") {
+                    store.duplicateSelectedFurniture()
+                }
+                .buttonStyle(.bordered)
                 Button("Delete", systemImage: "trash", role: .destructive) {
                     store.deleteSelectedFurniture()
                 }
@@ -362,6 +610,22 @@ struct TopDownEditorView: View {
             .font(.callout)
             .padding(10)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        } else if let wall = store.selectedWall {
+            HStack(spacing: 8) {
+                Label("Wall", systemImage: "ruler")
+                Text("\(wall.length.formattedCentimeters) · \(wall.angleDegrees.formatted(.number.precision(.fractionLength(0))))°")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Text("Drag ends to resize · drag middle to move")
+                    .foregroundStyle(.secondary)
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    store.deleteSelectedWall()
+                }
+                .buttonStyle(.bordered)
+            }
+            .font(.callout)
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -370,6 +634,18 @@ struct TopDownEditorView: View {
         dragStart = nil
         dragCurrent = nil
         store.statusMessage = "Wall chain finished"
+    }
+
+    private func addExactWall() {
+        guard let wallAnchor else { return }
+        if store.addWall(
+            from: wallAnchor,
+            length: exactWallLengthCentimeters / 100,
+            angleDegrees: exactWallAngleDegrees
+        ), let wall = store.selectedWall {
+            self.wallAnchor = wall.end
+            store.statusMessage = "Exact wall added · enter the next size or click a point"
+        }
     }
 
     private func cancelWallDrawing() {
@@ -382,6 +658,33 @@ struct TopDownEditorView: View {
         store.statusMessage = "Wall drawing cancelled"
     }
 
+    private func cancelCurrentAction() {
+        if store.pendingFurnitureKind != nil {
+            store.cancelCurrentAction()
+        } else {
+            cancelWallDrawing()
+        }
+    }
+
+    private func handleKeyboardCommand(_ command: PlanKeyboardCommand) {
+        switch command {
+        case .inspect:
+            store.tool = .select
+        case .wall:
+            store.tool = .wall
+        case .door:
+            store.beginDoorPlacement()
+        case .erase:
+            store.tool = .erase
+        case .rotate:
+            store.rotateSelectedFurniture()
+        case .delete:
+            store.deleteSelection()
+        case let .nudge(dx, dz):
+            store.nudgeSelectedFurniture(dx: dx, dz: dz)
+        }
+    }
+
     private func resetTransientInteraction() {
         wallAnchor = nil
         dragStart = nil
@@ -391,6 +694,13 @@ struct TopDownEditorView: View {
         furnitureDragCenter = nil
         doorDragID = nil
         doorDragOffset = nil
+        wallEditID = nil
+        wallEditPart = nil
+        wallEditOriginal = nil
+        wallEditPreview = nil
+        wallEditPointerStart = nil
+        snapLabel = nil
+        selectionGestureStarted = false
     }
 
     private static func drawPlan(context: inout GraphicsContext, transform: PlanTransform, snapshot: PlanDrawingSnapshot) {
@@ -420,7 +730,17 @@ struct TopDownEditorView: View {
                 item,
                 context: &context,
                 transform: transform,
-                selected: item.id == snapshot.selectedFurnitureID
+                selected: snapshot.selectedFurnitureIDs.contains(item.id)
+            )
+        }
+
+        if let placement = snapshot.placementFurniture {
+            drawFurniturePreview(
+                placement,
+                context: &context,
+                transform: transform,
+                plan: snapshot.plan,
+                isValid: snapshot.placementValid
             )
         }
 
@@ -429,7 +749,12 @@ struct TopDownEditorView: View {
         }
 
         if let snapPoint = snapshot.snapPoint {
-            drawSnapPoint(snapPoint, context: &context, transform: transform)
+            drawSnapPoint(
+                snapPoint,
+                label: snapshot.snapLabel,
+                context: &context,
+                transform: transform
+            )
         }
 
         drawDimensions(context: &context, transform: transform, dimensions: snapshot.plan.dimensions)
@@ -472,6 +797,14 @@ struct TopDownEditorView: View {
         let selected = selectedWallID == wall.id
         let color: Color = preview ? .orange : (selected ? .accentColor : .primary)
         context.stroke(path, with: .color(color.opacity(preview ? 0.8 : 1)), style: StrokeStyle(lineWidth: max(4, transform.scale * CGFloat(dimensions.drywallThickness)), lineCap: .square, dash: preview ? [8, 5] : []))
+        if selected && !preview {
+            for point in [wall.start, wall.end] {
+                let screen = transform.point(point)
+                let handle = CGRect(x: screen.x - 6, y: screen.y - 6, width: 12, height: 12)
+                context.fill(Path(ellipseIn: handle), with: .color(.accentColor))
+                context.stroke(Path(ellipseIn: handle), with: .color(.white), lineWidth: 2)
+            }
+        }
     }
 
     private static func drawDoor(
@@ -545,6 +878,7 @@ struct TopDownEditorView: View {
 
     private static func drawSnapPoint(
         _ point: PlanPoint,
+        label: String?,
         context: inout GraphicsContext,
         transform: PlanTransform
     ) {
@@ -553,7 +887,7 @@ struct TopDownEditorView: View {
         context.fill(Path(ellipseIn: marker), with: .color(.accentColor.opacity(0.30)))
         context.stroke(Path(ellipseIn: marker), with: .color(.accentColor), lineWidth: 1.5)
         context.draw(
-            Text("\(point.x.formattedCentimeters), \(point.z.formattedCentimeters)")
+            Text("\(label.map { "\($0) · " } ?? "")\(point.x.formattedCentimeters), \(point.z.formattedCentimeters)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary),
             at: CGPoint(x: screenPoint.x + 8, y: screenPoint.y - 10),
@@ -616,6 +950,42 @@ struct TopDownEditorView: View {
                     with: .color(.accentColor)
                 )
             }
+        }
+    }
+
+    private static func drawFurniturePreview(
+        _ item: FurnitureItem,
+        context: inout GraphicsContext,
+        transform: PlanTransform,
+        plan: FloorPlan,
+        isValid: Bool
+    ) {
+        let rectangle = transform.rect(item.footprint)
+        let color: Color = isValid ? .green : .red
+        context.fill(Path(rectangle), with: .color(color.opacity(0.25)))
+        context.stroke(
+            Path(rectangle),
+            with: .color(color),
+            style: StrokeStyle(lineWidth: 3, dash: [7, 4])
+        )
+        context.draw(
+            Text(isValid ? "CLICK TO PLACE" : "SPACE OCCUPIED")
+                .font(.caption2.bold())
+                .foregroundStyle(color),
+            at: transform.point(item.center)
+        )
+        let aligned = plan.furniture.filter { $0.id != item.id }
+        if aligned.contains(where: { abs($0.center.x - item.center.x) < 0.001 }) {
+            var guide = Path()
+            guide.move(to: transform.point(PlanPoint(x: item.center.x, z: 0)))
+            guide.addLine(to: transform.point(PlanPoint(x: item.center.x, z: plan.dimensions.roomLength)))
+            context.stroke(guide, with: .color(.green.opacity(0.75)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+        }
+        if aligned.contains(where: { abs($0.center.z - item.center.z) < 0.001 }) {
+            var guide = Path()
+            guide.move(to: transform.point(PlanPoint(x: 0, z: item.center.z)))
+            guide.addLine(to: transform.point(PlanPoint(x: plan.dimensions.roomWidth, z: item.center.z)))
+            context.stroke(guide, with: .color(.green.opacity(0.75)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
         }
     }
 
@@ -727,10 +1097,13 @@ private struct PlanDrawingSnapshot: Sendable {
     var plan: FloorPlan
     var selectedWallID: UUID?
     var selectedDoorID: UUID?
-    var selectedFurnitureID: UUID?
+    var selectedFurnitureIDs: Set<UUID>
     var dragStart: PlanPoint?
     var dragCurrent: PlanPoint?
     var snapPoint: PlanPoint?
+    var snapLabel: String?
+    var placementFurniture: FurnitureItem?
+    var placementValid: Bool
 }
 
 private struct PlanTransform: Sendable {
@@ -791,5 +1164,85 @@ private struct PlanTransform: Sendable {
 
     func snappedPlanPoint(from point: CGPoint) -> PlanPoint {
         dimensions.snapped(planPoint(from: point))
+    }
+}
+
+private struct PlanOverviewView: View {
+    let plan: FloorPlan
+    let viewportCenter: PlanPoint
+    let viewportSize: CGSize
+    let mainScale: CGFloat
+    let navigate: (PlanPoint) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let scale = min(
+                geometry.size.width / CGFloat(plan.dimensions.roomWidth),
+                geometry.size.height / CGFloat(plan.dimensions.roomLength)
+            )
+            Canvas { context, size in
+                let room = CGRect(
+                    x: (size.width - CGFloat(plan.dimensions.roomWidth) * scale) / 2,
+                    y: 0,
+                    width: CGFloat(plan.dimensions.roomWidth) * scale,
+                    height: CGFloat(plan.dimensions.roomLength) * scale
+                )
+                context.fill(Path(room), with: .color(.black.opacity(0.08)))
+                context.stroke(Path(room), with: .color(.primary.opacity(0.65)), lineWidth: 1)
+
+                func point(_ value: PlanPoint) -> CGPoint {
+                    CGPoint(
+                        x: room.minX + CGFloat(value.x) * scale,
+                        y: room.maxY - CGFloat(value.z) * scale
+                    )
+                }
+                for wall in plan.partitions {
+                    var path = Path()
+                    path.move(to: point(wall.start))
+                    path.addLine(to: point(wall.end))
+                    context.stroke(path, with: .color(.primary), lineWidth: 1.5)
+                }
+                for item in plan.furniture {
+                    let rect = CGRect(
+                        x: room.minX + CGFloat(item.footprint.minX) * scale,
+                        y: room.maxY - CGFloat(item.footprint.maxZ) * scale,
+                        width: CGFloat(item.footprint.width) * scale,
+                        height: CGFloat(item.footprint.length) * scale
+                    )
+                    context.fill(Path(rect), with: .color(.accentColor.opacity(0.5)))
+                }
+
+                let visibleWidth = min(
+                    plan.dimensions.roomWidth,
+                    Float(viewportSize.width / max(mainScale, 0.001))
+                )
+                let visibleLength = min(
+                    plan.dimensions.roomLength,
+                    Float(viewportSize.height / max(mainScale, 0.001))
+                )
+                let visible = CGRect(
+                    x: room.minX + CGFloat(viewportCenter.x - visibleWidth / 2) * scale,
+                    y: room.maxY - CGFloat(viewportCenter.z + visibleLength / 2) * scale,
+                    width: CGFloat(visibleWidth) * scale,
+                    height: CGFloat(visibleLength) * scale
+                )
+                context.stroke(Path(visible), with: .color(.orange), lineWidth: 2)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                let roomWidth = CGFloat(plan.dimensions.roomWidth) * scale
+                let roomX = (geometry.size.width - roomWidth) / 2
+                navigate(PlanPoint(
+                    x: Float((location.x - roomX) / scale).clamped(to: 0...plan.dimensions.roomWidth),
+                    z: Float((geometry.size.height - location.y) / scale).clamped(to: 0...plan.dimensions.roomLength)
+                ))
+            }
+        }
+        .frame(width: 92, height: 180)
+        .padding(7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .help("Plan overview · click to jump")
+        .accessibilityLabel("Plan overview")
+        .accessibilityHint("Click a position to move the zoomed plan there")
     }
 }

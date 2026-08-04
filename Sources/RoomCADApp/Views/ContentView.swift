@@ -3,10 +3,14 @@ import SwiftUI
 struct ContentView: View {
     let store: FloorPlanStore
     @State private var showInspector = true
+    @State private var showQuickStart = false
+    @AppStorage("hasSeenRoomCADQuickStart") private var hasSeenQuickStart = false
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(store: store)
+            SidebarView(store: store) {
+                showQuickStart = true
+            }
                 .navigationSplitViewColumnWidth(min: 210, ideal: 235, max: 280)
         } detail: {
             Group {
@@ -53,7 +57,7 @@ struct ContentView: View {
                         .help("Redo the last undone layout change (⇧⌘Z)")
                         .disabled(!store.canRedo)
 
-                        ForEach(PlanTool.allCases) { tool in
+                        ForEach(PlanTool.allCases.filter { $0 != .furniture }) { tool in
                             Button {
                                 store.tool = tool
                             } label: {
@@ -64,6 +68,20 @@ struct ContentView: View {
                             .buttonStyle(.bordered)
                             .tint(store.tool == tool ? .accentColor : nil)
                         }
+
+                        Menu {
+                            ForEach(FurnitureKind.allCases) { kind in
+                                Button {
+                                    store.beginFurniturePlacement(kind)
+                                } label: {
+                                    Label(kind.title, systemImage: kind.systemImage)
+                                }
+                            }
+                        } label: {
+                            Label("Place Furniture", systemImage: PlanTool.furniture.systemImage)
+                        }
+                        .menuIndicator(.hidden)
+                        .help("Choose furniture to place on the 2D plan")
                     }
                 }
 
@@ -76,6 +94,19 @@ struct ContentView: View {
                     .labelStyle(.iconOnly)
                     .help("Show or hide survey measurements")
                 }
+            }
+        }
+        .task {
+            if !hasSeenQuickStart {
+                showQuickStart = true
+            }
+        }
+        .sheet(isPresented: $showQuickStart) {
+            QuickStartGuideView {
+                hasSeenQuickStart = true
+                store.mode = .plan
+                store.tool = .wall
+                store.statusMessage = "Click a grid point to start your first wall"
             }
         }
     }

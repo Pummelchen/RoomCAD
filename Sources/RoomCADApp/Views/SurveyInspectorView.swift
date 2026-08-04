@@ -3,6 +3,9 @@ import SwiftUI
 struct SurveyInspectorView: View {
     let store: FloorPlanStore
     @State private var draft: SurveyDimensions
+    @State private var wallLengthCentimeters: Float = 100
+    @State private var wallAngleDegrees: Float = 0
+    @State private var doorWidthCentimeters: Float = 90
 
     init(store: FloorPlanStore) {
         self.store = store
@@ -96,13 +99,29 @@ struct SurveyInspectorView: View {
             if let door = store.selectedDoor,
                let sides = store.doorSideLengths(door) {
                 Section("Selected door") {
-                    LabeledContent("Width", value: door.width.formattedCentimeters)
+                    LabeledContent("Width") {
+                        HStack(spacing: 4) {
+                            TextField(
+                                "Door width",
+                                value: $doorWidthCentimeters,
+                                format: .number.precision(.fractionLength(0))
+                            )
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 60)
+                            Text("cm").foregroundStyle(.secondary)
+                        }
+                    }
                     LabeledContent("From wall start", value: sides.leading.formattedCentimeters)
                     LabeledContent("To wall end", value: sides.trailing.formattedCentimeters)
                     LabeledContent("Hinge", value: door.hinge.rawValue.capitalized)
                     Text("Drag the door along its wall in Inspect mode. Its centre snaps to the active editor grid.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button("Apply door width", systemImage: "ruler") {
+                        store.updateSelectedDoorWidth(doorWidthCentimeters / 100)
+                        doorWidthCentimeters = (store.selectedDoor?.width ?? door.width) * 100
+                    }
+                    .buttonStyle(.borderedProminent)
                     Button("Flip door hinge", systemImage: "arrow.left.arrow.right") {
                         store.toggleSelectedDoorHinge()
                     }
@@ -129,9 +148,45 @@ struct SurveyInspectorView: View {
 
             if let wall = selectedWall {
                 Section("Selected wall") {
-                    LabeledContent("Length", value: wall.length.formattedMeters)
+                    LabeledContent("Exact length") {
+                        HStack(spacing: 4) {
+                            TextField(
+                                "Wall length",
+                                value: $wallLengthCentimeters,
+                                format: .number.precision(.fractionLength(0...1))
+                            )
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 72)
+                            Text("cm").foregroundStyle(.secondary)
+                        }
+                    }
+                    LabeledContent("Exact angle") {
+                        HStack(spacing: 4) {
+                            TextField(
+                                "Wall angle",
+                                value: $wallAngleDegrees,
+                                format: .number.precision(.fractionLength(0...1))
+                            )
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 72)
+                            Text("°").foregroundStyle(.secondary)
+                        }
+                    }
+                    Button("Apply exact wall size", systemImage: "ruler") {
+                        if store.updateSelectedWall(
+                            length: wallLengthCentimeters / 100,
+                            angleDegrees: wallAngleDegrees
+                        ), let updated = store.selectedWall {
+                            wallLengthCentimeters = updated.length * 100
+                            wallAngleDegrees = updated.angleDegrees
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
                     LabeledContent("Start", value: pointText(wall.start))
                     LabeledContent("End", value: pointText(wall.end))
+                    Text("Angles use 0° to the right, 90° toward the top of the plan. Drag either blue handle for quick edits.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Button("Delete wall", systemImage: "trash", role: .destructive) {
                         store.deleteSelectedWall()
                     }
@@ -150,6 +205,15 @@ struct SurveyInspectorView: View {
         }
         .formStyle(.grouped)
         .onChange(of: store.plan.dimensions) { _, newValue in draft = newValue }
+        .onChange(of: store.selectedWallID, initial: true) { _, _ in
+            guard let wall = store.selectedWall else { return }
+            wallLengthCentimeters = wall.length * 100
+            wallAngleDegrees = wall.angleDegrees
+        }
+        .onChange(of: store.selectedDoorID, initial: true) { _, _ in
+            guard let door = store.selectedDoor else { return }
+            doorWidthCentimeters = door.width * 100
+        }
     }
 
     private var selectedWall: PartitionWall? {

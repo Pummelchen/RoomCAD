@@ -305,6 +305,7 @@ enum PlanTool: String, CaseIterable, Identifiable {
     case select = "Inspect"
     case wall = "Draw wall"
     case door = "Place door"
+    case furniture = "Place furniture"
     case erase = "Erase"
 
     var id: Self { self }
@@ -314,6 +315,7 @@ enum PlanTool: String, CaseIterable, Identifiable {
         case .select: "arrow.up.left.and.arrow.down.right"
         case .wall: "pencil.and.ruler"
         case .door: "door.left.hand.open"
+        case .furniture: "sofa"
         case .erase: "eraser"
         }
     }
@@ -323,6 +325,7 @@ enum PlanTool: String, CaseIterable, Identifiable {
         case .select: "Inspect and drag walls, doors, or furniture"
         case .wall: "Draw walls that snap to the configured grid"
         case .door: "Place a 90 cm door on a wall"
+        case .furniture: "Place the selected furniture on the floor"
         case .erase: "Erase a wall, door, or furniture item"
         }
     }

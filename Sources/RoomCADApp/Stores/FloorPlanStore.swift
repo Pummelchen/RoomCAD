@@ -14,12 +14,20 @@ final class FloorPlanStore {
     var planZoomScale: Float = 1.00
     var selectedWallID: UUID?
     var selectedDoorID: UUID?
-    var selectedFurnitureID: UUID?
+    var selectedFurnitureIDs: Set<UUID> = []
+    var pendingFurnitureKind: FurnitureKind?
+    var snapshots: [LayoutSnapshot] = []
+    var lastSavedAt: Date?
     var statusMessage = "Ready"
 
     private var undoStack: [FloorPlan] = []
     private var redoStack: [FloorPlan] = []
     private let persistenceURL: URL
+
+    var selectedFurnitureID: UUID? {
+        get { selectedFurnitureIDs.count == 1 ? selectedFurnitureIDs.first : nil }
+        set { selectedFurnitureIDs = newValue.map { [$0] } ?? [] }
+    }
 
     init(
         persistenceURL: URL? = nil,
@@ -48,6 +56,7 @@ final class FloorPlanStore {
         } else {
             plan = .initial
         }
+        snapshots = loadSnapshots()
     }
 
     var canUndo: Bool { !undoStack.isEmpty }
@@ -58,15 +67,68 @@ final class FloorPlanStore {
         guard let selectedFurnitureID else { return nil }
         return plan.furniture.first { $0.id == selectedFurnitureID }
     }
+    var selectedFurnitureItems: [FurnitureItem] {
+        plan.furniture.filter { selectedFurnitureIDs.contains($0.id) }
+    }
+    var selectedWall: PartitionWall? {
+        guard let selectedWallID else { return nil }
+        return plan.partitions.first { $0.id == selectedWallID }
+    }
     var selectedDoor: DoorOpening? {
         guard let selectedDoorID else { return nil }
         return plan.doors.first { $0.id == selectedDoorID }
     }
 
+    var hasSelection: Bool {
+        selectedWallID != nil || selectedDoorID != nil || !selectedFurnitureIDs.isEmpty
+    }
+
+    func clearSelection() {
+        selectedWallID = nil
+        selectedDoorID = nil
+        selectedFurnitureIDs.removeAll()
+    }
+
+    func beginFurniturePlacement(_ kind: FurnitureKind) {
+        mode = .plan
+        tool = .furniture
+        pendingFurnitureKind = kind
+        clearSelection()
+        statusMessage = "Move \(kind.title.lowercased()) onto the plan, then click to place"
+    }
+
+    func cancelCurrentAction() {
+        guard pendingFurnitureKind != nil else { return }
+        pendingFurnitureKind = nil
+        tool = .select
+        statusMessage = "Furniture placement cancelled"
+    }
+
+    func furniturePreview(kind: FurnitureKind, near rawPoint: PlanPoint) -> (item: FurnitureItem, isValid: Bool)? {
+        guard let item = preparedFurniture(kind: kind, center: rawPoint) else { return nil }
+        return (item, isFurniturePlacementValid(item))
+    }
+
+    func placePendingFurniture(near rawPoint: PlanPoint) {
+        guard let kind = pendingFurnitureKind,
+              let preview = furniturePreview(kind: kind, near: rawPoint) else {
+            statusMessage = "Keep furniture on the usable floor"
+            return
+        }
+        guard preview.isValid else {
+            statusMessage = "That spot is occupied · choose an open space"
+            return
+        }
+        let item = preview.item
+        commit(message: "Placed \(kind.title.lowercased())") { $0.furniture.append(item) }
+        selectedFurnitureID = item.id
+        statusMessage = "Placed \(kind.title.lowercased()) · click again or press Esc to finish"
+    }
+
     func addFurniture(_ kind: FurnitureKind, at rawPoint: PlanPoint? = nil) {
         let candidate = rawPoint.map { preparedFurniture(kind: kind, center: $0) }
             ?? firstAvailableFurniture(kind: kind)
-        guard let item = candidate else {
+        guard let item = candidate, isFurniturePlacementValid(item) else {
             statusMessage = "No usable floor space for \(kind.title.lowercased())"
             return
         }
@@ -82,13 +144,13 @@ final class FloorPlanStore {
     func constrainedFurnitureCenter(id: UUID, near rawPoint: PlanPoint) -> PlanPoint? {
         guard var candidate = plan.furniture.first(where: { $0.id == id }) else { return nil }
         candidate.center = snappedFurnitureCenter(rawPoint, for: candidate)
-        return candidate.isOnUsableFloor(plan.dimensions) ? candidate.center : nil
+        return isFurniturePlacementValid(candidate, excluding: [id]) ? candidate.center : nil
     }
 
     func moveFurniture(id: UUID, to rawPoint: PlanPoint) {
         guard let center = constrainedFurnitureCenter(id: id, near: rawPoint),
               let index = plan.furniture.firstIndex(where: { $0.id == id }) else {
-            statusMessage = "Furniture must stay on usable floor"
+            statusMessage = "Furniture must stay on open, usable floor"
             return
         }
         guard plan.furniture[index].center != center else { return }
@@ -99,39 +161,109 @@ final class FloorPlanStore {
     }
 
     func rotateSelectedFurniture() {
-        guard let id = selectedFurnitureID,
-              let index = plan.furniture.firstIndex(where: { $0.id == id }) else {
+        guard !selectedFurnitureIDs.isEmpty else {
             statusMessage = "Select furniture before pressing B"
             return
         }
-
-        var candidate = plan.furniture[index]
-        candidate.direction = candidate.direction.next
-        candidate.clampToRoom(plan.dimensions)
-        guard candidate.isOnUsableFloor(plan.dimensions) else {
-            statusMessage = "Not enough floor space to rotate here"
-            return
+        let ids = selectedFurnitureIDs
+        var candidates: [UUID: FurnitureItem] = [:]
+        for id in ids {
+            guard var candidate = plan.furniture.first(where: { $0.id == id }) else { continue }
+            candidate.direction = candidate.direction.next
+            candidate.clampToRoom(plan.dimensions)
+            guard isFurniturePlacementValid(candidate, excluding: ids) else {
+                statusMessage = "Not enough open floor space to rotate here"
+                return
+            }
+            candidates[id] = candidate
         }
-
-        commit(message: "Rotated \(candidate.kind.title.lowercased()) \(candidate.direction.title.lowercased())") {
-            $0.furniture[index] = candidate
+        let rotatedItems = Array(candidates.values)
+        for first in rotatedItems.indices {
+            for second in rotatedItems.indices where second > first {
+                guard !rotatedItems[first].footprint.intersects(rotatedItems[second].footprint) else {
+                    statusMessage = "Selected furniture would overlap after rotating"
+                    return
+                }
+            }
         }
-        selectedFurnitureID = id
+        commit(message: candidates.count == 1 ? "Rotated furniture" : "Rotated \(candidates.count) items") { plan in
+            for index in plan.furniture.indices {
+                if let candidate = candidates[plan.furniture[index].id] {
+                    plan.furniture[index] = candidate
+                }
+            }
+        }
+        selectedFurnitureIDs = ids
     }
 
     func deleteSelectedFurniture() {
-        guard let id = selectedFurnitureID,
-              let item = plan.furniture.first(where: { $0.id == id }) else { return }
-        commit(message: "Removed \(item.kind.title.lowercased())") {
-            $0.furniture.removeAll { $0.id == id }
+        let ids = selectedFurnitureIDs
+        guard !ids.isEmpty else { return }
+        commit(message: ids.count == 1 ? "Removed furniture" : "Removed \(ids.count) furniture items") {
+            $0.furniture.removeAll { ids.contains($0.id) }
         }
-        selectedFurnitureID = nil
+        selectedFurnitureIDs.removeAll()
+    }
+
+    func duplicateSelectedFurniture() {
+        let originals = selectedFurnitureItems
+        guard !originals.isEmpty else {
+            statusMessage = "Select furniture to duplicate"
+            return
+        }
+        let largestFootprint = originals.reduce(Float(0)) {
+            max($0, max($1.orientedWidth, $1.orientedDepth))
+        }
+        let offset = max(plan.dimensions.gridSpacing * 2, largestFootprint + 0.10)
+        let originalIDs = Set(originals.map(\.id))
+        var copies: [FurnitureItem] = []
+        for original in originals {
+            var copy = original
+            copy.id = UUID()
+            copy.center = snappedFurnitureCenter(
+                PlanPoint(x: original.center.x + offset, z: original.center.z + offset),
+                for: copy
+            )
+            guard isFurniturePlacementValid(copy, excluding: originalIDs),
+                  !copies.contains(where: { $0.footprint.intersects(copy.footprint) }) else {
+                statusMessage = "Move the selection away from walls or furniture before duplicating"
+                return
+            }
+            copies.append(copy)
+        }
+        commit(message: copies.count == 1 ? "Duplicated furniture" : "Duplicated \(copies.count) items") {
+            $0.furniture.append(contentsOf: copies)
+        }
+        selectedFurnitureIDs = Set(copies.map(\.id))
+    }
+
+    func nudgeSelectedFurniture(dx: Float, dz: Float) {
+        let ids = selectedFurnitureIDs
+        guard !ids.isEmpty else { return }
+        var replacements: [UUID: FurnitureItem] = [:]
+        for item in selectedFurnitureItems {
+            var candidate = item
+            candidate.center = PlanPoint(x: item.center.x + dx, z: item.center.z + dz)
+            guard isFurniturePlacementValid(candidate, excluding: ids) else {
+                statusMessage = "Cannot move farther in that direction"
+                return
+            }
+            replacements[item.id] = candidate
+        }
+        commit(message: "Nudged furniture") { plan in
+            for index in plan.furniture.indices {
+                if let replacement = replacements[plan.furniture[index].id] {
+                    plan.furniture[index] = replacement
+                }
+            }
+        }
+        selectedFurnitureIDs = ids
     }
 
     func clearFurniture() {
         guard !plan.furniture.isEmpty else { return }
         commit(message: "Cleared furniture") { $0.furniture.removeAll() }
-        selectedFurnitureID = nil
+        selectedFurnitureIDs.removeAll()
     }
 
     @discardableResult
@@ -152,9 +284,100 @@ final class FloorPlanStore {
         return true
     }
 
+    @discardableResult
+    func addWall(from start: PlanPoint, length: Float, angleDegrees: Float) -> Bool {
+        guard length.isFinite, angleDegrees.isFinite, length >= 0.30 else {
+            statusMessage = "Enter a wall length of at least 30 cm"
+            return false
+        }
+        let radians = angleDegrees * .pi / 180
+        let end = PlanPoint(
+            x: start.x + cos(radians) * length,
+            z: start.z + sin(radians) * length
+        )
+        let wall = PartitionWall(start: start, end: end)
+        guard wall.length >= 0.30 else {
+            statusMessage = "Wall must be at least 30 cm long"
+            return false
+        }
+        guard end == end.clamped(to: plan.dimensions) else {
+            statusMessage = "That exact wall would leave the room"
+            return false
+        }
+        commit(message: "Added exact \(wall.length.formattedMeters) wall") {
+            $0.partitions.append(wall)
+        }
+        selectedWallID = wall.id
+        selectedDoorID = nil
+        selectedFurnitureIDs.removeAll()
+        return true
+    }
+
+    @discardableResult
+    func updateWall(id: UUID, start: PlanPoint, end: PlanPoint) -> Bool {
+        guard let index = plan.partitions.firstIndex(where: { $0.id == id }) else { return false }
+        let candidate = PartitionWall(id: id, start: start.clamped(to: plan.dimensions), end: end.clamped(to: plan.dimensions))
+        guard candidate.length >= 0.30 else {
+            statusMessage = "Wall must be at least 30 cm long"
+            return false
+        }
+        let attachedDoors = plan.doors.filter { $0.wallID == id }
+        guard attachedDoors.allSatisfy({ candidate.length >= $0.width + 0.20 }) else {
+            statusMessage = "This wall is too short for its door"
+            return false
+        }
+        commit(message: "Updated \(candidate.length.formattedMeters) wall") { plan in
+            plan.partitions[index] = candidate
+            for doorIndex in plan.doors.indices where plan.doors[doorIndex].wallID == id {
+                let door = plan.doors[doorIndex]
+                plan.doors[doorIndex].offset = door.offset.clamped(
+                    to: 0.10...(candidate.length - door.width - 0.10)
+                )
+            }
+        }
+        selectedWallID = id
+        return true
+    }
+
+    @discardableResult
+    func updateSelectedWall(length: Float, angleDegrees: Float) -> Bool {
+        guard let wall = selectedWall else { return false }
+        guard length.isFinite, angleDegrees.isFinite, length >= 0.30 else {
+            statusMessage = "Enter a wall length of at least 30 cm"
+            return false
+        }
+        let radians = angleDegrees * .pi / 180
+        let end = PlanPoint(
+            x: wall.start.x + cos(radians) * length,
+            z: wall.start.z + sin(radians) * length
+        )
+        guard end == end.clamped(to: plan.dimensions) else {
+            statusMessage = "That exact wall would leave the room"
+            return false
+        }
+        return updateWall(id: wall.id, start: wall.start, end: end)
+    }
+
+    @discardableResult
+    func moveWall(id: UUID, translation: PlanPoint) -> Bool {
+        guard let wall = plan.partitions.first(where: { $0.id == id }) else { return false }
+        let dx = translation.x.clamped(
+            to: -min(wall.start.x, wall.end.x)...(plan.dimensions.roomWidth - max(wall.start.x, wall.end.x))
+        )
+        let dz = translation.z.clamped(
+            to: -min(wall.start.z, wall.end.z)...(plan.dimensions.roomLength - max(wall.start.z, wall.end.z))
+        )
+        return updateWall(
+            id: id,
+            start: wall.start + PlanPoint(x: dx, z: dz),
+            end: wall.end + PlanPoint(x: dx, z: dz)
+        )
+    }
+
     func beginDoorPlacement() {
         mode = .plan
         tool = .door
+        pendingFurnitureKind = nil
         selectedWallID = nil
         selectedDoorID = nil
         selectedFurnitureID = nil
@@ -266,7 +489,7 @@ final class FloorPlanStore {
             commit(message: "Removed \(furniture.kind.title.lowercased())") {
                 $0.furniture.removeAll { $0.id == furniture.id }
             }
-            if selectedFurnitureID == furniture.id { selectedFurnitureID = nil }
+            selectedFurnitureIDs.remove(furniture.id)
             return
         }
         if let door = nearestDoor(to: point, tolerance: 0.45) {
@@ -281,12 +504,22 @@ final class FloorPlanStore {
         deleteWall(id: wall.id)
     }
 
-    func select(near point: PlanPoint) {
+    func select(near point: PlanPoint, additive: Bool = false) {
         if let furniture = plan.furniture.last(where: { $0.contains(point, tolerance: 0.08) }) {
-            selectedFurnitureID = furniture.id
+            if additive {
+                if selectedFurnitureIDs.contains(furniture.id) {
+                    selectedFurnitureIDs.remove(furniture.id)
+                } else {
+                    selectedFurnitureIDs.insert(furniture.id)
+                }
+            } else {
+                selectedFurnitureID = furniture.id
+            }
             selectedWallID = nil
             selectedDoorID = nil
-            statusMessage = "Selected \(furniture.kind.title.lowercased()) · B rotates"
+            statusMessage = selectedFurnitureIDs.count > 1
+                ? "Selected \(selectedFurnitureIDs.count) items · duplicate, rotate, nudge, or delete"
+                : "Selected \(furniture.kind.title.lowercased()) · B rotates"
             return
         }
 
@@ -298,7 +531,7 @@ final class FloorPlanStore {
             return
         }
 
-        selectedFurnitureID = nil
+        selectedFurnitureIDs.removeAll()
         selectedDoorID = nil
         selectedWallID = wall(near: point)?.id
         statusMessage = selectedWallID == nil ? "No wall selected" : "Wall selected"
@@ -315,6 +548,33 @@ final class FloorPlanStore {
               let index = plan.doors.firstIndex(where: { $0.id == doorID }) else { return }
         commit(message: "Changed door hinge") { plan in
             plan.doors[index].hinge = plan.doors[index].hinge == .left ? .right : .left
+        }
+    }
+
+    func updateSelectedDoorWidth(_ width: Float) {
+        guard let doorID = selectedDoorID,
+              let index = plan.doors.firstIndex(where: { $0.id == doorID }),
+              let wall = plan.partitions.first(where: { $0.id == plan.doors[index].wallID }) else { return }
+        guard width.isFinite else {
+            statusMessage = "Enter a valid door width"
+            return
+        }
+        let safeWidth = width.clamped(to: 0.60...min(2.00, wall.length - 0.20))
+        commit(message: "Door width set to \(safeWidth.formattedCentimeters)") { plan in
+            plan.doors[index].width = safeWidth
+            plan.doors[index].offset = plan.doors[index].offset.clamped(
+                to: 0.10...(wall.length - safeWidth - 0.10)
+            )
+        }
+    }
+
+    func deleteSelection() {
+        if selectedDoorID != nil {
+            deleteSelectedDoor()
+        } else if !selectedFurnitureIDs.isEmpty {
+            deleteSelectedFurniture()
+        } else {
+            deleteSelectedWall()
         }
     }
 
@@ -336,6 +596,10 @@ final class FloorPlanStore {
     }
 
     func updateGridSpacing(_ spacing: Float) {
+        guard spacing.isFinite else {
+            statusMessage = "Enter a valid grid spacing"
+            return
+        }
         var dimensions = plan.dimensions
         dimensions.gridSpacing = spacing
         dimensions.sanitize()
@@ -404,6 +668,53 @@ final class FloorPlanStore {
         }
     }
 
+    func saveSnapshot(named rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.isEmpty ? "Layout \(snapshots.count + 1)" : trimmed
+        let snapshot = LayoutSnapshot(name: name, plan: plan)
+        do {
+            try FileManager.default.createDirectory(
+                at: snapshotDirectory,
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(snapshot).write(
+                to: snapshotDirectory.appending(path: "\(snapshot.id.uuidString).json"),
+                options: .atomic
+            )
+            snapshots.insert(snapshot, at: 0)
+            statusMessage = "Saved snapshot “\(name)”"
+        } catch {
+            statusMessage = "Could not save snapshot: \(error.localizedDescription)"
+        }
+    }
+
+    func restoreSnapshot(id: UUID) {
+        guard let snapshot = snapshots.first(where: { $0.id == id }) else { return }
+        recordUndo()
+        plan = snapshot.plan
+        plan.sanitize()
+        redoStack.removeAll()
+        clearSelection()
+        statusMessage = "Restored snapshot “\(snapshot.name)”"
+        persist()
+    }
+
+    func deleteSnapshot(id: UUID) {
+        guard let snapshot = snapshots.first(where: { $0.id == id }) else { return }
+        do {
+            let url = snapshotDirectory.appending(path: "\(id.uuidString).json")
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            snapshots.removeAll { $0.id == id }
+            statusMessage = "Removed snapshot “\(snapshot.name)”"
+        } catch {
+            statusMessage = "Could not remove snapshot: \(error.localizedDescription)"
+        }
+    }
+
     private func commit(message: String, mutation: (inout FloorPlan) -> Void) {
         recordUndo()
         mutation(&plan)
@@ -429,6 +740,16 @@ final class FloorPlanStore {
         return item
     }
 
+    private func isFurniturePlacementValid(
+        _ item: FurnitureItem,
+        excluding excludedIDs: Set<UUID> = []
+    ) -> Bool {
+        item.isOnUsableFloor(plan.dimensions)
+            && !plan.furniture.contains {
+                !excludedIDs.contains($0.id) && $0.footprint.intersects(item.footprint)
+            }
+    }
+
     private func snappedFurnitureCenter(_ rawPoint: PlanPoint, for item: FurnitureItem) -> PlanPoint {
         let spacing = max(plan.dimensions.gridSpacing, 0.001)
         func coordinate(_ rawValue: Float, minimum: Float, maximum: Float) -> Float {
@@ -438,7 +759,7 @@ final class FloorPlanStore {
             return ((rawValue / spacing).rounded() * spacing).clamped(to: minimumGrid...maximumGrid)
         }
 
-        return PlanPoint(
+        var result = PlanPoint(
             x: coordinate(
                 rawPoint.x,
                 minimum: item.orientedWidth / 2,
@@ -450,6 +771,22 @@ final class FloorPlanStore {
                 maximum: plan.dimensions.roomLength - item.orientedDepth / 2
             )
         )
+        let guideTolerance = max(spacing * 1.5, 0.08)
+        if let alignedX = plan.furniture
+            .filter({ $0.id != item.id })
+            .map(\.center.x)
+            .filter({ abs($0 - result.x) <= guideTolerance })
+            .min(by: { abs($0 - result.x) < abs($1 - result.x) }) {
+            result.x = alignedX
+        }
+        if let alignedZ = plan.furniture
+            .filter({ $0.id != item.id })
+            .map(\.center.z)
+            .filter({ abs($0 - result.z) <= guideTolerance })
+            .min(by: { abs($0 - result.z) < abs($1 - result.z) }) {
+            result.z = alignedZ
+        }
+        return result
     }
 
     private func firstAvailableFurniture(kind: FurnitureKind) -> FurnitureItem? {
@@ -501,9 +838,29 @@ final class FloorPlanStore {
                 withIntermediateDirectories: true
             )
             try JSONEncoder().encode(plan).write(to: persistenceURL, options: .atomic)
+            lastSavedAt = Date()
         } catch {
             statusMessage = "Could not autosave: \(error.localizedDescription)"
         }
+    }
+
+    private var snapshotDirectory: URL {
+        persistenceURL.deletingLastPathComponent()
+            .appending(path: "Snapshots", directoryHint: .isDirectory)
+    }
+
+    private func loadSnapshots() -> [LayoutSnapshot] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: snapshotDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        return urls
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? JSONDecoder().decode(LayoutSnapshot.self, from: data)
+            }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     private static var defaultPersistenceURL: URL {

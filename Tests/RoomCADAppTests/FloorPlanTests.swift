@@ -386,4 +386,89 @@ struct FloorPlanTests {
         let migrated = try JSONDecoder().decode(FloorPlan.self, from: Data(contentsOf: currentURL))
         #expect(migrated == legacyPlan)
     }
+
+    @Test("Smart snapping finds wall endpoints and locks clean angles")
+    func smartWallSnapping() throws {
+        let first = PartitionWall(
+            start: PlanPoint(x: 1, z: 1),
+            end: PlanPoint(x: 3, z: 1)
+        )
+        let plan = FloorPlan(partitions: [first])
+
+        let endpoint = plan.smartSnap(PlanPoint(x: 3.04, z: 1.03))
+        #expect(endpoint.point == first.end)
+        #expect(endpoint.label == "Wall endpoint")
+
+        let locked = plan.smartSnap(
+            PlanPoint(x: 2.0, z: 2.08),
+            anchor: PlanPoint(x: 1, z: 1),
+            lockAngles: true
+        )
+        #expect(abs((locked.point.x - 1) - (locked.point.z - 1)) < 0.001)
+        #expect(locked.label == "45° angle lock")
+    }
+
+    @Test("Wall handles preserve attached doors and exact wall dimensions") @MainActor
+    func editableWallPreservesDoor() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        #expect(store.addWall(from: PlanPoint(x: 0.5, z: 3), to: PlanPoint(x: 4, z: 3)))
+        store.placeDoor(near: PlanPoint(x: 2, z: 3))
+        let wall = try #require(store.selectedWall)
+
+        #expect(store.updateWall(
+            id: wall.id,
+            start: wall.start,
+            end: PlanPoint(x: 4.5, z: 3)
+        ))
+        #expect(abs((store.selectedWall?.length ?? 0) - 4.0) < 0.001)
+        #expect(store.plan.doors.count == 1)
+        #expect(!store.updateSelectedWall(length: 0.5, angleDegrees: 0))
+    }
+
+    @Test("Furniture placement blocks overlaps and supports multi-select duplication") @MainActor
+    func safeMultiFurniturePlacement() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appending(path: "plan.json")
+        let store = FloorPlanStore(persistenceURL: temporary, loadPersisted: false)
+        store.addFurniture(.chair, at: PlanPoint(x: 1, z: 2))
+        let first = try #require(store.selectedFurnitureID)
+        store.addFurniture(.chair, at: PlanPoint(x: 2, z: 2))
+        let second = try #require(store.selectedFurnitureID)
+
+        let overlapping = try #require(store.furniturePreview(kind: .chair, near: PlanPoint(x: 1, z: 2)))
+        #expect(!overlapping.isValid)
+
+        store.selectedFurnitureIDs = [first, second]
+        store.duplicateSelectedFurniture()
+        #expect(store.plan.furniture.count == 4)
+        #expect(store.selectedFurnitureIDs.count == 2)
+    }
+
+    @Test("Named snapshots save and restore complete layouts") @MainActor
+    func namedSnapshots() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let store = FloorPlanStore(
+            persistenceURL: temporary.appending(path: "layout.json"),
+            loadPersisted: false
+        )
+        #expect(store.addWall(from: PlanPoint(x: 0.5, z: 2), to: PlanPoint(x: 3, z: 2)))
+        let savedPlan = store.plan
+        store.saveSnapshot(named: "Kid-safe version")
+        let snapshot = try #require(store.snapshots.first)
+        store.clearPartitions()
+
+        store.restoreSnapshot(id: snapshot.id)
+        #expect(store.plan == savedPlan)
+
+        let reloaded = FloorPlanStore(
+            persistenceURL: temporary.appending(path: "layout.json"),
+            loadPersisted: true
+        )
+        #expect(reloaded.snapshots.first?.name == "Kid-safe version")
+    }
 }

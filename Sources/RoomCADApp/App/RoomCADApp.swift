@@ -44,20 +44,50 @@ struct RoomCADApp: App {
                     .keyboardShortcut("0", modifiers: .command)
                     .disabled(store.mode != .plan || store.planZoomScale == 1)
                 Divider()
+                Button("Inspect Tool") { store.tool = .select }
+                    .disabled(store.mode != .plan)
+                Button("Draw Wall Tool") { store.tool = .wall }
+                    .disabled(store.mode != .plan)
+                Button("Place Door Tool") { store.beginDoorPlacement() }
+                    .disabled(store.mode != .plan)
+                Button("Erase Tool") { store.tool = .erase }
+                    .disabled(store.mode != .plan)
+                Divider()
+                Button("Delete Selection") { store.deleteSelection() }
+                    .disabled(store.mode != .plan || !store.hasSelection)
+                Button("Duplicate Selection") { store.duplicateSelectedFurniture() }
+                    .keyboardShortcut("d", modifiers: .command)
+                    .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
+                Button("Nudge Left") {
+                    store.nudgeSelectedFurniture(dx: -store.plan.dimensions.gridSpacing, dz: 0)
+                }
+                .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
+                Button("Nudge Right") {
+                    store.nudgeSelectedFurniture(dx: store.plan.dimensions.gridSpacing, dz: 0)
+                }
+                .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
+                Button("Nudge Up") {
+                    store.nudgeSelectedFurniture(dx: 0, dz: store.plan.dimensions.gridSpacing)
+                }
+                .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
+                Button("Nudge Down") {
+                    store.nudgeSelectedFurniture(dx: 0, dz: -store.plan.dimensions.gridSpacing)
+                }
+                .disabled(store.mode != .plan || store.selectedFurnitureIDs.isEmpty)
+                Divider()
                 Button("Export Layout…") { store.exportPlan() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }
             CommandMenu("Furniture") {
-                Button("Add Single Bed") { store.addFurniture(.singleBed) }
-                Button("Add Square Table") { store.addFurniture(.squareTable) }
-                Button("Add Chair") { store.addFurniture(.chair) }
-                Button("Add Two-Door Wardrobe") { store.addFurniture(.twoDoorWardrobe) }
+                Button("Place Single Bed") { store.beginFurniturePlacement(.singleBed) }
+                Button("Place Square Table") { store.beginFurniturePlacement(.squareTable) }
+                Button("Place Chair") { store.beginFurniturePlacement(.chair) }
+                Button("Place Two-Door Wardrobe") { store.beginFurniturePlacement(.twoDoorWardrobe) }
                 Divider()
                 Button("Rotate Selected Furniture") { store.rotateSelectedFurniture() }
-                    .keyboardShortcut("b", modifiers: [])
-                    .disabled(store.selectedFurnitureID == nil)
+                    .disabled(store.selectedFurnitureIDs.isEmpty)
                 Button("Delete Selected Furniture") { store.deleteSelectedFurniture() }
-                    .disabled(store.selectedFurnitureID == nil)
+                    .disabled(store.selectedFurnitureIDs.isEmpty)
             }
         }
     }

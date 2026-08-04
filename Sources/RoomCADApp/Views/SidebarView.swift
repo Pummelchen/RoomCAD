@@ -2,6 +2,12 @@ import SwiftUI
 
 struct SidebarView: View {
     let store: FloorPlanStore
+    var showQuickStart: () -> Void = {}
+    @State private var furnitureSearch = ""
+    @State private var snapshotName = ""
+    @State private var showClearWalls = false
+    @State private var showClearFurniture = false
+    @State private var showRestoreExample = false
 
     var body: some View {
         List {
@@ -14,6 +20,9 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(store.mode == mode ? Color.accentColor : Color.primary)
+                }
+                Button("Quick Start Guide", systemImage: "sparkles") {
+                    showQuickStart()
                 }
             }
 
@@ -34,12 +43,12 @@ struct SidebarView: View {
                 metric("Doors", "\(store.plan.doors.count)")
 
                 Button("Clear walls and doors", systemImage: "trash") {
-                    store.clearPartitions()
+                    showClearWalls = true
                 }
                 .disabled(store.plan.partitions.isEmpty)
 
                 Button("Restore example", systemImage: "arrow.counterclockwise") {
-                    store.resetToSurvey()
+                    showRestoreExample = true
                 }
 
                 Button("Add Door", systemImage: "door.left.hand.open") {
@@ -49,34 +58,162 @@ struct SidebarView: View {
             }
 
             Section("Furniture") {
-                ForEach(FurnitureKind.allCases) { kind in
+                TextField("Search furniture", text: $furnitureSearch)
+                    .textFieldStyle(.roundedBorder)
+
+                ForEach(filteredFurniture) { kind in
                     Button {
-                        store.addFurniture(kind)
+                        store.beginFurniturePlacement(kind)
                     } label: {
-                        Label("Add \(kind.title)", systemImage: kind.systemImage)
+                        HStack(spacing: 10) {
+                            Image(systemName: kind.systemImage)
+                                .font(.title3)
+                                .frame(width: 28, height: 28)
+                                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(kind.title).fontWeight(.medium)
+                                Text(kind.footprintLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundStyle(.tint)
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 3)
                     .draggable(kind.rawValue) {
                         Label(kind.title, systemImage: kind.systemImage)
                             .padding(8)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                     }
-                    .help("Click to place, or drag into the 2D plan; then drag to move and use B to rotate · \(kind.footprintLabel)")
+                    .help("Click, move the preview onto the plan, then click again to place")
                 }
 
                 metric("Placed", "\(store.plan.furniture.count)")
                 Button("Clear furniture", systemImage: "trash") {
-                    store.clearFurniture()
+                    showClearFurniture = true
                 }
                 .disabled(store.plan.furniture.isEmpty)
+            }
+
+            if !store.plan.partitions.isEmpty || !store.plan.doors.isEmpty || !store.plan.furniture.isEmpty {
+                Section("Objects") {
+                    ForEach(store.plan.partitions) { wall in
+                        Button {
+                            store.mode = .plan
+                            store.tool = .select
+                            store.selectedWallID = wall.id
+                            store.selectedDoorID = nil
+                            store.selectedFurnitureIDs.removeAll()
+                        } label: {
+                            Label("Wall · \(wall.length.formattedCentimeters)", systemImage: "ruler")
+                        }
+                        .foregroundStyle(store.selectedWallID == wall.id ? Color.accentColor : Color.primary)
+                    }
+                    ForEach(store.plan.doors) { door in
+                        Button {
+                            store.mode = .plan
+                            store.tool = .select
+                            store.selectedDoorID = door.id
+                            store.selectedWallID = door.wallID
+                            store.selectedFurnitureIDs.removeAll()
+                        } label: {
+                            Label("Door · \(door.width.formattedCentimeters)", systemImage: "door.left.hand.open")
+                        }
+                        .foregroundStyle(store.selectedDoorID == door.id ? Color.accentColor : Color.primary)
+                    }
+                    ForEach(store.plan.furniture) { item in
+                        Button {
+                            store.mode = .plan
+                            store.tool = .select
+                            store.selectedFurnitureID = item.id
+                            store.selectedWallID = nil
+                            store.selectedDoorID = nil
+                        } label: {
+                            Label(item.kind.title, systemImage: item.kind.systemImage)
+                        }
+                        .foregroundStyle(store.selectedFurnitureIDs.contains(item.id) ? Color.accentColor : Color.primary)
+                    }
+                }
+            }
+
+            Section("Snapshots") {
+                TextField("Snapshot name", text: $snapshotName)
+                Button("Save Current Layout", systemImage: "camera") {
+                    store.saveSnapshot(named: snapshotName)
+                    snapshotName = ""
+                }
+                ForEach(store.snapshots) { snapshot in
+                    HStack {
+                        Button {
+                            store.restoreSnapshot(id: snapshot.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(snapshot.name)
+                                Text(snapshot.createdAt, style: .date)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Button("Delete snapshot", systemImage: "trash", role: .destructive) {
+                            store.deleteSnapshot(id: snapshot.id)
+                        }
+                        .labelStyle(.iconOnly)
+                    }
+                }
             }
 
             Section("File") {
                 Button("Export JSON…", systemImage: "square.and.arrow.up") {
                     store.exportPlan()
                 }
+                if let lastSavedAt = store.lastSavedAt {
+                    Label {
+                        Text("Autosaved \(lastSavedAt, style: .relative)")
+                    } icon: {
+                        Image(systemName: "checkmark.icloud")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else {
+                    Label("Autosave is on", systemImage: "checkmark.icloud")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .listStyle(.sidebar)
+        .confirmationDialog(
+            "Clear every drawn wall and door?",
+            isPresented: $showClearWalls,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Walls and Doors", role: .destructive) { store.clearPartitions() }
+        } message: {
+            Text("You can undo this immediately with ⌘Z.")
+        }
+        .confirmationDialog(
+            "Clear all furniture?",
+            isPresented: $showClearFurniture,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Furniture", role: .destructive) { store.clearFurniture() }
+        } message: {
+            Text("You can undo this immediately with ⌘Z.")
+        }
+        .confirmationDialog(
+            "Replace the current layout with the example?",
+            isPresented: $showRestoreExample,
+            titleVisibility: .visible
+        ) {
+            Button("Restore Example", role: .destructive) { store.resetToSurvey() }
+        } message: {
+            Text("Your current layout remains available through Undo.")
+        }
         .safeAreaInset(edge: .bottom) {
             Text(store.statusMessage)
                 .font(.caption)
@@ -86,6 +223,12 @@ struct SidebarView: View {
                 .padding(12)
                 .background(.bar)
         }
+    }
+
+    private var filteredFurniture: [FurnitureKind] {
+        let query = furnitureSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return FurnitureKind.allCases }
+        return FurnitureKind.allCases.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
