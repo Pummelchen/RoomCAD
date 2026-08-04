@@ -48,6 +48,10 @@ enum FurnitureKind: String, Codable, CaseIterable, Identifiable, Sendable {
     var footprintLabel: String {
         "\(dimensions.width.formattedCentimeters) × \(dimensions.depth.formattedCentimeters)"
     }
+
+    var prefersWallPlacement: Bool {
+        self == .singleBed || self == .twoDoorWardrobe
+    }
 }
 
 enum CardinalDirection: Int, Codable, CaseIterable, Sendable {

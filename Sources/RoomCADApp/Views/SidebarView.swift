@@ -48,7 +48,7 @@ struct SidebarView: View {
                 }
                 .disabled(store.plan.partitions.isEmpty)
 
-                Button("Load 8-room demo", systemImage: "building.2") {
+                Button("Load 7-room demo", systemImage: "building.2") {
                     showRestoreExample = true
                 }
 
@@ -254,11 +254,11 @@ struct SidebarView: View {
             Text("You can undo this immediately with ⌘Z.")
         }
         .confirmationDialog(
-            "Replace the current layout with the 8-room demo?",
+            "Replace the current layout with the stair-aligned 7-room demo?",
             isPresented: $showRestoreExample,
             titleVisibility: .visible
         ) {
-            Button("Load 8-Room Demo", role: .destructive) { store.resetToSurvey() }
+            Button("Load 7-Room Demo", role: .destructive) { store.resetToSurvey() }
         } message: {
             Text("Your current layout remains available through Undo.")
         }

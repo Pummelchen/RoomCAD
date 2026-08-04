@@ -234,10 +234,12 @@ struct SpaceOptimizedDemoLayout: Sendable {
         var area: Float { bounds.width * bounds.length }
     }
 
-    static let corridorWidth: Float = 0.85
-    static let frontRoomCount = 7
-    static let rearRoomDepth: Float = 4.00
+    static let corridorWidth: Float = 1.15
+    static let frontRoomCount = 6
+    static let rearRoomDepth: Float = 2.75
+    static let furnitureWallClearance: Float = 0.05
 
+    var walkway: PlanRectangle
     var rooms: [Room] = []
     var partitions: [PartitionWall] = []
     var doors: [DoorOpening] = []
@@ -246,32 +248,39 @@ struct SpaceOptimizedDemoLayout: Sendable {
 
     init(dimensions d: SurveyDimensions) {
         let core = StairBathroomLayout(dimensions: d)
+        let corridorMinX = core.lowerOpening.minX
         let frontRoomDepth = core.core.minZ / Float(Self.frontRoomCount)
+        walkway = PlanRectangle(
+            minX: corridorMinX,
+            maxX: core.lowerOpening.maxX,
+            minZ: 0,
+            maxZ: core.lowerOpening.minZ
+        )
 
         for index in 0..<Self.frontRoomCount {
             let startZ = Float(index) * frontRoomDepth
             let endZ = Float(index + 1) * frontRoomDepth
             let bounds = PlanRectangle(
-                minX: Self.corridorWidth,
-                maxX: d.roomWidth,
+                minX: 0,
+                maxX: corridorMinX,
                 minZ: startZ,
                 maxZ: endZ
             )
             let entranceWall = PartitionWall(
-                start: PlanPoint(x: Self.corridorWidth, z: startZ),
-                end: PlanPoint(x: Self.corridorWidth, z: endZ)
+                start: PlanPoint(x: corridorMinX, z: startZ),
+                end: PlanPoint(x: corridorMinX, z: endZ)
             )
             let entranceDoor = DoorOpening(
                 wallID: entranceWall.id,
                 offset: frontRoomDepth - 1.00,
                 width: 0.90,
-                hinge: .right
+                hinge: .left
             )
             let roomEndWall = PartitionWall(
-                start: PlanPoint(x: Self.corridorWidth, z: endZ),
-                end: PlanPoint(x: d.roomWidth, z: endZ)
+                start: PlanPoint(x: 0, z: endZ),
+                end: PlanPoint(x: corridorMinX, z: endZ)
             )
-            let set = Self.frontFurnitureSet(startZ: startZ)
+            let set = Self.frontFurnitureSet(in: bounds)
             let name = "Room \(index + 1)"
 
             partitions.append(contentsOf: [entranceWall, roomEndWall])
@@ -279,7 +288,7 @@ struct SpaceOptimizedDemoLayout: Sendable {
             furniture.append(contentsOf: set)
             labels.append(RoomLabel(
                 name: Self.labelText(name: name, area: bounds.width * bounds.length),
-                position: PlanPoint(x: 2.75, z: startZ + 1.20)
+                position: PlanPoint(x: 1.90, z: startZ + 1.40)
             ))
             rooms.append(Room(
                 name: name,
@@ -293,38 +302,34 @@ struct SpaceOptimizedDemoLayout: Sendable {
         let rearStartZ = core.core.minZ
         let rearEndZ = min(d.roomLength, rearStartZ + Self.rearRoomDepth)
         let rearBounds = PlanRectangle(
-            minX: Self.corridorWidth,
+            minX: 0,
             maxX: core.core.minX,
             minZ: rearStartZ,
             maxZ: rearEndZ
         )
         let rearEntranceWall = PartitionWall(
-            start: PlanPoint(x: Self.corridorWidth, z: rearStartZ),
-            end: PlanPoint(x: Self.corridorWidth, z: rearEndZ)
-        )
-        let rearDoor = DoorOpening(
-            wallID: rearEntranceWall.id,
-            offset: 2.15,
-            width: 0.90,
-            hinge: .right
-        )
-        let rearSideWall = PartitionWall(
             start: PlanPoint(x: core.core.minX, z: rearStartZ),
             end: PlanPoint(x: core.core.minX, z: rearEndZ)
         )
+        let rearDoor = DoorOpening(
+            wallID: rearEntranceWall.id,
+            offset: 1.00,
+            width: 0.90,
+            hinge: .left
+        )
         let rearEndWall = PartitionWall(
-            start: PlanPoint(x: Self.corridorWidth, z: rearEndZ),
+            start: PlanPoint(x: 0, z: rearEndZ),
             end: PlanPoint(x: core.core.minX, z: rearEndZ)
         )
-        let rearSet = Self.rearFurnitureSet(startZ: rearStartZ)
-        let rearName = "Room 8"
+        let rearSet = Self.rearFurnitureSet(in: rearBounds)
+        let rearName = "Room 7"
 
-        partitions.append(contentsOf: [rearEntranceWall, rearSideWall, rearEndWall])
+        partitions.append(contentsOf: [rearEntranceWall, rearEndWall])
         doors.append(rearDoor)
         furniture.append(contentsOf: rearSet)
         labels.append(RoomLabel(
             name: Self.labelText(name: rearName, area: rearBounds.width * rearBounds.length),
-            position: PlanPoint(x: 1.45, z: rearStartZ + 3.55)
+            position: PlanPoint(x: 1.40, z: rearStartZ + 2.45)
         ))
         rooms.append(Room(
             name: rearName,
@@ -335,38 +340,66 @@ struct SpaceOptimizedDemoLayout: Sendable {
         ))
     }
 
-    private static func frontFurnitureSet(startZ: Float) -> [FurnitureItem] {
-        let centerZ = startZ + 0.55
+    private static func frontFurnitureSet(in bounds: PlanRectangle) -> [FurnitureItem] {
+        let clearance = Self.furnitureWallClearance
+        let wardrobe = FurnitureItem(kind: .twoDoorWardrobe, center: .zero)
+        let bed = FurnitureItem(kind: .singleBed, center: .zero, direction: .east)
+        let chair = FurnitureItem(kind: .chair, center: .zero)
+        let wardrobeCenter = PlanPoint(
+            x: bounds.minX + clearance + wardrobe.orientedWidth / 2,
+            z: bounds.maxZ - clearance - wardrobe.orientedDepth / 2
+        )
+        let bedCenter = PlanPoint(
+            x: bounds.minX + clearance + bed.orientedWidth / 2,
+            z: bounds.minZ + clearance + bed.orientedDepth / 2
+        )
         return [
             FurnitureItem(
                 kind: .singleBed,
-                center: PlanPoint(x: 2.00, z: centerZ),
+                center: bedCenter,
                 direction: .east
             ),
             FurnitureItem(
                 kind: .chair,
-                center: PlanPoint(x: 3.35, z: centerZ)
+                center: PlanPoint(
+                    x: bedCenter.x + bed.orientedWidth / 2 + 0.15 + chair.orientedWidth / 2,
+                    z: bounds.minZ + clearance + chair.orientedDepth / 2
+                )
             ),
             FurnitureItem(
                 kind: .twoDoorWardrobe,
-                center: PlanPoint(x: 4.22, z: centerZ)
+                center: wardrobeCenter
             )
         ]
     }
 
-    private static func rearFurnitureSet(startZ: Float) -> [FurnitureItem] {
-        [
+    private static func rearFurnitureSet(in bounds: PlanRectangle) -> [FurnitureItem] {
+        let clearance = Self.furnitureWallClearance
+        let bed = FurnitureItem(kind: .singleBed, center: .zero)
+        let wardrobe = FurnitureItem(kind: .twoDoorWardrobe, center: .zero)
+        let chair = FurnitureItem(kind: .chair, center: .zero)
+        let bedCenter = PlanPoint(
+            x: bounds.minX + clearance + bed.orientedWidth / 2,
+            z: bounds.minZ + clearance + bed.orientedDepth / 2
+        )
+        return [
             FurnitureItem(
                 kind: .singleBed,
-                center: PlanPoint(x: 1.35, z: startZ + 1.10)
+                center: bedCenter
             ),
             FurnitureItem(
                 kind: .twoDoorWardrobe,
-                center: PlanPoint(x: 1.35, z: startZ + 2.65)
+                center: PlanPoint(
+                    x: bounds.minX + clearance + wardrobe.orientedWidth / 2,
+                    z: bounds.maxZ - clearance - wardrobe.orientedDepth / 2
+                )
             ),
             FurnitureItem(
                 kind: .chair,
-                center: PlanPoint(x: 2.05, z: startZ + 3.55)
+                center: PlanPoint(
+                    x: bedCenter.x + bed.orientedWidth / 2 + 0.15 + chair.orientedWidth / 2,
+                    z: bounds.minZ + clearance + chair.orientedDepth / 2
+                )
             )
         ]
     }

@@ -5,7 +5,7 @@ struct ContentView: View {
     @State private var showInspector = true
     @State private var showQuickStart = false
     @AppStorage("hasSeenRoomCADQuickStart") private var hasSeenQuickStart = false
-    @AppStorage("hasSeededRoomCADEightRoomDemo") private var hasSeededEightRoomDemo = false
+    @AppStorage("hasSeededRoomCADStairAlignedDemo") private var hasSeededStairAlignedDemo = false
 
     var body: some View {
         NavigationSplitView {
@@ -99,9 +99,9 @@ struct ContentView: View {
         }
         .navigationTitle(store.documentDisplayName + (store.documentIsEdited ? " — Edited" : ""))
         .task {
-            if !hasSeededEightRoomDemo {
+            if !hasSeededStairAlignedDemo {
                 store.loadDemoIfEmpty()
-                hasSeededEightRoomDemo = true
+                hasSeededStairAlignedDemo = true
             }
             if !hasSeenQuickStart {
                 showQuickStart = true

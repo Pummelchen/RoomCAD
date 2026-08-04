@@ -142,10 +142,11 @@ final class RoomRenderer: NSObject, MTKViewDelegate {
 
     private static func preferredCameraPosition(for plan: FloorPlan) -> SIMD3<Float> {
         let d = plan.dimensions
+        let stairAlignedWalkwayX = StairBathroomLayout(dimensions: d).lowerOpening.centerX
         let candidates = [
+            PlanPoint(x: stairAlignedWalkwayX, z: min(0.60, d.roomLength / 2)),
+            PlanPoint(x: stairAlignedWalkwayX, z: min(2.00, d.roomLength / 2)),
             PlanPoint(x: d.roomWidth / 2, z: 1.60),
-            PlanPoint(x: min(0.42, d.roomWidth / 2), z: min(0.60, d.roomLength / 2)),
-            PlanPoint(x: min(0.42, d.roomWidth / 2), z: min(2.00, d.roomLength / 2)),
             PlanPoint(x: d.roomWidth / 2, z: d.roomLength / 2)
         ]
         let point = candidates.first {

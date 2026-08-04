@@ -75,7 +75,7 @@ final class FloorPlanStore {
         } else {
             plan = loadPersisted ? .example : .initial
             if loadPersisted {
-                statusMessage = "Loaded optimized 8-room demo"
+                statusMessage = "Loaded stair-aligned 7-room demo"
             }
         }
         snapshots = loadSnapshots()
@@ -705,7 +705,7 @@ final class FloorPlanStore {
         selectedDoorID = nil
         selectedFurnitureID = nil
         documentIsEdited = true
-        statusMessage = "Loaded optimized 8-room demo"
+        statusMessage = "Loaded stair-aligned 7-room demo"
         persist()
     }
 
@@ -960,13 +960,13 @@ final class FloorPlanStore {
 
     private var suggestedDocumentName: String {
         guard currentDocumentURL == nil,
-              plan.partitions.count == 17,
-              plan.doors.count == 8,
-              plan.furniture.count == 24,
-              plan.roomLabels.count == 8 else {
+              plan.partitions.count == 14,
+              plan.doors.count == 7,
+              plan.furniture.count == 21,
+              plan.roomLabels.count == 7 else {
             return documentDisplayName
         }
-        return "RoomCAD 8-Room Demo"
+        return "RoomCAD 7-Room Demo"
     }
 
     private func recordUndo() {
@@ -1031,7 +1031,63 @@ final class FloorPlanStore {
             .min(by: { abs($0 - result.z) < abs($1 - result.z) }) {
             result.z = alignedZ
         }
+        if item.kind.prefersWallPlacement {
+            result = cornerOptimizedCenter(result, for: item)
+        }
         return result
+    }
+
+    private func cornerOptimizedCenter(_ center: PlanPoint, for item: FurnitureItem) -> PlanPoint {
+        let dimensions = plan.dimensions
+        let snapDistance = max(dimensions.gridSpacing * 3, 0.18)
+        let partitionClearance = dimensions.drywallThickness / 2 + 0.01
+        let shellClearance: Float = 0.05
+        let halfWidth = item.orientedWidth / 2
+        let halfDepth = item.orientedDepth / 2
+
+        var xCandidates: [Float] = [
+            halfWidth + shellClearance,
+            dimensions.roomWidth - halfWidth - shellClearance
+        ]
+        var zCandidates: [Float] = [
+            halfDepth + shellClearance,
+            dimensions.roomLength - halfDepth - shellClearance
+        ]
+
+        for wall in plan.partitions {
+            let dx = abs(wall.end.x - wall.start.x)
+            let dz = abs(wall.end.z - wall.start.z)
+            if dx < 0.001 {
+                let minimumZ = min(wall.start.z, wall.end.z) - snapDistance
+                let maximumZ = max(wall.start.z, wall.end.z) + snapDistance
+                if center.z + halfDepth >= minimumZ, center.z - halfDepth <= maximumZ {
+                    xCandidates.append(wall.start.x - partitionClearance - halfWidth)
+                    xCandidates.append(wall.start.x + partitionClearance + halfWidth)
+                }
+            } else if dz < 0.001 {
+                let minimumX = min(wall.start.x, wall.end.x) - snapDistance
+                let maximumX = max(wall.start.x, wall.end.x) + snapDistance
+                if center.x + halfWidth >= minimumX, center.x - halfWidth <= maximumX {
+                    zCandidates.append(wall.start.z - partitionClearance - halfDepth)
+                    zCandidates.append(wall.start.z + partitionClearance + halfDepth)
+                }
+            }
+        }
+
+        var optimized = center
+        if let nearestX = xCandidates
+            .filter({ $0 >= halfWidth && $0 <= dimensions.roomWidth - halfWidth })
+            .min(by: { abs($0 - center.x) < abs($1 - center.x) }),
+           abs(nearestX - center.x) <= snapDistance {
+            optimized.x = nearestX
+        }
+        if let nearestZ = zCandidates
+            .filter({ $0 >= halfDepth && $0 <= dimensions.roomLength - halfDepth })
+            .min(by: { abs($0 - center.z) < abs($1 - center.z) }),
+           abs(nearestZ - center.z) <= snapDistance {
+            optimized.z = nearestZ
+        }
+        return optimized
     }
 
     private func firstAvailableFurniture(kind: FurnitureKind) -> FurnitureItem? {
