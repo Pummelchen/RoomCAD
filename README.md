@@ -1,115 +1,140 @@
 # RoomCAD
 
-A native macOS planning tool for shophouses. It combines a realtime Swift + Metal walkthrough with a precise SwiftUI top-down editor for testing women-only rental-room layouts.
+RoomCAD is a native macOS space-planning app for measured shophouse interiors. It combines a precise SwiftUI 2D editor with a real-time Swift and Metal 3D walkthrough so room, wall, door, and furniture ideas can be tested in one place.
 
-## Current survey model
+The included concept focuses on compact women-only rental rooms around an existing stair and bathroom core. RoomCAD is also a general manual layout editor: walls can be drawn freely on a configurable grid, doors can be attached to walls, furniture can be arranged, and complete designs can be saved as `.rcad` files.
 
-All geometry uses metres internally and displays both metres and centimetres where useful.
+> RoomCAD is an actively developed planning prototype. It is not a structural, architectural, fire-safety, ventilation, accessibility, or permit tool. Have every construction or rental layout reviewed against Indonesian law and local building requirements by qualified professionals.
+
+## Project status
+
+- Native Apple silicon macOS application built with Swift 6.3, SwiftUI, AppKit, and Metal.
+- Requires macOS 14 or later and Xcode command-line tools.
+- Builds and runs from source; no notarized binary release is currently published.
+- Uses an ad hoc signature for local development builds.
+- The measured shell contains confirmed, inferred, and photo-estimated dimensions. Confidence is shown in the app and documented in the [survey guide](https://github.com/Pummelchen/RoomCAD/wiki/Demo-Layout-and-Survey).
+- Source photos remain local in `Pix/`, which is ignored by Git. Private location imagery is not packaged into the app.
+
+## Highlights
+
+- **Grid-snapped wall drawing** — choose any grid spacing from 1–50 cm, draw connected free-form wall chains, enter exact lengths and angles, use smart endpoint/alignment snapping, and cancel safely with `Esc`.
+- **Wall-mounted doors** — place a door on a wall, slide it into position, see the remaining wall length on both sides in centimetres, change its width from 60–200 cm when the wall allows, and flip its hinge.
+- **Easy furniture placement** — place beds, tables, chairs, and wardrobes with collision feedback, grid snapping, alignment guides, corner magnets, rotation, duplication, nudging, and multi-selection.
+- **Friendly 2D navigation** — mouse-wheel and keyboard zoom, pointer-anchored zooming, space-drag panning, Fit Plan, Fit Selection, an overview map, and 90° plan rotation with upright labels.
+- **Editable room labels** — double-click a room to name it; labels remain upright under rotation and persist in files, snapshots, recovery, Undo, and Redo.
+- **Realtime 3D walkthrough** — explore the same layout with keyboard and mouse controls in a Metal renderer with adaptive MSAA and an on-screen performance HUD.
+- **Recoverable editing** — Undo/Redo, named snapshots, recovery autosave, confirmation before destructive layout replacement, and complete `.rcad` save/open workflows.
+- **Accessible desktop UI** — resizable windows, an object outline, keyboard tool shortcuts, a first-run Quick Start guide, and immediate text hints for toolbar icons.
+
+## Included seven-room demo
+
+A fresh workspace contains a furnished, bathroom-connected concept plan:
+
+- six approximately 6.0–6.3 m² front rooms beside a 1.15 m main walkway;
+- a 90 cm turn around the lower stair opening;
+- a 1.30 m stair-side route, with an 80 cm narrowest transition, continuing to the bathroom;
+- an approximately 7.2 m² L-shaped Room 7 beside both stair zones and extended to the complete two-pane rear window;
+- one private corridor entrance, single bed, wardrobe, and chair for every room; and
+- an unobstructed rear-window alcove in Room 7.
+
+The dense demo demonstrates editor behavior and space relationships. It does **not** establish legal room size, corridor width, egress, accessibility, occupancy, sanitation, or ventilation compliance.
+
+## Build and run
+
+```bash
+git clone https://github.com/Pummelchen/RoomCAD.git
+cd RoomCAD
+./script/build_and_run.sh
+```
+
+The script builds a stripped arm64 release binary, stages `dist/RoomCAD.app`, signs the complete bundle with an ad hoc identity, and launches it. Other useful modes are:
+
+```bash
+./script/build_and_run.sh --debug      # Build and open the executable in LLDB
+./script/build_and_run.sh --logs       # Run with the process log stream
+./script/build_and_run.sh --telemetry  # Run with the RoomCAD subsystem log stream
+./script/build_and_run.sh --verify     # Build, launch, and verify the process starts
+```
+
+## Essential controls
+
+| Action | Control |
+| --- | --- |
+| Switch to 3D / 2D | `⌘1` / `⌘2` |
+| Inspect / Draw Wall / Place Door / Erase | `V` / `W` / `D` / `E` |
+| Cancel wall or placement action | `Esc` |
+| Zoom in / out / reset | Mouse wheel or `⌘+` / `⌘−` / `⌘0` |
+| Rotate plan left / right | `⌘[` / `⌘]` |
+| Pan the plan | `Space`-drag or middle-mouse drag |
+| Rotate selected furniture | `B` |
+| Duplicate selected furniture | `⌘D` |
+| Nudge selected furniture | Arrow keys |
+| Delete selected object | Delete or Backspace |
+| Undo / Redo | `⌘Z` / `⇧⌘Z` |
+| Open / Save / Save As | `⌘O` / `⌘S` / `⇧⌘S` |
+
+The 3D walkthrough uses `W`/`S` to move forward/back, `A`/`D` to move sideways, mouse drag to look, `Space`/`C` to move vertically, and `Shift` to move faster.
+
+See the [2D Editor Guide](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide) and [3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough) pages for full instructions.
+
+## RoomCAD design files
+
+Normal designs use the `.rcad` extension. The versioned UTF-8 JSON envelope stores the complete measured shell, partitions, doors, furniture, room labels, dimensions, and grid settings. The packaged app registers the `application/vnd.roomcad+json` type so designs can be opened from Finder.
+
+RoomCAD still reads the former `.roomcad` extension and legacy raw JSON exports, then asks the user to save them in the current format. Files above 50 MB, unknown future versions, unsupported units, duplicate identifiers, and corrupt data are rejected safely.
+
+Recovery autosave and named snapshots are local safety nets; a user-owned `.rcad` file remains the portable design document. Read [File Format and Recovery](https://github.com/Pummelchen/RoomCAD/wiki/File-Format-and-Recovery) for details.
+
+## Current survey summary
+
+RoomCAD uses metres internally and displays metres or centimetres where each is clearest.
 
 | Measurement | Current value | Confidence |
 | --- | ---: | --- |
 | Window-to-window length | **16.44 m** | Confirmed by owner, 3 August 2026 |
-| Inside width | 4.87 m | Read from handwritten sketch; needs confirmation |
-| Clear ceiling height | 3.60 m | Estimated from photos; needs measurement |
-| Stair/bath core length | 6.00 m | Supplied by owner |
-| Stair/bath core width | 2.50 m | Read from sketch; needs confirmation |
+| Inside width | 4.87 m | Sketch-derived; needs confirmation |
+| Clear ceiling height | 3.60 m | Photo estimate; needs measurement |
+| Stair/bath core | 6.00 × 2.50 m | Length supplied; width needs confirmation |
 | First upward step from long wall | 2.40 m | Confirmed by owner |
 | Lower stair width | 1.15 m | Confirmed by owner |
 | Bathroom depth | 1.75 m | Confirmed by owner |
-| Free landing space beside lower opening | 1.32 × 3.50 m | Calculated from confirmed dimensions |
-| Wall before rear window | 0.08 m | Confirmed by owner |
-| Rear window to bathroom wall | 1.52 m | Confirmed by owner |
 | Rear two-window width | 1.52 m | Inferred; not directly measured |
-| Main floor tile module | 0.60 × 0.60 m | Inferred from supplied photos |
-| Front glazing | Four elements | Confirmed by photos/sketch |
-| Rear glazing | Two elements | Confirmed by photos/sketch |
+| Main floor tile module | 0.60 × 0.60 m | Inferred from photos |
 
-The fixed shell includes the glossy grey-veined marble floor, white plaster, dark wood-look stair tiles, black steel railings, the stairwell opening, transverse upward flight, rear bathroom, four-element street window, and two-element rear window. The main floor uses a continuous 60 cm tile grid with a photo-matched 4 mm grout joint and per-tile marble variation. Across the measured rectangle this gives 9 positions (8 full tiles plus a 7 cm cut) by 28 positions (27 full tiles plus a 24 cm cut); the stair opening removes parts of several positions. The lower stair continues below the upper flight and bathroom. In 2D, current-floor architecture is solid while below-floor geometry is dashed purple.
+The complete measurement table and fixed-core interpretation are maintained in [Demo Layout and Survey](https://github.com/Pummelchen/RoomCAD/wiki/Demo-Layout-and-Survey).
 
-> This is a layout visualisation tool, not a structural, fire-safety, ventilation, or permit drawing. Windowless rental rooms need professional review for Indonesian building, fire-egress, electrical, sanitation, and ventilation requirements before construction.
-
-## Controls
-
-### 3D walkthrough
-
-- `W` / `S`: move forward / backward
-- `A` / `D`: move left / right
-- Mouse drag: look around
-- `Space`: fly up
-- `C`: fly down
-- `Shift`: move faster
-- Click the Metal view if movement keys are not active
-
-The renderer targets 60 fps at Retina resolution with physically-inspired lighting, glossy procedural marble, glass, timber grain, and tiled surfaces. The base Apple M3 profile uses 2× MSAA to hold 60 fps; higher-tier Apple GPUs retain 4× MSAA. The live HUD reports measured FPS, vertex count, MSAA, and GPU name.
-
-### 2D plan
-
-- **Resize the workspace**: drag any app border or corner to make RoomCAD as wide, narrow, tall, or short as needed. The window keeps only a compact safety minimum so its essential controls remain usable, while the normal launch size stays comfortably large.
-- **Configure the grid**: enter any spacing from 1–50 cm in the Editor Grid inspector, or choose a 1, 2.5, 5, or 10 cm preset. The default is 5 cm. The visible grid and pointer coordinate follow the setting, while the exact measured shell edges remain available as snap targets.
-- **Zoom the plan**: roll the mouse wheel over the 2D canvas, use the bottom-right zoom controls, or press `⌘+` / `⌘−`. Wheel zoom stays anchored to the pointer so the area under the mouse remains in view. Press `⌘0` or click the percentage to return to 100%; zoom is limited to 50–400%.
-- **Rotate the plan**: use the left/right turn buttons beside the zoom controls, or press `⌘[` / `⌘]`, to rotate the entire 2D workspace in 90° steps. Geometry, snapping, panning, furniture direction arrows, dimensions, and the overview map follow the chosen orientation while every text label stays upright. Click the degree value to return to 0°.
-- **Name rooms**: double-click anywhere inside a room, type a friendly name, and choose **Add Label**. Double-click an existing label to rename or remove it. Room labels stay upright when the plan rotates and are included in autosave, snapshots, Undo, and Redo.
-- **Move around**: hold `Space` and drag, or drag with the middle mouse button, to pan. **Fit Plan** shows the whole room, **Fit Selection** frames the current object, and the overview map appears while zoomed in so any area is one click away.
-- **Draw walls**: click one point and then another. Continue clicking to chain connected free-form wall segments, then choose **Finish**; alternatively, drag between two points to create one wall. Endpoints intelligently find room corners, wall ends, midpoints, intersections, and parallel/perpendicular directions before falling back to the configured grid. Hold `Shift` for 45° angle locks. The active wall bar also accepts an exact centimetre length and degree angle. Press `Esc` at any time to cancel the active wall chain or drag without creating a wall.
-- **Edit walls**: choose Inspect and drag either blue endpoint to resize, or drag the middle of a wall to move the whole segment without changing its size. The inspector accepts exact length and angle values and preserves attached doors whenever the new wall remains large enough.
-- **Place and position doors**: choose **Add Door** above Furniture in the sidebar (or use the Place Door toolbar icon), then click close to a wall. Each wall supports one 90 cm single-leaf door. The editor immediately switches to Inspect so the door can be dragged along the wall. Live labels show the door width and the remaining wall length in centimetres on both sides.
-- **Furniture**: search the visual catalog and click an item. Move its placement ghost onto the plan—green means it fits, red means the space is occupied—then click to place as many as needed. Beds and wardrobes magnet to nearby shell or partition corners so large pieces use perimeter space efficiently. Alignment guides appear near other furniture; `Esc` finishes placement. Dragging a catalog item directly onto the plan remains supported.
-- **Move furniture**: choose Inspect, then click and drag an object; positions snap to the active grid and nearby object centres. Every object is locked to floor level in 3D, cannot overlap other furniture, and cannot be placed over the bathroom, upper stair flight, or lower stair opening.
-- **Rotate furniture**: click an object to select it and press `B` to rotate clockwise through north, east, south, and west.
-- **Select more**: `Shift`-click furniture to build a selection, then rotate, duplicate (`⌘D`), delete, or nudge it one grid step with the arrow keys. The Objects list provides an accessible outline for selecting walls, doors, and furniture by name.
-- **Inspect**: click a wall or furniture object to view exact dimensions and editing controls. Right-click any completed wall to see its length in metres and centimetres or delete it directly.
-- **Erase**: click furniture, a door, or a wall.
-- **Tool keys**: `V` Inspect, `W` Draw Wall, `D` Place Door, and `E` Erase while the 2D plan is active. Delete removes the selected object.
-- **Quick Start**: the first launch opens a game-style guide. Tick **Do not show again** to hide it on future launches; reopen it any time from the Workspace section.
-- **Snapshots and recovery**: name and save stable layout versions from the sidebar, then restore one with a click. Clear and example-replacement actions require confirmation and remain undoable.
-- **7-room bathroom-connected demo**: a fresh installation starts with six approximately 6.0–6.3 m² rooms beside the main 1.15 m walkway. A 90 cm turning section leads around the lower opening into a 1.30 m stair-side route and rear approach to the bathroom door. Room 7 is an approximately 7.2 m² L-shaped room: its furnished section stays narrow beside both stair zones, then widens at the rear so the complete two-pane window opens into the room. Every room has a private entrance and a corner-optimized single bed, wardrobe, and chair; the Room 7 window alcove remains unobstructed. The arriving lower stair has an open exit into the same route. An older untouched empty startup workspace is upgraded once; RoomCAD never replaces a non-empty saved layout. This dense example demonstrates the editor; verify the 80 cm narrowest transition, hallway width, accessibility, ventilation, fire egress, and all local building or rental rules before treating it as a construction plan.
-- **Undo/redo**: use the arrow icons in the 2D toolbar or press `⌘Z` / `⇧⌘Z`. Every top-right toolbar icon immediately shows a visible text hint when hovered, including disabled Undo and Redo controls.
-- **Save and open designs**: use **File → Save Design** (`⌘S`), **Save Design As** (`⇧⌘S`), or **Open Design** (`⌘O`). Normal files use the `.rcad` extension and reopen with the measured shell, walls, doors, furniture, room labels, dimensions, and grid settings intact. The sidebar lists the exact object counts and saved file size; the window title shows the filename and whether it has unsaved changes. RoomCAD asks before replacing edited work. Saving the untouched startup demo suggests `RoomCAD 7-Room Demo.rcad` instead of a misleading empty-design name.
-- **Recovery and compatibility**: RoomCAD continuously keeps a private recovery copy in Application Support. Older `.roomcad` files and raw JSON exports can still be opened, then saved safely as `.rcad`; **Export JSON Copy** remains available for interoperability.
-
-Furniture uses compact Indonesian-market planning dimensions: a 90 × 200 cm single bed ([IKEA Indonesia example](https://www.ikea.co.id/en/catalog/products/30278708)), 70 × 70 cm square table ([local product example](https://www.ikea.co.id/in/produk/luar-ruang/kursi-makan-luar-ruang/visingso-visingso-spr-59621540)), 45 × 47 cm chair ([VIHALS](https://www.ikea.co.id/en/products/dining-chairs/non-upholstered-chairs/vihals-art-80592734)), and 100 × 60 cm two-door wardrobe (within [IKEA Indonesia's common two-door range](https://www.ikea.co.id/en/inspirations/how-to-measure-a-wardrobe-that-fits-your-bedroom)). These are editable-layout defaults rather than a legal furniture standard. Furniture position and orientation are included in RoomCAD files, recovery autosave, JSON export, undo, and redo.
-
-## RoomCAD file format
-
-`.rcad` is UTF-8 JSON with media type `application/vnd.roomcad+json` and exported type identifier `com.maria.roomcad.design`. Version 1 stores a format identifier, schema version, metre unit declaration, creation/save timestamps, and the complete `FloorPlan` payload. The loader rejects unknown future versions, unsupported units, duplicate object identifiers, corrupt content, and files above the 50 MB safety limit. The packaged app registers RoomCAD as the editor for `.rcad` files, so designs can also be opened from Finder. The former `.roomcad` extension remains registered for read-and-migrate compatibility.
-
-## Build and run
-
-Requirements: Apple silicon Mac, macOS 14 or later, and Xcode command-line tools.
-
-```bash
-./script/build_and_run.sh
-```
-
-The script builds a stripped arm64 **release** binary by default, stages `dist/RoomCAD.app`, and launches it as a normal foreground macOS app. Use `./script/build_and_run.sh --debug` for an LLDB-ready debug build. The Codex **Run** action uses the optimized release path.
-
-Validation commands:
+## Development and validation
 
 ```bash
 swift test
 ./script/build_and_run.sh --verify
 ```
 
-## Swift 6.3 and M3 optimization
+The test suite covers survey geometry, configurable snapping, wall and door editing, furniture collision rules, room naming, plan rotation and zoom, Undo/Redo, snapshots, demo-route invariants, and `.rcad` migration and validation.
 
-- Swift tools 6.3, explicit Swift 6 language mode, strict concurrency, and strict-memory-safety auditing.
-- Swift 6.3 `@concurrent` cancellable mesh construction keeps wall edits off the main actor.
-- Explicit `unsafe` annotations are limited to reviewed AppKit and Metal raw-pointer boundaries.
-- Metal 4 shader compilation on macOS 26, Metal 3.2 on macOS 15, and Metal 3.1 fallback on macOS 14.
-- Fast Metal math on supported systems, with opaque and translucent geometry in separate optimized pipelines.
-- Opaque surfaces avoid blending; glass blends without writing depth, improving both performance and correctness.
-- Static mesh arrays reserve capacity and use shared unified memory suited to Apple silicon.
-- The 2D Canvas renders an immutable `Sendable` snapshot asynchronously, keeping drawing gestures responsive.
-- The packaged executable is arm64-only, stripped, and ad-hoc signed after bundling. The measured bundle binary is approximately 500 KB versus the previous 1.2 MB debug bundle.
+Project layout:
 
-On the target MacBook Air M3 (8-core CPU, 16 GB), the corrected stacked-core scene measured 60 fps with 3,060 vertices and 2× MSAA. A five-second Metal System Trace of the renderer showed no command-buffer errors, potential hangs, or runtime shader compilation during steady rendering.
+- `Sources/RoomCADApp/App/` — application entry point, menus, and window scene
+- `Sources/RoomCADApp/Models/` — survey, plan, wall, door, furniture, and file-format models
+- `Sources/RoomCADApp/Stores/` — editing state, validation, Undo/Redo, snapshots, recovery, and document workflows
+- `Sources/RoomCADApp/Views/` — split desktop UI, 2D editor, inspector, Quick Start, and 3D walkthrough
+- `Sources/RoomCADApp/Metal/` — `MTKView` integration, camera, procedural mesh building, and shaders
+- `Tests/RoomCADAppTests/` — model, editing, persistence, and regression tests
+- `script/build_and_run.sh` — local bundle, signing, launch, logging, and verification workflow
 
-## Project structure
+Technical architecture, performance choices, and validation guidance live in [Architecture and Development](https://github.com/Pummelchen/RoomCAD/wiki/Architecture-and-Development).
 
-- `Models/`: survey, wall, door, and floor-aligned furniture geometry in real-world units
-- `Stores/`: layout editing, validation, undo/redo, recovery autosave, and document workflows
-- `Views/`: desktop split layout, survey inspector, walkthrough HUD, and 2D editor
-- `Metal/`: `MTKView` bridge, camera controls, procedural mesh builder, and Metal shaders
-- `Tests/`: survey, geometry, editing invariant, and undo coverage
+## Documentation
 
-The source photos remain local in `Pix/` and are ignored by Git; no private location imagery is packaged into the app.
+- [Wiki home](https://github.com/Pummelchen/RoomCAD/wiki)
+- [Getting Started](https://github.com/Pummelchen/RoomCAD/wiki/Getting-Started)
+- [2D Editor Guide](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide)
+- [3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough)
+- [Demo Layout and Survey](https://github.com/Pummelchen/RoomCAD/wiki/Demo-Layout-and-Survey)
+- [File Format and Recovery](https://github.com/Pummelchen/RoomCAD/wiki/File-Format-and-Recovery)
+- [Architecture and Development](https://github.com/Pummelchen/RoomCAD/wiki/Architecture-and-Development)
+- [Troubleshooting](https://github.com/Pummelchen/RoomCAD/wiki/Troubleshooting)
+
+## License
+
+This repository currently has no license file. Unless a license is added, copyright law reserves reuse and redistribution rights to the repository owner.
