@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Usage: ./deploy.sh [host]
 
-HOST="${1:-91.99.176.243}"
+HOST="${1:-root@91.99.176.243}"
 SERVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOMCAD_DIR="$(cd "$SERVER_DIR/.." && pwd)"
 WEB_DIR="$ROOMCAD_DIR/web"
@@ -14,7 +14,7 @@ REMOTE_ROOT="/var/roomcad"
 TMP_TAR="/tmp/roomcad-deploy.tar.gz"
 
 echo "Packaging web/ and server.py …"
-tar czf "$TMP_TAR" --exclude='web/bin' -C "$ROOMCAD_DIR" web -C "$SERVER_DIR" server.py
+tar czf "$TMP_TAR" --exclude='web/bin' --exclude='web/photos' -C "$ROOMCAD_DIR" web -C "$SERVER_DIR" server.py
 
 echo "Uploading to $HOST …"
 scp "$TMP_TAR" "$HOST:$TMP_TAR"
