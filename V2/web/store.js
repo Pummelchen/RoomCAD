@@ -27,6 +27,7 @@ export const store = {
   selectedFurnitureID: null,
   documentName: null,
   serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
+  serverRoomVersion: null, // the current save version of that slot
   edited: false,
   status: "Ready",
   undoStack: [],
@@ -698,6 +699,7 @@ export const store = {
     this.rotation = 0;
     this.documentName = null;
     this.serverRoomName = null;
+    this.serverRoomVersion = null;
     this.edited = false;
     this.status = "Started a new room (7-room demo)";
     this.emit();
@@ -714,6 +716,7 @@ export const store = {
     this.rotation = 0;
     this.documentName = name || room.name;
     this.serverRoomName = fromServer ? name : null;
+    this.serverRoomVersion = null;
     this.edited = false;
     this.status = "Opened " + this.documentName;
     this.emit();
@@ -721,11 +724,12 @@ export const store = {
 
   /// Applies a room pushed from a teammate over the live channel, without
   /// resetting the current view mode or tool.
-  applyRemoteRoom(room) {
+  applyRemoteRoom(room, version) {
     this.room = room;
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.clearSelection();
+    if (version) this.serverRoomVersion = version;
     this.edited = false;
     this.status = "Room updated by teammate";
     this.emit();

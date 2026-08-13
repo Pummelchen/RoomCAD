@@ -99,8 +99,9 @@ function renderToolbar() {
 }
 
 function renderStatus() {
-  statusMessage.textContent = store.status
-    + (store.serverRoomName ? " · Shared live" : "");
+  let extra = store.serverRoomName ? " · Shared live" : "";
+  if (store.serverRoomName && store.serverRoomVersion) extra += " · v" + store.serverRoomVersion;
+  statusMessage.textContent = store.status + extra;
   statusHint.textContent = store.mode === "2d"
     ? TOOL_HELP[store.tool] + " · Drag empty space to pan"
     : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · right-click: door swing";
@@ -397,7 +398,7 @@ function watchRoom(name) {
         const data = JSON.parse(e.data);
         if (data.clientId === CLIENT_ID) return; // ignore our own echo
         const room = P.parseRoom(data.json);
-        store.applyRemoteRoom(room);
+        store.applyRemoteRoom(room, data.version);
       } catch {}
     };
   } catch {}
@@ -409,7 +410,8 @@ async function saveRoom() {
     // server, otherwise create a new ternak_roomN (no duplicate copies).
     const result = await apiSaveRoom(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID);
     store.serverRoomName = result.name;
-    store.status = "Saved as " + result.name;
+    store.serverRoomVersion = result.version;
+    store.status = "Saved as " + result.name + " · v" + result.version;
     store.edited = false;
     store.emit();
     renderRooms();
@@ -444,7 +446,7 @@ async function openRoomModal() {
     const li = document.createElement("li");
     const button = document.createElement("button");
     button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
-      `<div class="room-meta">${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
+      `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => {
       modal.hidden = true;
       openStoredRoom(r.name);
@@ -477,6 +479,7 @@ async function openStoredRoom(name) {
     const data = await apiLoadRoom(name);
     const room = P.parseRoom(data.json);
     store.loadRoom(room, data.name, true);
+    store.serverRoomVersion = data.version;
     watchRoom(data.name);
   } catch {
     window.alert("This saved room could not be opened.");
@@ -509,7 +512,7 @@ async function renderRooms() {
     const li = document.createElement("li");
     const button = document.createElement("button");
     button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
-      `<div class="room-meta">${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
+      `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => openStoredRoom(r.name));
     li.appendChild(button);
     const remove = document.createElement("button");
