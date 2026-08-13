@@ -1144,7 +1144,8 @@ export class Walk3D {
     if (this.floorMaterial.map) this.floorMaterial.map.dispose();
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    // WebGPU exposes max anisotropy on the renderer, not renderer.capabilities.
+    texture.anisotropy = (this.renderer.getMaxAnisotropy && this.renderer.getMaxAnisotropy()) || 8;
     this.floorMaterial.map = texture;
     this.floorMaterial.needsUpdate = true;
   }
