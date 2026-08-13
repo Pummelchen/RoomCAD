@@ -55,5 +55,4 @@ Everything else lives in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
 
 ## License
 
-This repository has no license file. Unless one is added, reuse and
-redistribution rights are reserved to the repository owner.
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,13 @@
+[Unit]
+Description=RoomCAD V2 save API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /var/roomcad/server.py
+WorkingDirectory=/var/roomcad
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

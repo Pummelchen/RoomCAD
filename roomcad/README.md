@@ -34,6 +34,8 @@ so the page works offline.
 
 The backend (Python API + SQLite) lives on the server and is documented in
 [Server API and Storage](https://github.com/Pummelchen/RoomCAD/wiki/Server-API-and-Storage).
+The server code, systemd unit, production Caddyfile and a database dump are
+mirrored in [`server/`](server/) so the VPS can be rebuilt from git.
 
 ## Controls
 

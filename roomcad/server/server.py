@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""RoomCAD V2 save + live-collaboration API (SQLite-backed).
+
+Rooms are stored in a SQLite database (WAL mode) instead of .rcad files, and
+every save is kept as a new version. Also streams live updates to anyone
+watching a room (Server-Sent Events). Runs behind Caddy via a reverse proxy
+on /api/* (127.0.0.1:8078).
+"""
+import json
+import os
+import queue
+import re
+import sqlite3
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DB_PATH = "/var/roomcad/rooms.db"
+LEGACY_DIR = "/var/roomcad/rooms"  # old .rcad files, migrated once
+PREFIX = "ternak_room"
+HOST = "127.0.0.1"
+PORT = 8078
+
+WATCHERS = {}
+WATCH_LOCK = threading.Lock()
+DB_LOCK = threading.Lock()
+_conn = None
+
+
+def get_conn():
+    global _conn
+    if _conn is None:
+        # check_same_thread=False is safe here: every DB call is serialized
+        # by DB_LOCK, so the single connection is never used concurrently.
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")
+        _conn.execute("PRAGMA busy_timeout=5000")
+        init_db(_conn)
+    return _conn
+
+
+def init_db(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            json TEXT NOT NULL,
+            saved_at INTEGER NOT NULL,
+            client_id TEXT,
+            UNIQUE(name, version)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rooms_name ON rooms(name)")
+    conn.commit()
+    migrate(conn)
+
+
+def migrate(conn):
+    """Move legacy .rcad files into the database (as version 1) and remove them."""
+    if not os.path.isdir(LEGACY_DIR):
+        return
+    for fname in sorted(os.listdir(LEGACY_DIR)):
+        if not fname.endswith(".rcad"):
+            continue
+        name = fname[:-5]
+        path = os.path.join(LEGACY_DIR, fname)
+        exists = conn.execute("SELECT 1 FROM rooms WHERE name=? LIMIT 1", (name,)).fetchone()
+        if not exists:
+            with open(path, encoding="utf-8") as f:
+                json_text = f.read()
+            conn.execute(
+                "INSERT INTO rooms (name, version, json, saved_at, client_id) VALUES (?, 1, ?, ?, ?)",
+                (name, json_text, int(os.path.getmtime(path) * 1000), ""),
+            )
+        os.remove(path)
+    conn.commit()
+
+
+def room_list():
+    conn = get_conn()
+    with DB_LOCK:
+        rows = conn.execute("""
+            SELECT r.name, r.version, r.saved_at
+            FROM rooms r
+            JOIN (SELECT name, MAX(version) AS mv FROM rooms GROUP BY name) m
+              ON r.name = m.name AND r.version = m.mv
+            ORDER BY r.name
+        """).fetchall()
+    return [{"name": r["name"], "version": r["version"], "savedAt": r["saved_at"]} for r in rows]
+
+
+def sanitize(name):
+    return re.sub(r"[^A-Za-z0-9_-]", "", name)
+
+
+def next_name():
+    conn = get_conn()
+    with DB_LOCK:
+        rows = conn.execute("SELECT DISTINCT name FROM rooms").fetchall()
+    nums = []
+    for r in rows:
+        m = re.fullmatch(re.escape(PREFIX) + r"(\d+)", r["name"])
+        if m:
+            nums.append(int(m.group(1)))
+    return f"{PREFIX}{(max(nums) if nums else 0) + 1}"
+
+
+def save_room(name, room_json, client_id):
+    conn = get_conn()
+    with DB_LOCK:
+        row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM rooms WHERE name=?", (name,)).fetchone()
+        version = row["v"] + 1
+        conn.execute(
+            "INSERT INTO rooms (name, version, json, saved_at, client_id) VALUES (?, ?, ?, ?, ?)",
+            (name, version, room_json, int(time.time() * 1000), client_id),
+        )
+        conn.commit()
+    return version
+
+
+def load_room(name, version=None):
+    conn = get_conn()
+    with DB_LOCK:
+        if version is None:
+            row = conn.execute(
+                "SELECT name, version, json FROM rooms WHERE name=? ORDER BY version DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT name, version, json FROM rooms WHERE name=? AND version=?",
+                (name, version),
+            ).fetchone()
+    if row is None:
+        return None
+    return {"name": row["name"], "version": row["version"], "json": row["json"]}
+
+
+def delete_room(name):
+    conn = get_conn()
+    with DB_LOCK:
+        cur = conn.execute("DELETE FROM rooms WHERE name=?", (name,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def versions(name):
+    conn = get_conn()
+    with DB_LOCK:
+        rows = conn.execute(
+            "SELECT version, saved_at FROM rooms WHERE name=? ORDER BY version DESC",
+            (name,),
+        ).fetchall()
+    return [{"version": r["version"], "savedAt": r["saved_at"]} for r in rows]
+
+
+def notify(name, room_json, client_id, version):
+    payload = json.dumps({"name": name, "json": room_json, "clientId": client_id, "version": version})
+    with WATCH_LOCK:
+        queues = list(WATCHERS.get(name, set()))
+    for q in queues:
+        q.put(payload)
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _send(self, obj, code=200):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+    def _sse_write(self, payload):
+        self.wfile.write(("data: " + payload + "\n\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def _sse(self, name):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        q = queue.Queue()
+        with WATCH_LOCK:
+            WATCHERS.setdefault(name, set()).add(q)
+        try:
+            cur = load_room(name)
+            if cur:
+                self._sse_write(json.dumps({"name": name, "json": cur["json"], "clientId": "", "version": cur["version"]}))
+            while True:
+                payload = q.get()
+                try:
+                    self._sse_write(payload)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+        finally:
+            with WATCH_LOCK:
+                WATCHERS.get(name, set()).discard(q)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        qs = urllib.parse.parse_qs(parsed.query)
+        if path == "/api/rooms":
+            self._send(room_list())
+        elif path.startswith("/api/watch/"):
+            name = sanitize(urllib.parse.unquote(path[len("/api/watch/"):]))
+            if name:
+                self._sse(name)
+            else:
+                self._send({"error": "bad name"}, 400)
+        elif path.startswith("/api/versions/"):
+            name = sanitize(urllib.parse.unquote(path[len("/api/versions/"):]))
+            if name:
+                self._send(versions(name))
+            else:
+                self._send({"error": "bad name"}, 400)
+        elif path.startswith("/api/load/"):
+            name = sanitize(urllib.parse.unquote(path[len("/api/load/"):]))
+            version = None
+            if "version" in qs and qs["version"] and qs["version"][0].isdigit():
+                version = int(qs["version"][0])
+            data = load_room(name, version) if name else None
+            if data:
+                self._send(data)
+            else:
+                self._send({"error": "not found"}, 404)
+        else:
+            self._send({"error": "not found"}, 404)
+
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path != "/api/save":
+            self._send({"error": "not found"}, 404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            room_json = data.get("json", "")
+            client_id = str(data.get("clientId", ""))
+            name = sanitize(data.get("name") or "") or next_name()
+        except Exception:
+            self._send({"error": "bad request"}, 400)
+            return
+        version = save_room(name, room_json, client_id)
+        notify(name, room_json, client_id, version)
+        self._send({"name": name, "version": version})
+
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/rooms/"):
+            name = sanitize(urllib.parse.unquote(path[len("/api/rooms/"):]))
+            if name and delete_room(name):
+                self._send({"ok": True})
+            else:
+                self._send({"error": "not found"}, 404)
+        else:
+            self._send({"error": "not found"}, 404)
+
+
+if __name__ == "__main__":
+    get_conn()  # create DB + migrate on boot
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
