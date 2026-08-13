@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoomCAD V2</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    { "imports": { "three": "./lib/three.module.js" } }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="toolbar-group">
+        <div class="segmented" id="mode-picker" role="radiogroup" aria-label="View">
+          <button data-mode="2d" class="seg active" title="2D plan (⌘1)">2D Plan</button>
+          <button data-mode="3d" class="seg" title="3D walk (⌘2)">3D Walk</button>
+        </div>
+      </div>
+
+      <div class="toolbar-group plan-only">
+        <div class="segmented" id="grid-picker" role="radiogroup" aria-label="Grid">
+          <button data-grid="oneCentimeter">1 cm</button>
+          <button data-grid="twoCentimeters">2 cm</button>
+          <button data-grid="fiveCentimeters" class="active">5 cm</button>
+        </div>
+        <span class="divider"></span>
+        <button data-tool="select" class="tool active" title="Select and drag (V)">Select</button>
+        <button data-tool="wall" class="tool" title="Draw a wall (W)">Wall</button>
+        <button data-tool="door" class="tool" title="Add a door (D)">Door</button>
+        <button data-tool="window" class="tool" title="Add a window (G)">Window</button>
+        <button data-tool="erase" class="tool" title="Erase (E)">Erase</button>
+        <span class="divider"></span>
+        <button id="undo" title="Undo (⌘Z)">↩</button>
+        <button id="redo" title="Redo (⇧⌘Z)">↪</button>
+        <button id="rotate-left" class="plan-only" title="Turn the plan left (⌘[)">⟲</button>
+        <button id="rotate-right" class="plan-only" title="Turn the plan right (⌘])">⟳</button>
+        <button id="fit" class="plan-only" title="Fit the room in view">Fit</button>
+      </div>
+
+      <div class="toolbar-group">
+        <button id="new-room" class="primary">＋ New Room</button>
+        <button id="save-room">💾 Save</button>
+        <button id="open-room">📂 Open…</button>
+        <input type="file" id="file-input" accept=".room,.json" hidden>
+      </div>
+    </header>
+
+    <div id="main">
+      <nav id="sidebar">
+        <h3>My Rooms</h3>
+        <ul id="rooms-list"></ul>
+        <div class="palette" id="furniture-palette">
+          <h3>Furniture</h3>
+          <div class="palette-grid">
+            <button data-kind="bed" title="Bed">
+              <span class="icon">🛏️</span><span>Bed</span>
+            </button>
+            <button data-kind="table" title="Table">
+              <span class="icon">▦</span><span>Table</span>
+            </button>
+            <button data-kind="chair" title="Chair">
+              <span class="icon">🪑</span><span>Chair</span>
+            </button>
+            <button data-kind="wardrobe" title="Wardrobe">
+              <span class="icon">🗄️</span><span>Wardrobe</span>
+            </button>
+          </div>
+          <h3 class="palette-head">Fixtures</h3>
+          <div class="palette-grid">
+            <button data-kind="light" title="Ceiling light (60 W)">
+              <span class="icon">💡</span><span>Light</span>
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-actions">
+          <button id="sidebar-new">＋ New Room</button>
+          <button id="sidebar-open">📂 Open file…</button>
+        </div>
+      </nav>
+
+      <section id="canvas-area">
+        <canvas id="plan-canvas"></canvas>
+        <div id="walk-host" hidden>
+          <div id="walk-hint">Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · right-click: door swing</div>
+          <div id="paintball-ui" hidden>
+            <div id="paint-crosshair"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside id="inspector">
+        <div id="inspector-content"></div>
+      </aside>
+    </div>
+
+    <footer id="statusbar">
+      <span id="status-message">Ready</span>
+      <span id="status-hint"></span>
+    </footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

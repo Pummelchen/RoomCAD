@@ -1,0 +1,12 @@
+# RoomCAD V2 web — local Caddy server
+# Start with: ./serve.sh   (or: ./bin/caddy run --config Caddyfile)
+
+:8080 {
+	root * .
+	file_server
+	encode gzip
+	header {
+		-X-Frame-Options "DENY"
+		-X-Content-Type-Options "nosniff"
+	}
+}
