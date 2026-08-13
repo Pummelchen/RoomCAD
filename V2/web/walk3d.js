@@ -33,6 +33,47 @@ const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 6;
 const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
 
+// Singapore solar position. In the 2D editor the top of the plan is North (0°),
+// so azimuth is measured clockwise from North: 0=N, 90=E, 180=S, 270=W.
+const SG_LAT = 1.3521;
+const SG_LON = 103.8198;
+const SG_UTC_OFFSET = 8; // Singapore is UTC+8
+
+function dayOfYear(date) {
+  const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 0));
+  return Math.floor((date - start) / 86400000);
+}
+
+/// Sun altitude + azimuth (radians) for Singapore at a given UTC Date.
+function sunAltitudeAzimuth(date) {
+  const N = dayOfYear(date);
+  const declDeg = -23.44 * Math.cos((2 * Math.PI / 365) * (N + 10));
+  const utcHours = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+  const solarTime = utcHours + SG_LON / 15;
+  const hourAngleDeg = (solarTime - 12) * 15;
+  const lat = SG_LAT * Math.PI / 180;
+  const dec = declDeg * Math.PI / 180;
+  const h = hourAngleDeg * Math.PI / 180;
+  const sinAlt = Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(h);
+  const altitude = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+  const cosAz = (Math.sin(dec) - Math.sin(lat) * Math.sin(altitude)) / (Math.cos(lat) * Math.cos(altitude));
+  let azimuth = Math.acos(Math.max(-1, Math.min(1, cosAz)));
+  if (h > 0) azimuth = 2 * Math.PI - azimuth; // afternoon → west
+  return { altitude, azimuth };
+}
+
+// Eight distinct office-building facade palettes (ground-floor shops above).
+const FACADE_STYLES = [
+  { wall: "#45627a", frame: "#2c3e4d", glassTop: "#9fc4de", glassBot: "#2c3a46" }, // blue glass
+  { wall: "#4a6e63", frame: "#2e4a42", glassTop: "#a8d8c4", glassBot: "#263a34" }, // green glass
+  { wall: "#9a9aa2", frame: "#6e6e76", glassTop: "#bcd3e6", glassBot: "#33404c" }, // concrete
+  { wall: "#8a5f45", frame: "#5f3f2e", glassTop: "#bcd3e6", glassBot: "#33404c" }, // brick
+  { wall: "#b5a98e", frame: "#8a7f67", glassTop: "#cfe0ee", glassBot: "#3a4650" }, // stone
+  { wall: "#2e3640", frame: "#1d2329", glassTop: "#6f8fa8", glassBot: "#101820" }, // dark glass
+  { wall: "#d8d8dc", frame: "#a8a8b0", glassTop: "#a8c8e0", glassBot: "#3a4652" }, // white
+  { wall: "#a06b4e", frame: "#6e4633", glassTop: "#c0d8e8", glassBot: "#36404a" }, // terracotta
+];
+
 export class Walk3D {
   constructor(container) {
     this.container = container;
@@ -77,11 +118,7 @@ export class Walk3D {
     // Reusable scene resources (never disposed between rebuilds).
     this.glassMaterial = this.makeGlassMaterial();
     this.skyTexture = this.makeSkyTexture();
-    this.facades = [
-      this.makeFacade("glass"),
-      this.makeFacade("concrete"),
-      this.makeFacade("brick"),
-    ];
+    this.facades = FACADE_STYLES.map((s, i) => this.makeFacade(i, 0x2f6e2b1 + i * 1000003));
     this.cityGroundTexture = this.makeCityGroundTexture();
     this.reusableTextures = new Set([this.skyTexture, this.cityGroundTexture]);
     for (const f of this.facades) {
@@ -89,6 +126,13 @@ export class Walk3D {
       this.reusableTextures.add(f.emissiveMap);
     }
     this.pointLights = [];
+
+    // Real-time sun: starts at 15:00 Singapore (3 pm) and advances with the
+    // wall clock, so shadows shift if the 3D room is left open for hours.
+    this.sunRefMs = Date.now();
+    this.sunStartUtc = 15.0 - SG_UTC_OFFSET; // 07:00 UTC = 15:00 SGT
+    this.sun = null;
+    this.sunTarget = null;
 
     // Paintball easter egg
     this.paintballMode = false;
@@ -147,7 +191,6 @@ export class Walk3D {
     scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x8a887e, 0.55));
 
     const sun = new THREE.DirectionalLight(0xfff2d9, 2.8);
-    sun.position.set(room.width / 2 + 6, 14, room.length / 2 - 4);
     sun.castShadow = true;
     sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.near = 1;
@@ -164,6 +207,9 @@ export class Walk3D {
     scene.add(sunTarget);
     sun.target = sunTarget;
     scene.add(sun);
+    this.sun = sun;
+    this.sunTarget = sunTarget;
+    this.updateSun();
 
     const fill = new THREE.DirectionalLight(0xbfd4ff, 0.35);
     fill.position.set(-3, 4, room.length + 2);
@@ -607,10 +653,18 @@ export class Walk3D {
     return tex;
   }
 
-  /// A sharp downtown office facade (window grid with mullions + glass
-  /// reflections). Returns a colour map plus an emissive map for lit windows.
-  makeFacade(style) {
-    const size = 512;
+  /// A high-quality office facade (1024²): office windows above and a ground
+  /// floor with a sign band, awning, storefront and entrance. Returns a colour
+  /// map plus an emissive map for lit windows.
+  makeFacade(style, seed) {
+    const size = 1024;
+    const s = FACADE_STYLES[style % FACADE_STYLES.length];
+    let r = (seed || 1) >>> 0;
+    const rnd = () => {
+      r = (r * 1664525 + 1013904223) >>> 0;
+      return r / 4294967296;
+    };
+
     const colorCanvas = document.createElement("canvas");
     colorCanvas.width = colorCanvas.height = size;
     const cctx = colorCanvas.getContext("2d");
@@ -618,27 +672,27 @@ export class Walk3D {
     emissiveCanvas.width = emissiveCanvas.height = size;
     const ectx = emissiveCanvas.getContext("2d");
 
-    let base, frame;
-    if (style === "glass") { base = "#4d5f70"; frame = "#31404d"; }
-    else if (style === "brick") { base = "#8a6a52"; frame = "#5f4634"; }
-    else { base = "#9a9aa2"; frame = "#72727a"; } // concrete
-
-    cctx.fillStyle = base;
+    // Wall base.
+    cctx.fillStyle = s.wall;
     cctx.fillRect(0, 0, size, size);
     ectx.fillStyle = "#000";
     ectx.fillRect(0, 0, size, size);
 
+    const groundH = Math.floor(size * 0.15); // ground floor (shops/entrance)
+    const officeBottom = size - groundH;
+
+    // ── Office windows (upper part) ──
     const cols = 10;
-    const rows = 16;
-    const margin = 14;
-    const gap = 7;
+    const officeRows = 9;
+    const margin = 12;
+    const gap = 9;
     const cw = (size - margin * 2 - gap * (cols - 1)) / cols;
-    const ch = (size - margin * 2 - gap * (rows - 1)) / rows;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = margin + c * (cw + gap);
-        const y = margin + r * (ch + gap);
-        const lit = Math.random() < 0.24;
+    const ch = (officeBottom - margin - gap * (officeRows - 1)) / officeRows;
+    for (let row = 0; row < officeRows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const x = margin + col * (cw + gap);
+        const y = margin + row * (ch + gap);
+        const lit = rnd() < 0.2;
         const g = cctx.createLinearGradient(x, y, x, y + ch);
         if (lit) {
           g.addColorStop(0, "#fff3cc");
@@ -646,18 +700,67 @@ export class Walk3D {
           ectx.fillStyle = "#ffd080";
           ectx.fillRect(x, y, cw, ch);
         } else {
-          // Reflective glass: sky-blue reflection at the top, darker below.
-          g.addColorStop(0, "#8fb6d4");
-          g.addColorStop(1, "#2c3946");
+          g.addColorStop(0, s.glassTop);
+          g.addColorStop(1, s.glassBot);
         }
         cctx.fillStyle = g;
         cctx.fillRect(x, y, cw, ch);
-        // Mullion (window frame).
-        cctx.strokeStyle = frame;
+        cctx.strokeStyle = s.frame;
         cctx.lineWidth = 2;
         cctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
       }
     }
+
+    // ── Ground floor: sign band, awning, storefront + entrance ──
+    const gy = officeBottom;
+    const signH = Math.floor(groundH * 0.2);
+    const awningH = Math.floor(groundH * 0.16);
+    const sfY = gy + signH + awningH;
+    const sfH = size - sfY;
+
+    // Sign band (a random shop name on a colourful strip).
+    cctx.fillStyle = `hsl(${Math.floor(rnd() * 360)}, 52%, 46%)`;
+    cctx.fillRect(0, gy, size, signH);
+    const signText = ["CAFÉ", "MARKET", "SHOP", "OFFICES", "STORE", "BANK", "DELI", "CLINIC"][Math.floor(rnd() * 8)];
+    cctx.fillStyle = "rgba(255,255,255,0.9)";
+    cctx.font = `bold ${Math.floor(signH * 0.62)}px sans-serif`;
+    cctx.textAlign = "center";
+    cctx.textBaseline = "middle";
+    cctx.fillText(signText, size / 2, gy + signH / 2);
+
+    // Awning (striped).
+    for (let i = 0; i < size; i += 22) {
+      cctx.fillStyle = (i / 22) % 2 === 0 ? "#efe8df" : s.frame;
+      cctx.fillRect(i, gy + signH, 22, awningH);
+    }
+
+    // Storefront glass (large panes) with a central entrance door.
+    cctx.fillStyle = "#26333e";
+    cctx.fillRect(0, sfY, size, sfH);
+    const panes = 6;
+    const paneW = size / panes;
+    for (let p = 0; p < panes; p++) {
+      const px = p * paneW;
+      const g2 = cctx.createLinearGradient(px, sfY, px, sfY + sfH);
+      g2.addColorStop(0, "#56728a");
+      g2.addColorStop(1, "#1d2831");
+      cctx.fillStyle = g2;
+      cctx.fillRect(px, sfY, paneW, sfH);
+      cctx.strokeStyle = s.frame;
+      cctx.lineWidth = 3;
+      cctx.strokeRect(px + 2, sfY + 2, paneW - 4, sfH - 4);
+    }
+    // Entrance door (recessed, darker) in the middle.
+    const doorW = size * 0.14;
+    const doorX = size / 2 - doorW / 2;
+    cctx.fillStyle = "#141b22";
+    cctx.fillRect(doorX, sfY, doorW, sfH);
+    cctx.strokeStyle = "#9aa2aa";
+    cctx.lineWidth = 3;
+    cctx.strokeRect(doorX + 4, sfY + 4, doorW - 8, sfH - 8);
+    // Door handle.
+    cctx.fillStyle = "#d4d8dd";
+    cctx.fillRect(doorX + doorW - 16, sfY + sfH / 2 - 8, 5, 16);
 
     const map = new THREE.CanvasTexture(colorCanvas);
     map.colorSpace = THREE.SRGBColorSpace;
@@ -670,45 +773,55 @@ export class Walk3D {
     return { map, emissiveMap };
   }
 
-  /// Sharp asphalt street grid: sidewalks, lane markings and crosswalks.
+  /// A realistic 4K street network: roads with lane markings, sidewalks with
+  /// kerbs, crosswalks and pedestrian walk paths between the blocks.
   makeCityGroundTexture() {
-    const size = 2048;
+    const size = 4096;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
 
-    // Asphalt base with subtle noise for texture.
+    // Asphalt base with fine noise and slight tone variation.
     ctx.fillStyle = "#2b2d31";
     ctx.fillRect(0, 0, size, size);
-    for (let i = 0; i < 6000; i++) {
-      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.025})`;
-      ctx.fillRect(Math.random() * size, Math.random() * size, 2, 2);
+    for (let i = 0; i < 22000; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.02})`;
+      ctx.fillRect(Math.random() * size, Math.random() * size, 3, 3);
     }
 
-    // Street grid: a block every `block` px, a road `road` px wide.
-    const block = 256;
-    const road = 64;
-    const sidewalk = 12;
+    const block = 512;      // city block pitch (px)
+    const road = 160;       // road width (two lanes)
+    const sidewalk = 26;    // sidewalk width
+    const kerb = 4;         // kerb line
 
-    // Road surface (slightly lighter than the asphalt block tops).
-    ctx.fillStyle = "#3b3e44";
+    // Sidewalk slabs (light concrete) fill the blocks; roads are cut over them.
+    ctx.fillStyle = "#5a5d64";
+    ctx.fillRect(0, 0, size, size);
+
+    // Road surface (asphalt) over the sidewalk fill.
+    ctx.fillStyle = "#363940";
     for (let i = 0; i <= size; i += block) {
       ctx.fillRect(i - road / 2, 0, road, size);
       ctx.fillRect(0, i - road / 2, size, road);
     }
-    // Sidewalks.
-    ctx.fillStyle = "#555860";
+
+    // Kerbs: a thin light line on each road edge.
+    ctx.strokeStyle = "#70737b";
+    ctx.lineWidth = kerb;
     for (let i = 0; i <= size; i += block) {
-      ctx.fillRect(i - road / 2 - sidewalk, 0, sidewalk, size);
-      ctx.fillRect(i + road / 2, 0, sidewalk, size);
-      ctx.fillRect(0, i - road / 2 - sidewalk, size, sidewalk);
-      ctx.fillRect(0, i + road / 2, size, sidewalk);
+      ctx.beginPath();
+      ctx.moveTo(i - road / 2 - sidewalk, 0); ctx.lineTo(i - road / 2 - sidewalk, size);
+      ctx.moveTo(i + road / 2 + sidewalk, 0); ctx.lineTo(i + road / 2 + sidewalk, size);
+      ctx.moveTo(0, i - road / 2 - sidewalk); ctx.lineTo(size, i - road / 2 - sidewalk);
+      ctx.moveTo(0, i + road / 2 + sidewalk); ctx.lineTo(size, i + road / 2 + sidewalk);
+      ctx.stroke();
     }
-    // Lane centre dashes.
-    ctx.strokeStyle = "#c9cdd2";
-    ctx.lineWidth = 3;
-    ctx.setLineDash([16, 14]);
+
+    // Lane markings: dashed centre line + solid edge lines.
+    ctx.strokeStyle = "#c8ccd2";
+    ctx.lineWidth = 5;
+    ctx.setLineDash([36, 30]);
     for (let i = 0; i <= size; i += block) {
       ctx.beginPath();
       ctx.moveTo(i, 0); ctx.lineTo(i, size);
@@ -716,17 +829,50 @@ export class Walk3D {
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    ctx.lineWidth = 4;
+    for (let i = 0; i <= size; i += block) {
+      ctx.beginPath();
+      ctx.moveTo(i - road / 2 + 10, 0); ctx.lineTo(i - road / 2 + 10, size);
+      ctx.moveTo(i + road / 2 - 10, 0); ctx.lineTo(i + road / 2 - 10, size);
+      ctx.moveTo(0, i - road / 2 + 10); ctx.lineTo(size, i - road / 2 + 10);
+      ctx.moveTo(0, i + road / 2 - 10); ctx.lineTo(size, i + road / 2 - 10);
+      ctx.stroke();
+    }
 
-    // Crosswalk stripes at intersections.
-    ctx.fillStyle = "#b6bac0";
+    // Crosswalks (zebra stripes) at every intersection.
+    ctx.fillStyle = "#c6cad0";
     for (let i = block; i < size; i += block) {
       for (let j = block; j < size; j += block) {
-        for (let k = 0; k < 6; k++) {
-          ctx.fillRect(i - road / 2 + 6, j - road / 2 + 4 + k * 10, road - 12, 5);
-          ctx.fillRect(i - road / 2 + 4 + k * 10, j - road / 2 + 6, 5, road - 12);
+        const half = road / 2 - 16;
+        for (let k = 0; k < 9; k++) {
+          ctx.fillRect(i - half + 4, j - road / 2 + 8 + k * 14, road - 40, 7);
+          ctx.fillRect(i - road / 2 + 8 + k * 14, j - half + 4, 7, road - 40);
         }
       }
     }
+
+    // Stop lines at intersections.
+    ctx.fillStyle = "#e8eaee";
+    for (let i = block; i < size; i += block) {
+      for (let j = block; j < size; j += block) {
+        ctx.fillRect(i - road / 2 + 20, j - road / 2 - 24, road - 40, 8);
+        ctx.fillRect(i - road / 2 + 20, j + road / 2 + 16, road - 40, 8);
+        ctx.fillRect(i - road / 2 - 24, j - road / 2 + 20, 8, road - 40);
+        ctx.fillRect(i + road / 2 + 16, j - road / 2 + 20, 8, road - 40);
+      }
+    }
+
+    // Pedestrian walk paths through the middle of each block.
+    ctx.strokeStyle = "#7c8088";
+    ctx.lineWidth = 22;
+    ctx.setLineDash([28, 20]);
+    for (let i = block / 2; i < size; i += block) {
+      ctx.beginPath();
+      ctx.moveTo(i, 0); ctx.lineTo(i, size);
+      ctx.moveTo(0, i); ctx.lineTo(size, i);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -749,6 +895,44 @@ export class Walk3D {
     this.scene.add(sky);
   }
 
+  /// Sun direction as a unit vector (North = -Z, azimuth clockwise from North,
+  /// matching the 2D editor where the top of the plan is North 0°).
+  sunDirection(date) {
+    const { altitude, azimuth } = sunAltitudeAzimuth(date);
+    const alt = Math.max(altitude, 0.05); // keep it just above the horizon at night
+    return new THREE.Vector3(
+      Math.sin(azimuth) * Math.cos(alt),  // East  (+X)
+      Math.sin(alt),                       // up    (+Y)
+      -Math.cos(azimuth) * Math.cos(alt)   // North (-Z)
+    );
+  }
+
+  /// Positions the sun for the virtual Singapore clock and updates its
+  /// intensity as it nears the horizon. Called every frame in the loop.
+  updateSun() {
+    if (!this.sun || !this.sunTarget) return;
+    const now = Date.now();
+    const elapsedHours = (now - this.sunRefMs) / 3600000;
+    const virtualUtcHours = this.sunStartUtc + elapsedHours;
+    const date = new Date(now);
+    date.setUTCDate(date.getUTCDate() + Math.floor(virtualUtcHours / 24));
+    const hh = ((virtualUtcHours % 24) + 24) % 24;
+    date.setUTCHours(Math.floor(hh), Math.floor((hh % 1) * 60), 0, 0);
+
+    const dir = this.sunDirection(date);
+    const room = store.room;
+    const cx = room.width / 2;
+    const cz = room.length / 2;
+    const dist = 40;
+    this.sun.position.set(cx + dir.x * dist, dir.y * dist, cz + dir.z * dist);
+    this.sunTarget.position.set(cx, 0, cz);
+    this.sunTarget.updateMatrixWorld();
+
+    // Fade the sun down toward dusk so the scene never goes fully black.
+    const altDeg = Math.asin(Math.max(-0.1, Math.min(1, dir.y))) * 180 / Math.PI;
+    this.sun.intensity = 2.8 * Math.max(0.2, Math.min(1, altDeg / 12));
+  }
+
   /// A procedural virtual city (roads + lit buildings) surrounding the room.
   buildCity(room) {
     const group = new THREE.Group();
@@ -769,7 +953,7 @@ export class Walk3D {
     // One InstancedMesh per facade style (a single draw call each).
     const buildingGeometry = new THREE.BoxGeometry(1, 1, 1);
     const facadeMaterials = this.facades.map((f, i) => {
-      const glass = i === 0;
+      const glass = i === 0 || i === 1 || i === 5; // glass-tower styles
       return new THREE.MeshStandardMaterial({
         map: f.map,
         roughness: glass ? 0.25 : 0.75,
@@ -781,7 +965,7 @@ export class Walk3D {
     });
 
     // Downtown: a taller cluster near the centre, mid-rise around the edges.
-    const buckets = [[], [], []];
+    const buckets = this.facades.map(() => []);
     const block = 14;
     const roomHalfW = room.width / 2 + 5;
     const roomHalfL = room.length / 2 + 5;
@@ -803,8 +987,9 @@ export class Walk3D {
         const height = tower
           ? 55 + rnd() * 45
           : 14 + rnd() * (dist < 40 ? 30 : 18);
-        const style = rnd() < 0.4 ? 0 : (rnd() < 0.6 ? 1 : 2);
-        buckets[style].push({ px, pz, halfW, halfD, height });
+        const style = Math.floor(rnd() * this.facades.length);
+        const tint = 0.82 + rnd() * 0.36; // per-building brightness variation
+        buckets[style].push({ px, pz, halfW, halfD, height, tint });
       }
     }
 
@@ -812,6 +997,7 @@ export class Walk3D {
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3();
     const pos = new THREE.Vector3();
+    const tintColor = new THREE.Color();
     buckets.forEach((list, i) => {
       if (list.length === 0) return;
       const mesh = new THREE.InstancedMesh(buildingGeometry, facadeMaterials[i], list.length);
@@ -820,8 +1006,11 @@ export class Walk3D {
         scl.set(b.halfW * 2, b.height, b.halfD * 2);
         matrix.compose(pos, quat, scl);
         mesh.setMatrixAt(k, matrix);
+        tintColor.setRGB(b.tint, b.tint, b.tint);
+        mesh.setColorAt(k, tintColor);
       });
       mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       group.add(mesh);
@@ -1370,6 +1559,7 @@ export class Walk3D {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.tick(dt);
     this.updatePaintballs(dt);
+    this.updateSun();
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.raf = requestAnimationFrame(() => this.loop());
