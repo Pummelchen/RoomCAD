@@ -335,6 +335,9 @@ export class Editor2D {
     }
     const wall = P.wallNear(store.room, p);
     if (wall) {
+      // Select the wall so it turns green and its length shows while resizing.
+      store.clearSelection();
+      store.selectedWallID = wall.id;
       store.beginDrag();
       const startDist = P.distance(wall.start, p);
       const endDist = P.distance(wall.end, p);
@@ -554,6 +557,8 @@ export class Editor2D {
       this.drawWall(wall, wall.id === store.selectedWallID);
     }
 
+    this.drawSelectedWallLength();
+
     const measured = this.activeOpening();
     if (measured) {
       this.drawOpeningMeasurements(measured.kind, measured.id);
@@ -644,7 +649,7 @@ export class Editor2D {
     const ctx = this.ctx;
     const room = store.room;
     const thickness = selected ? 9 : 7;
-    const color = selected ? "#6db3ff" : "#4a90e2";
+    const color = selected ? "#2ecc40" : "#4a90e2";
 
     const doorSpans = room.doors
       .filter(d => d.wallID === wall.id)
@@ -765,6 +770,17 @@ export class Editor2D {
     }
   }
 
+  /// Shows the length of the selected wall (or the wall being resized) so the
+  /// current measurement in centimetres is always visible.
+  drawSelectedWallLength() {
+    const wall = store.selectedWall();
+    if (!wall) return;
+    const mid = P.wallMidpoint(wall);
+    const perp = P.wallPerp(wall);
+    const at = this.screen({ x: mid.x + perp.x * 0.5, z: mid.z + perp.z * 0.5 });
+    this.drawChip(Math.round(P.wallLength(wall) * 100), at);
+  }
+
   drawChip(cmValue, at) {
     const ctx = this.ctx;
     const text = cmValue + " cm";
@@ -832,13 +848,62 @@ export class Editor2D {
     ctx.fillStyle = c.text;
     ctx.fillText(kind.label, rect.x + rect.w / 2, rect.y + rect.h / 2);
 
-    // Front indicator
-    ctx.strokeStyle = c.front;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(rect.x + rect.w / 2, rect.y + rect.h / 2);
-    ctx.lineTo(rect.x + rect.w / 2, rect.y + Math.max(6, Math.min(14, rect.h * 0.25)));
-    ctx.stroke();
+    // Special-side indicator (backrest / pillows / door knobs).
+    this.drawFurnitureFeature(item, state, c);
+  }
+
+  /// Draws the furniture's "special side" so its orientation is clear in 2D:
+  /// a chair shows its backrest, a bed its pillow side, and a wardrobe the
+  /// edge with its two door knobs. Square tables need no indicator.
+  drawFurnitureFeature(item, state, c) {
+    if (item.kind === "table") return;
+    const ctx = this.ctx;
+    const f = P.furnitureFootprint(item);
+    const dir = this.featureDirection(item);
+
+    let a, b;
+    if (dir === "top") { a = { x: f.minX, z: f.minZ }; b = { x: f.maxX, z: f.minZ }; }
+    else if (dir === "bottom") { a = { x: f.minX, z: f.maxZ }; b = { x: f.maxX, z: f.maxZ }; }
+    else if (dir === "left") { a = { x: f.minX, z: f.minZ }; b = { x: f.minX, z: f.maxZ }; }
+    else { a = { x: f.maxX, z: f.minZ }; b = { x: f.maxX, z: f.maxZ }; } // right
+
+    const sa = this.screen(a);
+    const sb = this.screen(b);
+    const color = state === "default" ? "#cfd2d8" : c.front;
+
+    if (item.kind === "wardrobe") {
+      // Two door knobs mark the front edge.
+      const t = 0.22;
+      ctx.fillStyle = color;
+      for (const k of [t, 1 - t]) {
+        const kx = sa.x + (sb.x - sa.x) * k;
+        const ky = sa.y + (sb.y - sa.y) * k;
+        ctx.beginPath();
+        ctx.arc(kx, ky, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Backrest (chair) / pillow side (bed): a thick band along the edge.
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sa.x, sa.y);
+      ctx.lineTo(sb.x, sb.y);
+      ctx.stroke();
+    }
+  }
+
+  /// Which footprint edge holds the special feature for the current rotation.
+  featureDirection(item) {
+    const r = ((item.rotationDegrees % 360) + 360) % 360;
+    const idx = r / 90;
+    if (item.kind === "chair") {
+      // Backrest sits on the +D side.
+      return ["bottom", "left", "top", "right"][idx];
+    }
+    // Bed pillows and wardrobe doors/knobs sit on the -D side.
+    return ["top", "right", "bottom", "left"][idx];
   }
 
   drawFixture(rect, state, kind) {

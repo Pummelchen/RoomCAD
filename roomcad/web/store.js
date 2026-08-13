@@ -456,15 +456,16 @@ export const store = {
       x: P.clamp(candidate.center.x, w / 2, canvas.width - w / 2),
       z: P.clamp(candidate.center.z, d / 2, canvas.length - d / 2),
     };
-    if (!P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
-      this.status = "Can't turn it there — it would hit a wall";
-      this.flashFurniture(id, "invalid");
-      return;
-    }
-    this.flashFurniture(id, "valid");
-    this.commit("Turned " + P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(), room => {
-      room.furniture[index] = candidate;
-    });
+    // Never block a turn. Apply it and colour the item green (fits) or red
+    // (conflict) so it's clear when the piece is in a bad spot — the user can
+    // keep turning until it turns green.
+    const valid = P.isFurniturePlacementValid(this.room, candidate, new Set([id]));
+    this.furnitureFeedback = { id, state: valid ? "valid" : "invalid" };
+    this.commit(
+      (valid ? "Turned " : "Turned — it overlaps, turn back until it fits · ") +
+        P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(),
+      room => { room.furniture[index] = candidate; }
+    );
   },
 
   nudgeSelectedFurniture(dx, dz) {
@@ -481,6 +482,8 @@ export const store = {
       this.flashFurniture(id, "invalid");
       return;
     }
+    // A valid nudge clears any stale red from a previous bad turn.
+    this.flashFurniture(id, "valid");
     this.commit("Moved " + P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(), room => {
       room.furniture[index] = candidate;
     });
