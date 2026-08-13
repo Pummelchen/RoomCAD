@@ -179,7 +179,10 @@ export class Walk3D {
         this.show3dError("WebGPU is not supported in this browser — use a recent Chrome, Edge, or Safari 18+.");
         return;
       }
-      await this.renderer.init();
+      await Promise.race([
+        this.renderer.init(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("WebGPU init timed out")), 20000)),
+      ]);
       await RAPIER.init();
       this.physicsReady = true;
 
