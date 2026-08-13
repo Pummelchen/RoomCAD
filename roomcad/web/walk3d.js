@@ -174,21 +174,42 @@ export class Walk3D {
 
   /// WebGPU + Rapier are async; build the scene and start once both are ready.
   async start() {
-    await this.renderer.init();
-    await RAPIER.init();
-    this.physicsReady = true;
+    try {
+      if (!navigator.gpu) {
+        this.show3dError("WebGPU is not supported in this browser — use a recent Chrome, Edge, or Safari 18+.");
+        return;
+      }
+      await this.renderer.init();
+      await RAPIER.init();
+      this.physicsReady = true;
 
-    // Image-based lighting (needs an initialised renderer).
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
+      // Image-based lighting (needs an initialised renderer).
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
 
-    // Shared tree material (the city/terrain/road materials are made per build).
-    this.treeMaterial = createTreeMaterial();
+      // Shared tree material (the city/terrain/road materials are made per build).
+      this.treeMaterial = createTreeMaterial();
 
-    this.build(store.room, true);
-    this.setupPostProcessing();
-    this.loop();
+      this.build(store.room, true);
+      this.setupPostProcessing();
+      this.loop();
+    } catch (err) {
+      console.error("RoomCAD 3D init failed:", err);
+      this.show3dError("3D failed to start: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  /// Shows a visible error in the 3D top-left readout (reused for the FPS).
+  show3dError(message) {
+    if (this.fpsEl) {
+      this.fpsEl.textContent = message;
+      this.fpsEl.style.color = "#ff6b5e";
+      this.fpsEl.style.background = "rgba(40, 12, 10, 0.88)";
+      this.fpsEl.style.maxWidth = "92%";
+      this.fpsEl.style.whiteSpace = "normal";
+      this.fpsEl.style.pointerEvents = "auto";
+    }
   }
 
   // MARK: Scene building
@@ -273,9 +294,14 @@ export class Walk3D {
     ceiling.receiveShadow = true;
     scene.add(ceiling);
 
-    // The virtual city beyond the windows.
-    this.buildCity(room);
-    if (this.city) this.scene.add(this.city);
+    // The virtual city beyond the windows (fall back to no city on error).
+    try {
+      this.buildCity(room);
+      if (this.city) this.scene.add(this.city);
+    } catch (err) {
+      console.error("City generation failed:", err);
+      this.city = null;
+    }
 
     // Walls with openings (windows are transparent so the city shows through).
     for (const wall of room.walls) {
@@ -903,6 +929,15 @@ export class Walk3D {
   // MARK: Post-processing (SSAO + bloom, WebGPU TSL)
 
   setupPostProcessing() {
+    try {
+      this.setupSaoBloom();
+    } catch (err) {
+      console.error("SSAO/bloom failed, falling back to direct render:", err);
+      this.renderPipeline = null;
+    }
+  }
+
+  setupSaoBloom() {
     this.renderPipeline = new THREE.RenderPipeline(this.renderer);
 
     // One scene pass that also writes view-space normals for SSAO.
