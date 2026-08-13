@@ -209,10 +209,10 @@ export const store = {
     if (index < 0) return;
     this.beginDrag();
     const wall = { ...this.room.walls[index] };
-    // The moved endpoint stays axis-aligned with the fixed one, so walls
-    // always keep their 90° corners.
+    // The dragged endpoint snaps to the closer axis through the fixed one, so
+    // grabbing it can resize the wall or reorient it onto a 90° side.
     const fixed = part === "start" ? wall.end : wall.start;
-    const p = P.snapWallEnd(this.room, raw, fixed);
+    const p = P.snapWallEndpoint(this.room, raw, fixed);
     if (part === "start") wall.start = p;
     else wall.end = p;
     if (P.wallLength(wall) >= 0.15) {
@@ -224,8 +224,9 @@ export const store = {
     const index = this.room.walls.findIndex(w => w.id === id);
     if (index < 0) return;
     this.beginDrag();
+    const canvas = P.canvasOf(this.room);
     this.room.walls[index] = P.translateWall(
-      this.room.walls[index], dx, dz, this.room.width, this.room.length
+      this.room.walls[index], dx, dz, canvas.width, canvas.length
     );
   },
 
@@ -450,9 +451,10 @@ export const store = {
     const swaps = candidate.rotationDegrees === 90 || candidate.rotationDegrees === 270;
     const w = swaps ? kind.d : kind.w;
     const d = swaps ? kind.w : kind.d;
+    const canvas = P.canvasOf(this.room);
     candidate.center = {
-      x: P.clamp(candidate.center.x, w / 2, this.room.width - w / 2),
-      z: P.clamp(candidate.center.z, d / 2, this.room.length - d / 2),
+      x: P.clamp(candidate.center.x, w / 2, canvas.width - w / 2),
+      z: P.clamp(candidate.center.z, d / 2, canvas.length - d / 2),
     };
     if (!P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
       this.status = "Can't turn it there — it would hit a wall";
@@ -565,6 +567,19 @@ export const store = {
     this.commit("Resized room to " + P.cm(w) + " × " + P.cm(l), room => {
       room.width = w;
       room.length = l;
+    });
+    this.clearSelection();
+  },
+
+  /// Resizes the buildable base plate (canvas). The plate always keeps at
+  /// least the main room's footprint.
+  updateCanvasSize(width, length) {
+    const canvas = P.canvasOf(this.room);
+    const w = P.clamp(width, Math.max(2, this.room.width), 60);
+    const l = P.clamp(length, Math.max(2, this.room.length), 60);
+    if (w === canvas.width && l === canvas.length) return;
+    this.commit("Resized canvas to " + P.cm(w) + " × " + P.cm(l), room => {
+      room.canvas = { width: w, length: l };
     });
     this.clearSelection();
   },

@@ -19,6 +19,7 @@ export class Editor2D {
     this.spaceDown = false;
     this.pointers = new Map();
     this.pinch = null;
+    this.contextMenu = document.getElementById("context-menu");
 
     this.attachEvents();
     this.observeSize();
@@ -29,14 +30,13 @@ export class Editor2D {
 
   /// The plan dimensions as seen on screen under the current rotation.
   displaySize() {
-    const { width, length } = store.room;
+    const { width, length } = P.canvasOf(store.room);
     const rotated = store.rotation === 90 || store.rotation === 270;
     return rotated ? { width: length, height: width } : { width, height: length };
   }
 
   screen(p, rotation = store.rotation) {
-    const w = store.room.width;
-    const l = store.room.length;
+    const { width: w, length: l } = P.canvasOf(store.room);
     let dx = p.x;
     let dz = p.z;
     if (rotation === 90) { dx = p.z; dz = w - p.x; }
@@ -46,8 +46,7 @@ export class Editor2D {
   }
 
   plan(c, rotation = store.rotation) {
-    const w = store.room.width;
-    const l = store.room.length;
+    const { width: w, length: l } = P.canvasOf(store.room);
     const px = (c.x - this.origin.x) / this.scale;
     const pz = (c.y - this.origin.y) / this.scale;
     if (rotation === 90) return { x: w - pz, z: px };
@@ -128,7 +127,7 @@ export class Editor2D {
       const factor = Math.exp(-e.deltaY * 0.0015);
       this.zoomAt(factor, e.clientX - rect.left, e.clientY - rect.top);
     }, { passive: false });
-    this.canvas.addEventListener("contextmenu", e => e.preventDefault());
+    this.canvas.addEventListener("contextmenu", e => this.onContextMenu(e));
     this.canvas.addEventListener("dblclick", e => {
       const rect = this.canvas.getBoundingClientRect();
       const c = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -159,11 +158,119 @@ export class Editor2D {
       this.drag = null;
       this.pointers.clear();
     });
+    // Dismiss the context menu on any outside click or on Escape.
+    window.addEventListener("pointerdown", e => {
+      if (this.contextMenu && !this.contextMenu.hidden && !this.contextMenu.contains(e.target)) {
+        this.hideContextMenu();
+      }
+    });
+    window.addEventListener("keydown", e => {
+      if (e.code === "Escape") this.hideContextMenu();
+    });
   }
 
   isTyping() {
     const el = document.activeElement;
     return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+  }
+
+  // MARK: Context menu (right-click)
+
+  onContextMenu(e) {
+    e.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    const c = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const p = this.plan(c);
+
+    // Only show a menu when there is something to act on under the cursor.
+    const furniture = P.furnitureNear(store.room, p);
+    const opening = P.openingNear(store.room, p);
+    const wall = P.wallNear(store.room, p);
+    if (!furniture && !opening && !wall) {
+      this.hideContextMenu();
+      return;
+    }
+    store.select(p);
+    this.showContextMenu(e.clientX, e.clientY);
+  }
+
+  showContextMenu(x, y) {
+    if (!this.contextMenu) return;
+    const { title, items } = this.contextMenuEntries();
+    if (!title) {
+      this.hideContextMenu();
+      return;
+    }
+
+    this.contextMenu.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "ctx-title";
+    head.textContent = title;
+    this.contextMenu.appendChild(head);
+
+    for (const item of items) {
+      const button = document.createElement("button");
+      button.textContent = item.label;
+      if (item.danger) button.className = "danger";
+      button.addEventListener("click", () => this.runContextMenuAction(item.action));
+      this.contextMenu.appendChild(button);
+    }
+
+    this.contextMenu.hidden = false;
+    const rect = this.contextMenu.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(x, window.innerWidth - rect.width - margin);
+    const top = Math.min(y, window.innerHeight - rect.height - margin);
+    this.contextMenu.style.left = Math.max(margin, left) + "px";
+    this.contextMenu.style.top = Math.max(margin, top) + "px";
+  }
+
+  hideContextMenu() {
+    if (this.contextMenu) this.contextMenu.hidden = true;
+  }
+
+  contextMenuEntries() {
+    let title = "";
+    const items = [];
+    if (store.selectedFurnitureID) {
+      const item = store.selectedFurniture();
+      if (!item) return { title, items };
+      const kind = P.FURNITURE_KINDS[item.kind];
+      title = kind.title;
+      if (kind.category !== "fixture") {
+        items.push({ label: "Turn 90°", action: "turn" });
+      }
+      items.push({ label: "Delete " + kind.title.toLowerCase(), danger: true, action: "delete" });
+    } else if (store.selectedDoorID) {
+      const door = store.selectedDoor();
+      title = "Door";
+      if (door) items.push({ label: door.open ? "Close door" : "Open door", action: "toggle-open" });
+      items.push({ label: "Delete door", danger: true, action: "delete" });
+    } else if (store.selectedWindowID) {
+      title = "Window";
+      items.push({ label: "Delete window", danger: true, action: "delete" });
+    } else if (store.selectedWallID) {
+      title = "Wall";
+      items.push({ label: "Delete wall", danger: true, action: "delete" });
+    }
+    return { title, items };
+  }
+
+  runContextMenuAction(action) {
+    switch (action) {
+      case "turn":
+        store.rotateSelectedFurniture();
+        break;
+      case "toggle-open": {
+        const id = store.selectedDoorID;
+        if (id) store.toggleDoorOpen(id);
+        break;
+      }
+      case "delete":
+        store.deleteSelection();
+        break;
+    }
+    this.hideContextMenu();
   }
 
   onPointerDown(e) {
@@ -411,7 +518,16 @@ export class Editor2D {
     ctx.fillStyle = "#0e0e10";
     ctx.fillRect(0, 0, w, h);
 
-    // Floor
+    // Canvas base plate (2D-only), larger than the main room.
+    const canvasBounds = P.canvasOf(room);
+    const plate = this.rect({ minX: 0, maxX: canvasBounds.width, minZ: 0, maxZ: canvasBounds.length });
+    ctx.fillStyle = "#141218";
+    ctx.fillRect(plate.x, plate.y, plate.w, plate.h);
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(plate.x + 0.5, plate.y + 0.5, plate.w - 1, plate.h - 1);
+
+    // Main room floor, drawn on top of the plate.
     const floor = this.rect({ minX: 0, maxX: room.width, minZ: 0, maxZ: room.length });
     ctx.fillStyle = "#1b1916";
     ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
@@ -489,19 +605,20 @@ export class Editor2D {
     const drawMinor = minorStep * scale >= 3;
     const x0 = this.origin.x;
     const y0 = this.origin.y;
-    const w = room.width * scale;
-    const h = room.length * scale;
+    const { width, length } = P.canvasOf(room);
+    const w = width * scale;
+    const h = length * scale;
 
     ctx.lineWidth = 1;
     if (drawMinor) {
       ctx.strokeStyle = "rgba(255,255,255,0.05)";
       ctx.beginPath();
-      for (let x = 0; x <= room.width + 0.0001; x += minorStep) {
+      for (let x = 0; x <= width + 0.0001; x += minorStep) {
         const px = x0 + x * scale;
         ctx.moveTo(px, y0);
         ctx.lineTo(px, y0 + h);
       }
-      for (let z = 0; z <= room.length + 0.0001; z += minorStep) {
+      for (let z = 0; z <= length + 0.0001; z += minorStep) {
         const py = y0 + z * scale;
         ctx.moveTo(x0, py);
         ctx.lineTo(x0 + w, py);
@@ -510,12 +627,12 @@ export class Editor2D {
     }
     ctx.strokeStyle = "rgba(255,255,255,0.13)";
     ctx.beginPath();
-    for (let x = 0; x <= room.width + 0.0001; x += 0.1) {
+    for (let x = 0; x <= width + 0.0001; x += 0.1) {
       const px = x0 + x * scale;
       ctx.moveTo(px, y0);
       ctx.lineTo(px, y0 + h);
     }
-    for (let z = 0; z <= room.length + 0.0001; z += 0.1) {
+    for (let z = 0; z <= length + 0.0001; z += 0.1) {
       const py = y0 + z * scale;
       ctx.moveTo(x0, py);
       ctx.lineTo(x0 + w, py);

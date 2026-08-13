@@ -180,6 +180,7 @@ export class Walk3D {
       this.updatePaintballUI();
     }
     const scene = this.scene;
+    const canvas = P.canvasOf(room);
 
     // Daytime sky and atmospheric depth beyond the windows.
     scene.background = new THREE.Color(0x8fb8e0);
@@ -195,7 +196,7 @@ export class Walk3D {
     sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.near = 1;
     sun.shadow.camera.far = 70;
-    const extent = Math.hypot(room.width, room.length) / 2 + 2;
+    const extent = Math.hypot(canvas.width, canvas.length) / 2 + 2;
     sun.shadow.camera.left = -extent;
     sun.shadow.camera.right = extent;
     sun.shadow.camera.top = extent;
@@ -203,7 +204,7 @@ export class Walk3D {
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.03;
     const sunTarget = new THREE.Object3D();
-    sunTarget.position.set(room.width / 2, 0, room.length / 2);
+    sunTarget.position.set(canvas.width / 2, 0, canvas.length / 2);
     scene.add(sunTarget);
     sun.target = sunTarget;
     scene.add(sun);
@@ -212,7 +213,7 @@ export class Walk3D {
     this.updateSun();
 
     const fill = new THREE.DirectionalLight(0xbfd4ff, 0.35);
-    fill.position.set(-3, 4, room.length + 2);
+    fill.position.set(-3, 4, canvas.length + 2);
     scene.add(fill);
 
     // Image-based lighting for PBR reflections.
@@ -221,20 +222,20 @@ export class Walk3D {
     // Floor: white marble tiles with thin grey grout lines.
     this.floorMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0, envMapIntensity: 0 });
     const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(room.width, 0.06, room.length),
+      new THREE.BoxGeometry(canvas.width, 0.06, canvas.length),
       this.floorMaterial
     );
-    floor.position.set(room.width / 2, -0.03, room.length / 2);
+    floor.position.set(canvas.width / 2, -0.03, canvas.length / 2);
     floor.receiveShadow = true;
     scene.add(floor);
     this.loadFloorTexture(room);
 
     // Ceiling
     const ceiling = new THREE.Mesh(
-      new THREE.BoxGeometry(room.width, 0.05, room.length),
+      new THREE.BoxGeometry(canvas.width, 0.05, canvas.length),
       new THREE.MeshStandardMaterial({ color: CEILING_COLOR, roughness: 0.95 })
     );
-    ceiling.position.set(room.width / 2, room.height, room.length / 2);
+    ceiling.position.set(canvas.width / 2, room.height, canvas.length / 2);
     ceiling.receiveShadow = true;
     scene.add(ceiling);
 
@@ -890,7 +891,8 @@ export class Walk3D {
       depthWrite: false,
     });
     const sky = new THREE.Mesh(geo, mat);
-    sky.position.set(room.width / 2, 0, room.length / 2);
+    const canvas = P.canvasOf(room);
+    sky.position.set(canvas.width / 2, 0, canvas.length / 2);
     sky.renderOrder = -10;
     this.scene.add(sky);
   }
@@ -921,8 +923,9 @@ export class Walk3D {
 
     const dir = this.sunDirection(date);
     const room = store.room;
-    const cx = room.width / 2;
-    const cz = room.length / 2;
+    const canvas = P.canvasOf(room);
+    const cx = canvas.width / 2;
+    const cz = canvas.length / 2;
     const dist = 40;
     this.sun.position.set(cx + dir.x * dist, dir.y * dist, cz + dir.z * dist);
     this.sunTarget.position.set(cx, 0, cz);
@@ -937,8 +940,9 @@ export class Walk3D {
   buildCity(room) {
     const group = new THREE.Group();
     group.name = "city";
-    const cx = room.width / 2;
-    const cz = room.length / 2;
+    const canvas = P.canvasOf(room);
+    const cx = canvas.width / 2;
+    const cz = canvas.length / 2;
     const extent = 90;
 
     const ground = new THREE.Mesh(
@@ -967,8 +971,8 @@ export class Walk3D {
     // Downtown: a taller cluster near the centre, mid-rise around the edges.
     const buckets = this.facades.map(() => []);
     const block = 14;
-    const roomHalfW = room.width / 2 + 5;
-    const roomHalfL = room.length / 2 + 5;
+    const roomHalfW = canvas.width / 2 + 5;
+    const roomHalfL = canvas.length / 2 + 5;
     let seed = 0x9e3779b9;
     const rnd = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -1064,15 +1068,16 @@ export class Walk3D {
     this.physicsBodies = [];
 
     // Floor.
+    const canvas = P.canvasOf(room);
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(room.width / 2, 0.03, room.length / 2)
-        .setTranslation(room.width / 2, -0.03, room.length / 2)
+      RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.03, canvas.length / 2)
+        .setTranslation(canvas.width / 2, -0.03, canvas.length / 2)
     );
 
     // Ceiling (stops the player jumping through the roof).
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(room.width / 2, 0.05, room.length / 2)
-        .setTranslation(room.width / 2, room.height + 0.025, room.length / 2)
+      RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.05, canvas.length / 2)
+        .setTranslation(canvas.width / 2, room.height + 0.025, canvas.length / 2)
     );
 
     // Walls, split by open doorways so you can walk through them.
@@ -1146,8 +1151,10 @@ export class Walk3D {
     }
 
     // Player capsule: the body sits at the feet; the capsule rises from it.
-    const spawnX = resetPlayer ? room.width / 2 : P.clamp(this.position.x, 0.3, room.width - 0.3);
-    const spawnZ = resetPlayer ? Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, room.length - 0.3);
+    // A fresh reset spawns inside the main room; an in-place rebuild keeps the
+    // player wherever they are across the full canvas.
+    const spawnX = resetPlayer ? room.width / 2 : P.clamp(this.position.x, 0.3, canvas.width - 0.3);
+    const spawnZ = resetPlayer ? Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, canvas.length - 0.3);
     const spawnY = resetPlayer ? 0.2 : Math.max(0.2, this.feetY);
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const body = this.world.createRigidBody(
@@ -1215,7 +1222,8 @@ export class Walk3D {
   }
 
   makeFloorCanvas(room) {
-    const layout = P.tileLayout(room);
+    const bounds = P.canvasOf(room);
+    const layout = P.tileLayout(bounds.width, bounds.length);
     const tilePx = 96; // 60 cm → 5 mm grout ≈ 1 px
     const width = Math.max(1, Math.round(layout.columns * tilePx));
     const height = Math.max(1, Math.round(layout.rows * tilePx));

@@ -792,3 +792,50 @@ body {
   text-align: center;
   font-size: 12px;
 }
+
+/* ── Right-click context menu ───────────────────────── */
+
+#context-menu {
+  position: fixed;
+  z-index: 4000;
+  min-width: 168px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 5px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+}
+
+#context-menu .ctx-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 5px 9px 7px;
+}
+
+#context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+#context-menu button:hover {
+  background: var(--accent-soft);
+}
+
+#context-menu button.danger {
+  color: var(--danger);
+}
+
+#context-menu button.danger:hover {
+  background: rgba(255, 107, 94, 0.12);
+}

@@ -59,6 +59,9 @@ export function freshRoom(name = "My Room", width = 6, length = 4, height = 2.6)
     width,
     length,
     height,
+    // The buildable base plate. Bigger than the main room so extra rooms can
+    // be drawn around it. This is the 2D drawing surface and the 3D floor.
+    canvas: { width: width + 4, length: length + 4 },
     grid: "fiveCentimeters",
     walls: [
       { id: uid(), start: point(0, 0), end: point(width, 0) },
@@ -72,16 +75,27 @@ export function freshRoom(name = "My Room", width = 6, length = 4, height = 2.6)
   };
 }
 
+/// The buildable base-plate bounds. Falls back to the main room for rooms
+/// saved before the canvas existed.
+export function canvasOf(room) {
+  if (room.canvas && typeof room.canvas.width === "number" && typeof room.canvas.length === "number") {
+    return room.canvas;
+  }
+  return { width: room.width, length: room.length };
+}
+
 // MARK: - Grid and snapping
 
 export function gridSnap(room, p) {
   const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
   const snap = v => clean(Math.round(v / step) * step);
-  return { x: clamp(snap(p.x), 0, room.width), z: clamp(snap(p.z), 0, room.length) };
+  const canvas = canvasOf(room);
+  return { x: clamp(snap(p.x), 0, canvas.width), z: clamp(snap(p.z), 0, canvas.length) };
 }
 
 export function snapPoint(room, raw, excludeWallID = null) {
-  const p = { x: clamp(raw.x, 0, room.width), z: clamp(raw.z, 0, room.length) };
+  const canvas = canvasOf(room);
+  const p = { x: clamp(raw.x, 0, canvas.width), z: clamp(raw.z, 0, canvas.length) };
   const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
   let best = null;
   const consider = candidate => {
@@ -89,9 +103,9 @@ export function snapPoint(room, raw, excludeWallID = null) {
     if (d <= tolerance && (!best || d < best.d)) best = { p: candidate, d };
   };
   consider(point(0, 0));
-  consider(point(room.width, 0));
-  consider(point(0, room.length));
-  consider(point(room.width, room.length));
+  consider(point(canvas.width, 0));
+  consider(point(0, canvas.length));
+  consider(point(canvas.width, canvas.length));
   for (const wall of room.walls) {
     if (wall.id === excludeWallID) continue;
     consider(wall.start);
@@ -114,6 +128,7 @@ export function axisAligned(p, anchor) {
 /// Snaps the free end of a wall while keeping it axis-aligned with `start`.
 export function snapWallEnd(room, rawEnd, start) {
   let end = axisAligned(rawEnd, start);
+  const canvas = canvasOf(room);
   const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
   let best = null;
   const consider = candidate => {
@@ -124,9 +139,9 @@ export function snapWallEnd(room, rawEnd, start) {
     if (d <= tolerance && (!best || d < best.d)) best = { p: candidate, d };
   };
   consider(point(0, 0));
-  consider(point(room.width, 0));
-  consider(point(0, room.length));
-  consider(point(room.width, room.length));
+  consider(point(canvas.width, 0));
+  consider(point(0, canvas.length));
+  consider(point(canvas.width, canvas.length));
   for (const wall of room.walls) {
     consider(wall.start);
     consider(wall.end);
@@ -138,6 +153,39 @@ export function snapWallEnd(room, rawEnd, start) {
   // starting point, even when that point is off the plain grid.
   if (Math.abs(end.x - start.x) <= 0.0001) snapped.x = start.x;
   else snapped.z = start.z;
+  return snapped;
+}
+
+/// Snaps a dragged wall endpoint. Unlike `snapWallEnd`, the free end is not
+/// locked to the wall's current axis: it can snap to the perpendicular axis
+/// through the fixed end, so grabbing an endpoint can reorient the wall 90°.
+export function snapWallEndpoint(room, raw, fixed) {
+  const canvas = canvasOf(room);
+  const end = axisAligned(
+    { x: clamp(raw.x, 0, canvas.width), z: clamp(raw.z, 0, canvas.length) },
+    fixed
+  );
+  const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
+  let best = null;
+  const consider = candidate => {
+    const d = distance(candidate, end);
+    if (d <= tolerance && (!best || d < best.d)) best = { p: candidate, d };
+  };
+  consider(point(0, 0));
+  consider(point(canvas.width, 0));
+  consider(point(0, canvas.length));
+  consider(point(canvas.width, canvas.length));
+  for (const wall of room.walls) {
+    consider(wall.start);
+    consider(wall.end);
+    consider(wallMidpoint(wall));
+  }
+  if (best) return best.p;
+  const snapped = gridSnap(room, end);
+  // Keep the shared axis coordinate exact so the wall stays connected to its
+  // fixed endpoint.
+  if (Math.abs(end.x - fixed.x) <= 0.0001) snapped.x = fixed.x;
+  else snapped.z = fixed.z;
   return snapped;
 }
 
@@ -361,18 +409,18 @@ export function wallBuildPlan(wall, doors, windows, height) {
 /// Photo-derived 60 × 60 cm floor tile layout: full tiles plus a cut strip at
 /// the far walls (the survey module came from the photos; for the 4.87 × 16.44
 /// room this is 8 full + 0.07 m across and 27 full + 0.24 m down).
-export function tileLayout(room) {
+export function tileLayout(width, length) {
   const tile = 0.6;
-  function axis(length) {
-    const quotient = length / tile;
+  function axis(size) {
+    const quotient = size / tile;
     if (Math.abs(quotient - Math.round(quotient)) < 0.001) {
       return { full: Math.round(quotient), cut: 0 };
     }
     const full = Math.floor(quotient);
-    return { full, cut: length - full * tile };
+    return { full, cut: size - full * tile };
   }
-  const across = axis(room.width);
-  const down = axis(room.length);
+  const across = axis(width);
+  const down = axis(length);
   return {
     tile,
     fullColumns: across.full,
@@ -439,7 +487,8 @@ export function furnitureIntersectsWall(room, item) {
 
 export function isFurniturePlacementValid(room, item, excluded = new Set()) {
   const f = furnitureFootprint(item);
-  if (f.minX < 0 || f.maxX > room.width || f.minZ < 0 || f.maxZ > room.length) return false;
+  const canvas = canvasOf(room);
+  if (f.minX < 0 || f.maxX > canvas.width || f.minZ < 0 || f.maxZ > canvas.length) return false;
   if (furnitureIntersectsWall(room, item)) return false;
   const itemIsFixture = FURNITURE_KINDS[item.kind].category === "fixture";
   return !room.furniture.some(other => {
@@ -459,8 +508,9 @@ export function furnitureCenter(room, raw, item) {
   const w = swaps ? kind.d : kind.w;
   const d = swaps ? kind.w : kind.d;
   const center = gridSnap(room, raw);
-  center.x = clamp(center.x, w / 2, room.width - w / 2);
-  center.z = clamp(center.z, d / 2, room.length - d / 2);
+  const canvas = canvasOf(room);
+  center.x = clamp(center.x, w / 2, canvas.width - w / 2);
+  center.z = clamp(center.z, d / 2, canvas.length - d / 2);
   const tolerance = Math.max(GRID_STEPS[room.grid].meters * 1.5, 0.08);
   let bestX = null;
   let bestZ = null;
@@ -636,12 +686,21 @@ export function sanitize(room) {
   room.length = clamp(room.length, 2, 20);
   room.height = clamp(room.height, 2.2, 5);
 
+  // Canvas: the buildable base plate. Always at least as large as the main
+  // room so walls and furniture drawn outside it stay reachable.
+  if (!room.canvas) room.canvas = { width: room.width, length: room.length };
+  room.canvas.width = clamp(room.canvas.width, 2, 60);
+  room.canvas.length = clamp(room.canvas.length, 2, 60);
+  if (room.canvas.width < room.width) room.canvas.width = room.width;
+  if (room.canvas.length < room.length) room.canvas.length = room.length;
+  const canvas = room.canvas;
+
   room.walls = room.walls
     .filter(w => wallLength(w) >= 0.15)
     .map(w => ({
       ...w,
-      start: { x: clamp(w.start.x, 0, room.width), z: clamp(w.start.z, 0, room.length) },
-      end: { x: clamp(w.end.x, 0, room.width), z: clamp(w.end.z, 0, room.length) },
+      start: { x: clamp(w.start.x, 0, canvas.width), z: clamp(w.start.z, 0, canvas.length) },
+      end: { x: clamp(w.end.x, 0, canvas.width), z: clamp(w.end.z, 0, canvas.length) },
     }));
   const wallIDs = new Set(room.walls.map(w => w.id));
 
@@ -681,8 +740,8 @@ export function sanitize(room) {
     const w = swaps ? kind.d : kind.w;
     const d = swaps ? kind.w : kind.d;
     item.center = {
-      x: clamp(item.center.x, w / 2, room.width - w / 2),
-      z: clamp(item.center.z, d / 2, room.length - d / 2),
+      x: clamp(item.center.x, w / 2, canvas.width - w / 2),
+      z: clamp(item.center.z, d / 2, canvas.length - d / 2),
     };
     return item;
   });

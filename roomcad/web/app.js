@@ -201,17 +201,18 @@ function furnitureSection(item) {
 
 function roomSection() {
   const room = store.room;
+  const canvas = P.canvasOf(room);
   let html = `<h4>Room</h4>`;
   html += `<div class="field"><label>Room Name</label>` +
     `<input type="text" data-action="rename" value="${esc(room.name)}"></div>`;
-  html += `<div class="field"><label>Width (m)</label>` +
-    `<input type="number" data-action="size-w" value="${room.width.toFixed(2)}" min="2" max="20" step="0.1"></div>`;
-  html += `<div class="field"><label>Length (m)</label>` +
-    `<input type="number" data-action="size-l" value="${room.length.toFixed(2)}" min="2" max="20" step="0.1"></div>`;
+  html += `<div class="field"><label>Canvas width (m)</label>` +
+    `<input type="number" data-action="canvas-w" value="${canvas.width.toFixed(2)}" min="2" max="60" step="0.1"></div>`;
+  html += `<div class="field"><label>Canvas length (m)</label>` +
+    `<input type="number" data-action="canvas-l" value="${canvas.length.toFixed(2)}" min="2" max="60" step="0.1"></div>`;
   html += `<div class="field"><label>Ceiling height (m)</label>` +
     `<input type="number" data-action="height" value="${room.height.toFixed(2)}" min="2.2" max="5" step="0.1"></div>`;
   html += `<div class="inspector-note">Select a wall, door, window, or furniture item to edit it. ` +
-    `Every room is its own file — save it, then open another one to work on several rooms.</div>`;
+    `Resize the canvas to make room for more rooms; the grey plate stays in the 2D view only.</div>`;
   html += `<div class="floor-row">` +
     `<label>Outside floor</label>` +
     `<div class="floor-control">` +
@@ -246,10 +247,10 @@ inspectorContent.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset.action === "rename") {
     store.renameRoom(t.value);
-  } else if (t.dataset.action === "size-w") {
-    store.updateRoomSize(Number(t.value), store.room.length);
-  } else if (t.dataset.action === "size-l") {
-    store.updateRoomSize(store.room.width, Number(t.value));
+  } else if (t.dataset.action === "canvas-w") {
+    store.updateCanvasSize(Number(t.value), P.canvasOf(store.room).length);
+  } else if (t.dataset.action === "canvas-l") {
+    store.updateCanvasSize(P.canvasOf(store.room).width, Number(t.value));
   } else if (t.dataset.action === "height") {
     store.updateRoomHeight(Number(t.value));
   } else if (t.dataset.action === "width") {
