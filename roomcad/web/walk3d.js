@@ -8,7 +8,7 @@ import { store } from "./store.js";
 import { playPlop } from "./audio.js";
 
 // WebGPU post-processing (TSL nodes).
-import { pass, mrt, output, normalView } from "three/tsl";
+import { pass, mrt, output, emissive, normalView } from "three/tsl";
 import { ssao } from "three/addons/tsl/display/SSAONode.js";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 
@@ -943,9 +943,10 @@ export class Walk3D {
   setupSaoBloom() {
     this.renderPipeline = new THREE.RenderPipeline(this.renderer);
 
-    // One scene pass that also writes view-space normals for SSAO.
+    // One scene pass that also writes view-space normals (for SSAO) and the
+    // emissive term (for a selective bloom that ignores the white floor).
     const scenePass = pass(this.scene, this.camera);
-    scenePass.setMRT(mrt({ output, normal: normalView }));
+    scenePass.setMRT(mrt({ output, emissive, normal: normalView }));
 
     const scenePassColor = scenePass.getTextureNode('output');
     const scenePassDepth = scenePass.getTextureNode('depth');
@@ -959,8 +960,10 @@ export class Walk3D {
     ssaoPass.bias.value = 0.025;
     ssaoPass.resolutionScale = 0.5;
 
-    // Soft glow on the brightest areas.
-    const bloomPass = bloom(scenePassColor, 0.55, 0.5, 0.85);
+    // Bloom only the emissive surfaces (lights, lit city windows), so the
+    // white marble tiles stay flat instead of glowing.
+    const emissivePass = scenePass.getTextureNode('emissive');
+    const bloomPass = bloom(emissivePass, 0.55, 0.5, 0.85);
 
     this.renderPipeline.outputNode = scenePassColor.mul(ssaoPass.r).add(bloomPass);
   }
