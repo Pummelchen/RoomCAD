@@ -415,9 +415,32 @@ export function stairBathroomLayout(room) {
   };
 }
 
+/// True when the item's footprint overlaps any wall band (the physical wall
+/// thickness). Touching a wall face (0 cm) is fine; only strict overlap is a
+/// problem, so furniture can sit flush against a wall but never pass through it.
+export function furnitureIntersectsWall(room, item) {
+  const f = furnitureFootprint(item);
+  const half = WALL_THICKNESS / 2;
+  const EPS = 1e-6; // tolerate float noise so a 0 cm flush placement stays valid
+  for (const wall of room.walls) {
+    const minX = Math.min(wall.start.x, wall.end.x);
+    const maxX = Math.max(wall.start.x, wall.end.x);
+    const minZ = Math.min(wall.start.z, wall.end.z);
+    const maxZ = Math.max(wall.start.z, wall.end.z);
+    const horizontal = Math.abs(wall.end.z - wall.start.z) < 1e-6;
+    const bx0 = horizontal ? minX : minX - half;
+    const bx1 = horizontal ? maxX : maxX + half;
+    const bz0 = horizontal ? minZ - half : minZ;
+    const bz1 = horizontal ? maxZ + half : maxZ;
+    if (f.minX < bx1 - EPS && f.maxX > bx0 + EPS && f.minZ < bz1 - EPS && f.maxZ > bz0 + EPS) return true;
+  }
+  return false;
+}
+
 export function isFurniturePlacementValid(room, item, excluded = new Set()) {
   const f = furnitureFootprint(item);
   if (f.minX < 0 || f.maxX > room.width || f.minZ < 0 || f.maxZ > room.length) return false;
+  if (furnitureIntersectsWall(room, item)) return false;
   const itemIsFixture = FURNITURE_KINDS[item.kind].category === "fixture";
   return !room.furniture.some(other => {
     if (excluded.has(other.id)) return false;

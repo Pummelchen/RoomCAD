@@ -10,6 +10,18 @@
   </script>
 </head>
 <body>
+  <div id="login-screen" hidden>
+    <form id="login-form" autocomplete="off">
+      <div class="login-box">
+        <h1>RoomCAD V2</h1>
+        <p class="login-sub">Enter the password to open the planner.</p>
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+        <button type="submit" class="primary">Open</button>
+        <p id="login-error" class="login-error" hidden></p>
+      </div>
+    </form>
+  </div>
+
   <div id="app">
     <header id="toolbar">
       <div class="toolbar-group">
@@ -27,13 +39,10 @@
         </div>
         <span class="divider"></span>
         <button data-tool="select" class="tool active" title="Select and drag (V)">Select</button>
-        <button data-tool="wall" class="tool" title="Draw a wall (W)">Wall</button>
-        <button data-tool="door" class="tool" title="Add a door (D)">Door</button>
-        <button data-tool="window" class="tool" title="Add a window (G)">Window</button>
         <button data-tool="erase" class="tool" title="Erase (E)">Erase</button>
         <span class="divider"></span>
-        <button id="undo" title="Undo (⌘Z)">↩</button>
-        <button id="redo" title="Redo (⇧⌘Z)">↪</button>
+        <button id="undo" title="Undo (⌘Z)">↶</button>
+        <button id="redo" title="Redo (⇧⌘Z)">↷</button>
         <button id="rotate-left" class="plan-only" title="Turn the plan left (⌘[)">⟲</button>
         <button id="rotate-right" class="plan-only" title="Turn the plan right (⌘])">⟳</button>
         <button id="fit" class="plan-only" title="Fit the room in view">Fit</button>
@@ -43,7 +52,7 @@
         <button id="new-room" class="primary">＋ New Room</button>
         <button id="save-room">💾 Save</button>
         <button id="open-room">📂 Open…</button>
-        <input type="file" id="file-input" accept=".room,.json" hidden>
+        <input type="file" id="file-input" accept=".room,.json,.rcad" hidden>
       </div>
     </header>
 
@@ -51,6 +60,23 @@
       <nav id="sidebar">
         <h3>My Rooms</h3>
         <ul id="rooms-list"></ul>
+        <div class="palette" id="build-palette">
+          <h3 class="palette-head">Build</h3>
+          <div class="palette-grid">
+            <button data-tool="wall" title="Draw a wall (W)">
+              <span class="icon">▭</span><span>Wall</span>
+            </button>
+            <button data-tool="door" title="Add a door (D)">
+              <span class="icon">🚪</span><span>Door</span>
+            </button>
+            <button data-tool="window" title="Add a window (G)">
+              <span class="icon">🪟</span><span>Window</span>
+            </button>
+            <button data-tool="light" title="Ceiling light (60 W)">
+              <span class="icon">💡</span><span>Light</span>
+            </button>
+          </div>
+        </div>
         <div class="palette" id="furniture-palette">
           <h3>Furniture</h3>
           <div class="palette-grid">
@@ -67,16 +93,6 @@
               <span class="icon">🗄️</span><span>Wardrobe</span>
             </button>
           </div>
-          <h3 class="palette-head">Fixtures</h3>
-          <div class="palette-grid">
-            <button data-kind="light" title="Ceiling light (60 W)">
-              <span class="icon">💡</span><span>Light</span>
-            </button>
-          </div>
-        </div>
-        <div class="sidebar-actions">
-          <button id="sidebar-new">＋ New Room</button>
-          <button id="sidebar-open">📂 Open file…</button>
         </div>
       </nav>
 
@@ -92,7 +108,19 @@
 
       <aside id="inspector">
         <div id="inspector-content"></div>
+        <div id="app-version">v2.0</div>
       </aside>
+    </div>
+
+    <div id="open-modal" hidden>
+      <div class="open-box">
+        <div class="open-header">
+          <h3>Open Room</h3>
+          <button id="open-close" title="Close">✕</button>
+        </div>
+        <ul id="open-list"></ul>
+        <button id="open-import" class="inspector-button">📂 Import .room / .rcad file…</button>
+      </div>
     </div>
 
     <footer id="statusbar">
@@ -101,6 +129,7 @@
     </footer>
   </div>
 
+  <script type="module" src="login.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

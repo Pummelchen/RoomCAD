@@ -5,7 +5,8 @@ import { store, TOOL_HELP } from "./store.js";
 import { Editor2D } from "./editor2d.js";
 import { Walk3D } from "./walk3d.js";
 
-const STORAGE_KEY = "roomcad.web.rooms";
+// A per-tab identity so a client can ignore its own live-update echo.
+const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
 
 // MARK: - Element refs
 
@@ -37,6 +38,11 @@ function esc(s) {
 function inspectorFocused() {
   const el = document.activeElement;
   return !!el && !!el.closest && !!el.closest("#inspector");
+}
+
+function isTyping() {
+  const el = document.activeElement;
+  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
 }
 
 function confirmDiscard() {
@@ -76,6 +82,12 @@ function renderToolbar() {
   document.querySelectorAll("#toolbar [data-tool]").forEach(b => {
     b.classList.toggle("active", store.tool === b.dataset.tool);
   });
+  document.querySelectorAll("#build-palette [data-tool]").forEach(b => {
+    const active = b.dataset.tool === "light"
+      ? (store.tool === "furniture" && store.pendingFurnitureKind === "light")
+      : store.tool === b.dataset.tool;
+    b.classList.toggle("active", active);
+  });
   document.querySelectorAll("#furniture-palette [data-kind]").forEach(b => {
     b.classList.toggle(
       "active",
@@ -87,7 +99,8 @@ function renderToolbar() {
 }
 
 function renderStatus() {
-  statusMessage.textContent = store.status;
+  statusMessage.textContent = store.status
+    + (store.serverRoomName ? " · Shared live" : "");
   statusHint.textContent = store.mode === "2d"
     ? TOOL_HELP[store.tool] + " · Drag empty space to pan"
     : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · right-click: door swing";
@@ -198,6 +211,13 @@ function roomSection() {
     `<input type="number" data-action="height" value="${room.height.toFixed(2)}" min="2.2" max="5" step="0.1"></div>`;
   html += `<div class="inspector-note">Select a wall, door, window, or furniture item to edit it. ` +
     `Every room is its own file — save it, then open another one to work on several rooms.</div>`;
+  html += `<div class="floor-row">` +
+    `<label>Outside floor</label>` +
+    `<div class="floor-control">` +
+    `<button class="inspector-button floor-btn" data-action="floor-down" title="Floor down">▼</button>` +
+    `<span class="floor-value">Floor ${store.floor}</span>` +
+    `<button class="inspector-button floor-btn" data-action="floor-up" title="Floor up">▲</button>` +
+    `</div></div>`;
   return html;
 }
 
@@ -254,6 +274,10 @@ inspectorContent.addEventListener("click", e => {
   } else if (t.dataset.action === "swing-outside") {
     const id = store.selectedDoorID;
     if (id) store.setDoorSwing(id, false);
+  } else if (t.dataset.action === "floor-up") {
+    store.setFloor(1);
+  } else if (t.dataset.action === "floor-down") {
+    store.setFloor(-1);
   }
   // Blur the button so the inspector re-renders with the updated state.
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -277,6 +301,14 @@ document.getElementById("fit").addEventListener("click", () => editor.fit());
 document.getElementById("rotate-left").addEventListener("click", () => store.rotatePlan(-90));
 document.getElementById("rotate-right").addEventListener("click", () => store.rotatePlan(90));
 
+// Build palette in the left sidebar: Wall / Door / Window / Light.
+document.querySelectorAll("#build-palette [data-tool]").forEach(b => {
+  b.addEventListener("click", () => {
+    if (b.dataset.tool === "light") store.beginFurniturePlacement("light");
+    else store.chooseTool(b.dataset.tool);
+  });
+});
+
 document.getElementById("furniture-palette").querySelectorAll("[data-kind]").forEach(b => {
   b.addEventListener("click", () => {
     const kind = b.dataset.kind;
@@ -289,19 +321,18 @@ document.getElementById("furniture-palette").querySelectorAll("[data-kind]").for
   });
 });
 
-// MARK: - Files and My Rooms
+// MARK: - Files and My Rooms (server-side)
 
 document.getElementById("new-room").addEventListener("click", () => {
   if (!confirmDiscard()) return;
   store.newRoom();
 });
-document.getElementById("sidebar-new").addEventListener("click", () => {
-  if (!confirmDiscard()) return;
-  store.newRoom();
-});
 document.getElementById("save-room").addEventListener("click", saveRoom);
-document.getElementById("open-room").addEventListener("click", openFileDialog);
-document.getElementById("sidebar-open").addEventListener("click", openFileDialog);
+document.getElementById("open-room").addEventListener("click", openRoomModal);
+document.getElementById("open-close").addEventListener("click", () => {
+  document.getElementById("open-modal").hidden = true;
+});
+document.getElementById("open-import").addEventListener("click", openFileDialog);
 fileInput.addEventListener("change", () => {
   const file = fileInput.files && fileInput.files[0];
   if (!file) return;
@@ -310,9 +341,8 @@ fileInput.addEventListener("change", () => {
     try {
       const room = P.parseRoom(String(reader.result));
       if (!confirmDiscard()) { fileInput.value = ""; return; }
-      const name = file.name.replace(/\.(room|json)$/i, "");
+      const name = file.name.replace(/\.(room|json|rcad)$/i, "");
       store.loadRoom(room, name);
-      upsertRoomInStorage(room);
     } catch (err) {
       window.alert("Could not open " + file.name + ":\n" + err.message);
     }
@@ -321,83 +351,149 @@ fileInput.addEventListener("change", () => {
   reader.readAsText(file);
 });
 
-function saveRoom() {
-  const room = store.room;
-  const name = store.documentName || room.name;
-  downloadRoom(room);
-  upsertRoomInStorage(room);
-  store.status = "Saved " + name;
-  store.edited = false;
-  store.emit();
+// Rooms are saved on the webserver (not downloaded) as ternak_roomN.rcad.
+async function apiListRooms() {
+  const res = await fetch("/api/rooms");
+  if (!res.ok) throw new Error("list failed");
+  return res.json();
+}
+
+async function apiSaveRoom(json, name, clientId) {
+  const body = { json, clientId };
+  if (name) body.name = name;
+  const res = await fetch("/api/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error("save failed");
+  return res.json();
+}
+
+async function apiLoadRoom(name) {
+  const res = await fetch("/api/load/" + encodeURIComponent(name));
+  if (!res.ok) throw new Error("load failed");
+  return res.json();
+}
+
+async function apiDeleteRoom(name) {
+  const res = await fetch("/api/rooms/" + encodeURIComponent(name), { method: "DELETE" });
+  if (!res.ok) throw new Error("delete failed");
+  return res.json();
+}
+
+let eventSource = null;
+
+/// Subscribes to live updates for a server room (Google-Docs style sharing).
+function watchRoom(name) {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  try {
+    eventSource = new EventSource("/api/watch/" + encodeURIComponent(name));
+    eventSource.onmessage = e => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.clientId === CLIENT_ID) return; // ignore our own echo
+        const room = P.parseRoom(data.json);
+        store.applyRemoteRoom(room);
+      } catch {}
+    };
+  } catch {}
+}
+
+async function saveRoom() {
+  try {
+    // Update the existing server slot when the room was opened from the
+    // server, otherwise create a new ternak_roomN (no duplicate copies).
+    const result = await apiSaveRoom(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID);
+    store.serverRoomName = result.name;
+    store.status = "Saved as " + result.name;
+    store.edited = false;
+    store.emit();
+    renderRooms();
+    watchRoom(result.name);
+  } catch {
+    store.status = "Could not save to the server";
+    store.emit();
+  }
 }
 
 function openFileDialog() {
   fileInput.click();
 }
 
-function downloadRoom(room) {
-  const blob = new Blob([P.serializeRoom(room)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = (room.name || "My Room").replace(/[\\/:*?"<>|]/g, "-") + ".room";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function loadRooms() {
+/// Lists the rooms stored on the server in a modal, click one to open it.
+async function openRoomModal() {
+  const modal = document.getElementById("open-modal");
+  const list = document.getElementById("open-list");
+  list.innerHTML = "";
+  let rooms;
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    rooms = await apiListRooms();
   } catch {
-    return [];
+    list.innerHTML = '<li class="rooms-error">Server not reachable</li>';
+    modal.hidden = false;
+    return;
   }
-}
-
-function saveRooms(rooms) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
-  } catch {
-    // storage full or unavailable — the download still works
-  }
-}
-
-function upsertRoomInStorage(room) {
-  const rooms = loadRooms();
-  const entry = { name: room.name, savedAt: Date.now(), json: P.serializeRoom(room) };
-  const index = rooms.findIndex(r => r.name === room.name);
-  if (index >= 0) rooms.splice(index, 1);
-  rooms.unshift(entry);
-  saveRooms(rooms);
-}
-
-function removeStoredRoom(name) {
-  const rooms = loadRooms().filter(r => r.name !== name);
-  saveRooms(rooms);
-  renderRooms();
-}
-
-function openStoredRoom(entry) {
-  if (!confirmDiscard()) return;
-  try {
-    const room = P.parseRoom(entry.json);
-    store.loadRoom(room, entry.name);
-  } catch {
-    window.alert("This saved room could not be opened.");
-    removeStoredRoom(entry.name);
-  }
-}
-
-function renderRooms() {
-  roomsList.innerHTML = "";
-  for (const r of loadRooms()) {
+  const seen = new Set();
+  for (const r of rooms) {
+    if (seen.has(r.name)) continue; // avoid duplicates
+    seen.add(r.name);
     const li = document.createElement("li");
     const button = document.createElement("button");
     button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
       `<div class="room-meta">${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
-    button.addEventListener("click", () => openStoredRoom(r));
+    button.addEventListener("click", () => {
+      modal.hidden = true;
+      openStoredRoom(r.name);
+    });
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+  modal.hidden = false;
+}
+
+async function removeStoredRoom(name) {
+  try { await apiDeleteRoom(name); } catch {}
+  renderRooms();
+}
+
+async function openStoredRoom(name) {
+  if (!confirmDiscard()) return;
+  try {
+    const data = await apiLoadRoom(name);
+    const room = P.parseRoom(data.json);
+    store.loadRoom(room, data.name, true);
+    watchRoom(data.name);
+  } catch {
+    window.alert("This saved room could not be opened.");
+    removeStoredRoom(name);
+  }
+}
+
+async function renderRooms() {
+  roomsList.innerHTML = "";
+  let rooms;
+  try {
+    rooms = await apiListRooms();
+  } catch {
+    const li = document.createElement("li");
+    li.className = "rooms-error";
+    li.textContent = "Server not reachable";
+    roomsList.appendChild(li);
+    return;
+  }
+  const seen = new Set();
+  for (const r of rooms) {
+    if (seen.has(r.name)) continue; // avoid duplicates
+    seen.add(r.name);
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
+      `<div class="room-meta">${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
+    button.addEventListener("click", () => openStoredRoom(r.name));
     li.appendChild(button);
     const remove = document.createElement("button");
     remove.className = "room-delete";
@@ -462,7 +558,7 @@ document.addEventListener("keydown", e => {
     return;
   }
 
-  if (inspectorFocused()) return;
+  if (isTyping()) return;
 
   switch (e.code) {
     case "KeyV": store.chooseTool("select"); break;
@@ -478,7 +574,8 @@ document.addEventListener("keydown", e => {
         store.beginFurniturePlacement(store.lastFurnitureKind || "bed");
       }
       break;
-    case "KeyB": store.rotateSelectedFurniture(); break;
+    case "KeyB":
+    case "KeyR": store.rotateSelectedFurniture(); break;
     case "Delete":
     case "Backspace": store.deleteSelection(); break;
     case "Escape":
@@ -505,6 +602,15 @@ document.addEventListener("keydown", e => {
 
 // MARK: - Store change subscription
 
+let autoSaveTimer = null;
+
+function scheduleAutoSave() {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => {
+    if (store.serverRoomName && store.edited) saveRoom();
+  }, 600);
+}
+
 store.onChange(() => {
   if (store.mode === "3d" && walk3d) walk3d.update(store.room);
   renderInspector();
@@ -513,6 +619,8 @@ store.onChange(() => {
   renderRooms();
   document.title = (store.documentName || store.room.name)
     + (store.edited ? " · Edited" : "") + " — RoomCAD V2";
+  // Live sharing: auto-push edits to the server room (debounced).
+  if (store.serverRoomName && store.edited) scheduleAutoSave();
 });
 
 // MARK: - Init

@@ -118,6 +118,16 @@ body {
   cursor: default;
 }
 
+#toolbar #undo,
+#toolbar #redo,
+#toolbar #rotate-left,
+#toolbar #rotate-right {
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 700;
+  padding: 4px 11px;
+}
+
 .divider {
   width: 1px;
   height: 22px;
@@ -345,6 +355,133 @@ body {
   pointer-events: none;
 }
 
+/* ── Floor selector (right sidebar) ──────────────────── */
+
+.floor-row {
+  margin-top: 14px;
+}
+
+.floor-row > label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.floor-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.floor-control .floor-btn {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.floor-value {
+  flex: 1;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ── Open Room modal ─────────────────────────────────── */
+
+#open-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.open-box {
+  width: 340px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 14px 16px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+}
+
+.open-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.open-header h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.open-header button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.open-header button:hover {
+  background: rgba(255, 107, 94, 0.14);
+  color: var(--danger);
+}
+
+#open-list {
+  list-style: none;
+  overflow-y: auto;
+  min-height: 60px;
+  margin-bottom: 10px;
+}
+
+#open-list li {
+  margin-bottom: 4px;
+}
+
+#open-list button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#open-list button:hover {
+  background: var(--accent-soft);
+}
+
+#open-list .room-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+#open-list .room-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ── Paintball (easter egg) ──────────────────────────── */
 
 #paintball-ui {
@@ -394,8 +531,31 @@ body {
   min-width: 260px;
   background: var(--panel);
   border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 14px 12px;
+}
+
+#inspector-content {
+  flex: 1;
   overflow-y: auto;
-  padding: 14px 14px 20px;
+  min-height: 0;
+}
+
+#app-version {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 10px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.rooms-error {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px;
+  text-align: center;
 }
 
 #inspector h4 {
@@ -541,4 +701,68 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Login gate ─────────────────────────────────────── */
+
+#login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.login-box {
+  width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.login-box h1 {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.login-sub {
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+.login-box input[type="password"] {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.login-box button.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.login-error {
+  color: var(--danger);
+  text-align: center;
+  font-size: 12px;
 }

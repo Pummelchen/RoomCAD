@@ -6,9 +6,11 @@ import * as RAPIER from "./lib/rapier.mjs";
 import { EffectComposer } from "./lib/postprocessing/EffectComposer.js";
 import { RenderPass } from "./lib/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "./lib/postprocessing/UnrealBloomPass.js";
+import { SSAOPass } from "./lib/postprocessing/SSAOPass.js";
 import { OutputPass } from "./lib/postprocessing/OutputPass.js";
 import * as P from "./plan.js";
 import { store } from "./store.js";
+import { playPlop } from "./audio.js";
 
 // Material palette: light blue-gray walls, white ceiling, glass, and a white
 // marble floor (procedural, below).
@@ -29,6 +31,7 @@ const WALK_SPEED = 2.5;
 const GRAVITY = 11;
 const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 6;
+const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
 
 export class Walk3D {
   constructor(container) {
@@ -74,8 +77,17 @@ export class Walk3D {
     // Reusable scene resources (never disposed between rebuilds).
     this.glassMaterial = this.makeGlassMaterial();
     this.skyTexture = this.makeSkyTexture();
-    this.buildingTexture = this.makeBuildingTexture();
-    this.reusableTextures = new Set([this.skyTexture, this.buildingTexture]);
+    this.facades = [
+      this.makeFacade("glass"),
+      this.makeFacade("concrete"),
+      this.makeFacade("brick"),
+    ];
+    this.cityGroundTexture = this.makeCityGroundTexture();
+    this.reusableTextures = new Set([this.skyTexture, this.cityGroundTexture]);
+    for (const f of this.facades) {
+      this.reusableTextures.add(f.map);
+      this.reusableTextures.add(f.emissiveMap);
+    }
     this.pointLights = [];
 
     // Paintball easter egg
@@ -99,6 +111,8 @@ export class Walk3D {
         this.clearPaintball();
         this.updatePaintballUI();
       }
+      // Realtime floor change: raise/lower the whole city outside.
+      if (this.city) this.city.position.y = -(store.floor - 1) * FLOOR_HEIGHT;
     });
   }
 
@@ -135,10 +149,10 @@ export class Walk3D {
     const sun = new THREE.DirectionalLight(0xfff2d9, 2.8);
     sun.position.set(room.width / 2 + 6, 14, room.length / 2 - 4);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.near = 1;
     sun.shadow.camera.far = 70;
-    const extent = 16;
+    const extent = Math.hypot(room.width, room.length) / 2 + 2;
     sun.shadow.camera.left = -extent;
     sun.shadow.camera.right = extent;
     sun.shadow.camera.top = extent;
@@ -159,7 +173,7 @@ export class Walk3D {
     scene.environment = this.environment;
 
     // Floor: white marble tiles with thin grey grout lines.
-    this.floorMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.22, metalness: 0.05 });
+    this.floorMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0, envMapIntensity: 0 });
     const floor = new THREE.Mesh(
       new THREE.BoxGeometry(room.width, 0.06, room.length),
       this.floorMaterial
@@ -457,12 +471,12 @@ export class Walk3D {
         add(new THREE.BoxGeometry(W - 0.04, 0.10, D - 0.04), M.woodDark, 0, 0.05, 0);
         // Top cornice
         add(new THREE.BoxGeometry(W, 0.04, D), M.woodDark, 0, H - 0.02, 0);
-        // Two doors (front = -Z)
-        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, -W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.02);
-        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.02);
+        // Two doors (front = -Z), offset forward so they never z-fight the body.
+        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, -W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.03);
+        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.03);
         // Handles
-        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, -W / 4, H * 0.52, -D / 2 + 0.035, 0, 0, Math.PI / 2);
-        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, W / 4, H * 0.52, -D / 2 + 0.035, 0, 0, Math.PI / 2);
+        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, -W / 4, H * 0.52, -D / 2 + 0.045, 0, 0, Math.PI / 2);
+        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, W / 4, H * 0.52, -D / 2 + 0.045, 0, 0, Math.PI / 2);
         break;
       }
     }
@@ -586,62 +600,130 @@ export class Walk3D {
     return tex;
   }
 
-  /// A facade grid of windows — some lit (warm) so the city glows under bloom.
-  makeBuildingTexture() {
-    const size = 128;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#8a9096";
-    ctx.fillRect(0, 0, size, size);
-    const cols = 6;
-    const rows = 8;
-    const gap = 4;
-    const cw = (size - gap * (cols + 1)) / cols;
-    const ch = (size - gap * (rows + 1)) / rows;
+  /// A sharp downtown office facade (window grid with mullions + glass
+  /// reflections). Returns a colour map plus an emissive map for lit windows.
+  makeFacade(style) {
+    const size = 512;
+    const colorCanvas = document.createElement("canvas");
+    colorCanvas.width = colorCanvas.height = size;
+    const cctx = colorCanvas.getContext("2d");
+    const emissiveCanvas = document.createElement("canvas");
+    emissiveCanvas.width = emissiveCanvas.height = size;
+    const ectx = emissiveCanvas.getContext("2d");
+
+    let base, frame;
+    if (style === "glass") { base = "#4d5f70"; frame = "#31404d"; }
+    else if (style === "brick") { base = "#8a6a52"; frame = "#5f4634"; }
+    else { base = "#9a9aa2"; frame = "#72727a"; } // concrete
+
+    cctx.fillStyle = base;
+    cctx.fillRect(0, 0, size, size);
+    ectx.fillStyle = "#000";
+    ectx.fillRect(0, 0, size, size);
+
+    const cols = 10;
+    const rows = 16;
+    const margin = 14;
+    const gap = 7;
+    const cw = (size - margin * 2 - gap * (cols - 1)) / cols;
+    const ch = (size - margin * 2 - gap * (rows - 1)) / rows;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        const x = gap + c * (cw + gap);
-        const y = gap + r * (ch + gap);
-        ctx.fillStyle = Math.random() < 0.34 ? "#f7d9a0" : "#2e3338";
-        ctx.fillRect(x, y, cw, ch);
+        const x = margin + c * (cw + gap);
+        const y = margin + r * (ch + gap);
+        const lit = Math.random() < 0.24;
+        const g = cctx.createLinearGradient(x, y, x, y + ch);
+        if (lit) {
+          g.addColorStop(0, "#fff3cc");
+          g.addColorStop(1, "#ffd98a");
+          ectx.fillStyle = "#ffd080";
+          ectx.fillRect(x, y, cw, ch);
+        } else {
+          // Reflective glass: sky-blue reflection at the top, darker below.
+          g.addColorStop(0, "#8fb6d4");
+          g.addColorStop(1, "#2c3946");
+        }
+        cctx.fillStyle = g;
+        cctx.fillRect(x, y, cw, ch);
+        // Mullion (window frame).
+        cctx.strokeStyle = frame;
+        cctx.lineWidth = 2;
+        cctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
       }
     }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
+
+    const map = new THREE.CanvasTexture(colorCanvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.wrapS = map.wrapT = THREE.RepeatWrapping;
+    map.anisotropy = 8;
+    const emissiveMap = new THREE.CanvasTexture(emissiveCanvas);
+    emissiveMap.colorSpace = THREE.SRGBColorSpace;
+    emissiveMap.wrapS = emissiveMap.wrapT = THREE.RepeatWrapping;
+    emissiveMap.anisotropy = 8;
+    return { map, emissiveMap };
   }
 
-  /// Asphalt with a coarse road grid + dashed centre lines.
+  /// Sharp asphalt street grid: sidewalks, lane markings and crosswalks.
   makeCityGroundTexture() {
-    const size = 512;
+    const size = 2048;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#2c2e33";
+
+    // Asphalt base with subtle noise for texture.
+    ctx.fillStyle = "#2b2d31";
     ctx.fillRect(0, 0, size, size);
-    ctx.strokeStyle = "#3c3f45";
-    ctx.lineWidth = 12;
-    ctx.beginPath();
-    for (let i = 64; i < size; i += 64) {
+    for (let i = 0; i < 6000; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.025})`;
+      ctx.fillRect(Math.random() * size, Math.random() * size, 2, 2);
+    }
+
+    // Street grid: a block every `block` px, a road `road` px wide.
+    const block = 256;
+    const road = 64;
+    const sidewalk = 12;
+
+    // Road surface (slightly lighter than the asphalt block tops).
+    ctx.fillStyle = "#3b3e44";
+    for (let i = 0; i <= size; i += block) {
+      ctx.fillRect(i - road / 2, 0, road, size);
+      ctx.fillRect(0, i - road / 2, size, road);
+    }
+    // Sidewalks.
+    ctx.fillStyle = "#555860";
+    for (let i = 0; i <= size; i += block) {
+      ctx.fillRect(i - road / 2 - sidewalk, 0, sidewalk, size);
+      ctx.fillRect(i + road / 2, 0, sidewalk, size);
+      ctx.fillRect(0, i - road / 2 - sidewalk, size, sidewalk);
+      ctx.fillRect(0, i + road / 2, size, sidewalk);
+    }
+    // Lane centre dashes.
+    ctx.strokeStyle = "#c9cdd2";
+    ctx.lineWidth = 3;
+    ctx.setLineDash([16, 14]);
+    for (let i = 0; i <= size; i += block) {
+      ctx.beginPath();
       ctx.moveTo(i, 0); ctx.lineTo(i, size);
       ctx.moveTo(0, i); ctx.lineTo(size, i);
-    }
-    ctx.stroke();
-    ctx.strokeStyle = "#5a5d63";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([10, 8]);
-    for (let i = 64; i < size; i += 64) {
-      ctx.beginPath();
-      ctx.moveTo(i + 32, 0); ctx.lineTo(i + 32, size);
-      ctx.moveTo(0, i + 32); ctx.lineTo(size, i + 32);
       ctx.stroke();
     }
     ctx.setLineDash([]);
+
+    // Crosswalk stripes at intersections.
+    ctx.fillStyle = "#b6bac0";
+    for (let i = block; i < size; i += block) {
+      for (let j = block; j < size; j += block) {
+        for (let k = 0; k < 6; k++) {
+          ctx.fillRect(i - road / 2 + 6, j - road / 2 + 4 + k * 10, road - 12, 5);
+          ctx.fillRect(i - road / 2 + 4 + k * 10, j - road / 2 + 6, 5, road - 12);
+        }
+      }
+    }
+
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
     return tex;
   }
 
@@ -670,28 +752,32 @@ export class Walk3D {
 
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(extent * 2, extent * 2),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, map: this.makeCityGroundTexture() })
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, map: this.cityGroundTexture })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(cx, -0.05, cz);
     ground.receiveShadow = true;
     group.add(ground);
 
-    // One InstancedMesh for every building (single draw call).
+    // One InstancedMesh per facade style (a single draw call each).
     const buildingGeometry = new THREE.BoxGeometry(1, 1, 1);
-    const buildingMaterial = new THREE.MeshStandardMaterial({
-      map: this.buildingTexture,
-      roughness: 0.55,
-      metalness: 0.15,
-      emissive: 0xffffff,
-      emissiveMap: this.buildingTexture,
-      emissiveIntensity: 0.45,
+    const facadeMaterials = this.facades.map((f, i) => {
+      const glass = i === 0;
+      return new THREE.MeshStandardMaterial({
+        map: f.map,
+        roughness: glass ? 0.25 : 0.75,
+        metalness: glass ? 0.4 : 0.05,
+        emissive: 0xffffff,
+        emissiveMap: f.emissiveMap,
+        emissiveIntensity: 0.9,
+      });
     });
 
-    const instances = [];
-    const block = 16;
-    const roomHalfW = room.width / 2 + 4;
-    const roomHalfL = room.length / 2 + 4;
+    // Downtown: a taller cluster near the centre, mid-rise around the edges.
+    const buckets = [[], [], []];
+    const block = 14;
+    const roomHalfW = room.width / 2 + 5;
+    const roomHalfL = room.length / 2 + 5;
     let seed = 0x9e3779b9;
     const rnd = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -699,32 +785,42 @@ export class Walk3D {
     };
     for (let x = cx - extent + block; x <= cx + extent - block; x += block) {
       for (let z = cz - extent + block; z <= cz + extent - block; z += block) {
-        const px = x + (rnd() - 0.5) * block * 0.5;
-        const pz = z + (rnd() - 0.5) * block * 0.5;
-        const halfW = 3 + rnd() * 4;
-        const halfD = 3 + rnd() * 4;
+        const px = x + (rnd() - 0.5) * block * 0.4;
+        const pz = z + (rnd() - 0.5) * block * 0.4;
+        const halfW = 3.5 + rnd() * 3.5;
+        const halfD = 3.5 + rnd() * 3.5;
         if (px - halfW < cx + roomHalfW && px + halfW > cx - roomHalfW &&
             pz - halfD < cz + roomHalfL && pz + halfD > cz - roomHalfL) continue;
-        instances.push({ px, pz, halfW, halfD, height: 8 + rnd() * 45 });
+        const dist = Math.hypot(px - cx, pz - cz);
+        const tower = rnd() < 0.18 && dist < 40;
+        const height = tower
+          ? 55 + rnd() * 45
+          : 14 + rnd() * (dist < 40 ? 30 : 18);
+        const style = rnd() < 0.4 ? 0 : (rnd() < 0.6 ? 1 : 2);
+        buckets[style].push({ px, pz, halfW, halfD, height });
       }
     }
 
-    const mesh = new THREE.InstancedMesh(buildingGeometry, buildingMaterial, instances.length);
     const matrix = new THREE.Matrix4();
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3();
     const pos = new THREE.Vector3();
-    instances.forEach((b, i) => {
-      pos.set(b.px, b.height / 2, b.pz);
-      scl.set(b.halfW * 2, b.height, b.halfD * 2);
-      matrix.compose(pos, quat, scl);
-      mesh.setMatrixAt(i, matrix);
+    buckets.forEach((list, i) => {
+      if (list.length === 0) return;
+      const mesh = new THREE.InstancedMesh(buildingGeometry, facadeMaterials[i], list.length);
+      list.forEach((b, k) => {
+        pos.set(b.px, b.height / 2, b.pz);
+        scl.set(b.halfW * 2, b.height, b.halfD * 2);
+        matrix.compose(pos, quat, scl);
+        mesh.setMatrixAt(k, matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
     });
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
 
+    group.position.y = -(store.floor - 1) * FLOOR_HEIGHT;
     this.scene.add(group);
     this.city = group;
   }
@@ -734,6 +830,15 @@ export class Walk3D {
   setupComposer() {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+
+    // Contact shadows: screen-space ambient occlusion darkens where objects
+    // meet the floor and walls (soft, localised, "as good as it gets").
+    this.ssaoPass = new SSAOPass(this.scene, this.camera, this.container.clientWidth, this.container.clientHeight, 32);
+    this.ssaoPass.kernelRadius = 10;
+    this.ssaoPass.minDistance = 0.001;
+    this.ssaoPass.maxDistance = 0.4;
+    this.composer.addPass(this.ssaoPass);
+
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(this.container.clientWidth, this.container.clientHeight),
       0.55, // strength
@@ -748,25 +853,30 @@ export class Walk3D {
 
   async initPhysics() {
     await RAPIER.init();
-    this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.physicsReady = true;
     this.buildPhysics(store.room, true);
   }
 
   buildPhysics(room, resetPlayer = false) {
-    if (!this.world) return;
-    if (this.playerBody) {
-      this.world.removeRigidBody(this.playerBody);
-      this.playerBody = null;
-      this.playerCollider = null;
-    }
-    for (const b of this.physicsBodies) this.world.removeRigidBody(b);
+    if (!this.physicsReady) return;
+    // Rebuild the world from scratch so static colliders never accumulate
+    // across room changes (which used to wedge the player after a few edits).
+    if (this.world) this.world.free();
+    this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
+    this.playerBody = null;
+    this.playerCollider = null;
     this.physicsBodies = [];
 
     // Floor.
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(room.width / 2, 0.03, room.length / 2)
         .setTranslation(room.width / 2, -0.03, room.length / 2)
+    );
+
+    // Ceiling (stops the player jumping through the roof).
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(room.width / 2, 0.05, room.length / 2)
+        .setTranslation(room.width / 2, room.height + 0.025, room.length / 2)
     );
 
     // Walls, split by open doorways so you can walk through them.
@@ -802,6 +912,27 @@ export class Walk3D {
         ? RAPIER.ColliderDesc.cuboid(len / 2, doorTop / 2, 0.03)
         : RAPIER.ColliderDesc.cuboid(0.03, doorTop / 2, len / 2);
       desc.setTranslation(midX, doorTop / 2, midZ);
+      this.world.createCollider(desc);
+    }
+
+    // Wall header above each doorway (so you can't jump over a door).
+    for (const door of room.doors) {
+      const wall = room.walls.find(w => w.id === door.wallID);
+      if (!wall) continue;
+      const doorTop = Math.min(P.DOOR_HEIGHT, room.height);
+      if (doorTop >= room.height - 0.01) continue;
+      const a = P.wallPointAt(wall, door.offset);
+      const b = P.wallPointAt(wall, door.offset + door.width);
+      const len = P.distance(a, b);
+      if (len < 0.01) continue;
+      const midX = (a.x + b.x) / 2;
+      const midZ = (a.z + b.z) / 2;
+      const headerH = room.height - doorTop;
+      const horizontal = Math.abs(b.z - a.z) < 0.001;
+      const desc = horizontal
+        ? RAPIER.ColliderDesc.cuboid(len / 2, headerH / 2, P.WALL_THICKNESS / 2)
+        : RAPIER.ColliderDesc.cuboid(P.WALL_THICKNESS / 2, headerH / 2, len / 2);
+      desc.setTranslation(midX, doorTop + headerH / 2, midZ);
       this.world.createCollider(desc);
     }
 
@@ -915,16 +1046,8 @@ export class Walk3D {
 
   drawMarbleTile(ctx, x, y, size, rnd) {
     // White marble base with a whisper of tone variation per tile.
-    const shade = 246 + Math.floor(rnd() * 6);
+    const shade = 232 + Math.floor(rnd() * 6);
     ctx.fillStyle = `rgb(${shade},${shade},${shade - 1})`;
-    ctx.fillRect(x, y, size, size);
-
-    // Subtle diagonal shading for depth.
-    const g = ctx.createLinearGradient(x, y, x + size, y + size);
-    g.addColorStop(0, "rgba(255,255,255,0.28)");
-    g.addColorStop(0.5, "rgba(255,255,255,0)");
-    g.addColorStop(1, "rgba(150,150,150,0.14)");
-    ctx.fillStyle = g;
     ctx.fillRect(x, y, size, size);
 
     // Thin grey marble veins.
@@ -1083,6 +1206,7 @@ export class Walk3D {
 
   /// Fires a green paintball straight ahead from the camera.
   shoot() {
+    playPlop();
     const origin = this.camera.position.clone();
     const direction = new THREE.Vector3();
     this.camera.getWorldDirection(direction);
@@ -1260,6 +1384,7 @@ export class Walk3D {
   /// Drives the player capsule with Rapier and reads the camera position back.
   tickPhysics(dt, forward, right) {
     const body = this.playerBody;
+    if (!body || !this.world) return;
 
     const len = Math.max(1, Math.hypot(forward, right));
     // Camera basis (looking down -Z, rotated by yaw about Y):
@@ -1273,11 +1398,25 @@ export class Walk3D {
     const vel = body.linvel();
     body.setLinvel({ x: vx, y: vel.y, z: vz }, true);
 
-    this.world.timestep = Math.min(dt, 0.05);
+    this.world.timestep = Math.max(0, Math.min(dt, 0.05));
     this.world.step();
 
     // Body sits at the feet; the camera (eyes) is at the capsule top.
+    const room = store.room;
     const p = body.translation();
+    if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z) ||
+        p.y > room.height + 3 || p.y < -10) {
+      // The body escaped the room somehow — teleport it back to the floor.
+      body.setTranslation({ x: room.width / 2, y: 0.3, z: Math.max(0.5, room.length - 0.6) }, true);
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      const q = body.translation();
+      this.feetY = q.y;
+      const hh = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
+      this.position.set(q.x, q.y + (hh + PLAYER_RADIUS) * 2, q.z);
+      this.onGround = false;
+      this.camera.position.copy(this.position);
+      return;
+    }
     this.feetY = p.y;
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const eyeHeight = (halfH + PLAYER_RADIUS) * 2;

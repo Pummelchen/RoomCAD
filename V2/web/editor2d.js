@@ -527,7 +527,7 @@ export class Editor2D {
     const ctx = this.ctx;
     const room = store.room;
     const thickness = selected ? 9 : 7;
-    const color = selected ? "#3d8bfd" : "#c9cbd2";
+    const color = selected ? "#6db3ff" : "#4a90e2";
 
     const doorSpans = room.doors
       .filter(d => d.wallID === wall.id)
@@ -565,7 +565,7 @@ export class Editor2D {
     const angle = Math.atan2(end.y - hinge.y, end.x - hinge.x);
     const swingSign = door.swingInside ? 1 : -1;
     const swing = angle + swingSign * (Math.PI / 2);
-    const color = "#b08860";
+    const color = "#8b5a2b";
 
     if (door.open) {
       ctx.strokeStyle = color;
@@ -598,13 +598,13 @@ export class Editor2D {
     const ctx = this.ctx;
     const a = this.screen(P.wallPointAt(wall, span.from));
     const b = this.screen(P.wallPointAt(wall, span.to));
-    ctx.strokeStyle = "#5a9fd6";
+    ctx.strokeStyle = "#8fc4ec";
     ctx.lineWidth = 5;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    ctx.strokeStyle = "#cfd2d8";
+    ctx.strokeStyle = "#eaf4fb";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
@@ -633,14 +633,18 @@ export class Editor2D {
       const pt = P.wallPointAt(wall, o);
       return this.screen({ x: pt.x + perp.x * push, z: pt.z + perp.z * push });
     };
-    this.drawChip(Math.round(offset * 100), labelPoint(offset / 2, 0.5));
-    this.drawChip(Math.round(width * 100), labelPoint(offset + width / 2, 0.5));
-    this.drawChip(Math.round(toEnd * 100), labelPoint(offset + width + toEnd / 2, 0.5));
+    // Show the distance to the nearest boundary on each side: a neighbour
+    // opening when there is one, otherwise the end of the wall.
     if (spacing.gapToPrevious !== null) {
       this.drawChip(Math.round(spacing.gapToPrevious * 100), labelPoint(offset - spacing.gapToPrevious / 2, 0.5));
+    } else {
+      this.drawChip(Math.round(offset * 100), labelPoint(offset / 2, 0.5));
     }
+    this.drawChip(Math.round(width * 100), labelPoint(offset + width / 2, 0.5));
     if (spacing.gapToNext !== null) {
       this.drawChip(Math.round(spacing.gapToNext * 100), labelPoint(offset + width + spacing.gapToNext / 2, 0.5));
+    } else {
+      this.drawChip(Math.round(toEnd * 100), labelPoint(offset + width + toEnd / 2, 0.5));
     }
   }
 
@@ -666,32 +670,53 @@ export class Editor2D {
     ctx.fillText(text, at.x, at.y + 0.5);
   }
 
+  furnitureState(item, selected) {
+    if (store.furnitureFeedback && store.furnitureFeedback.id === item.id) {
+      return store.furnitureFeedback.state; // "valid" | "invalid"
+    }
+    return selected ? "selected" : "default";
+  }
+
+  furnitureColors(state) {
+    switch (state) {
+      case "valid":
+        return { fill: "rgba(57,255,20,0.32)", stroke: "#39ff14", text: "#39ff14", front: "#39ff14", width: 2.5 };
+      case "invalid":
+        return { fill: "rgba(255,59,48,0.32)", stroke: "#ff3b30", text: "#ff3b30", front: "#ff3b30", width: 2.5 };
+      case "selected":
+        return { fill: "rgba(0,0,0,0.85)", stroke: "#3d8bfd", text: "#3d8bfd", front: "#3d8bfd", width: 3 };
+      default:
+        return { fill: "rgba(0,0,0,0.85)", stroke: "#4a4a50", text: "#e8e8ea", front: "#5a5a60", width: 2 };
+    }
+  }
+
   drawFurniture(item, selected) {
     const ctx = this.ctx;
     const rect = this.rect(P.furnitureFootprint(item));
     const kind = P.FURNITURE_KINDS[item.kind];
-    const base = `rgb(${kind.color.map(c => Math.round(c * 255)).join(",")})`;
+    const state = this.furnitureState(item, selected);
 
     if (kind.category === "fixture") {
-      this.drawFixture(rect, selected, kind, base);
+      this.drawFixture(rect, state, kind);
       return;
     }
 
+    const c = this.furnitureColors(state);
     this.roundRect(rect.x, rect.y, rect.w, rect.h, 6);
-    ctx.fillStyle = selected ? "rgba(47,125,225,0.35)" : base + "2e";
+    ctx.fillStyle = c.fill;
     ctx.fill();
-    ctx.strokeStyle = selected ? "#2f7de1" : base;
-    ctx.lineWidth = selected ? 3 : 2;
+    ctx.strokeStyle = c.stroke;
+    ctx.lineWidth = c.width;
     ctx.stroke();
 
     ctx.font = "600 10px -apple-system, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillStyle = selected ? "#3d8bfd" : "#e8e8ea";
+    ctx.fillStyle = c.text;
     ctx.fillText(kind.label, rect.x + rect.w / 2, rect.y + rect.h / 2);
 
     // Front indicator
-    ctx.strokeStyle = base + "cc";
+    ctx.strokeStyle = c.front;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(rect.x + rect.w / 2, rect.y + rect.h / 2);
@@ -699,25 +724,33 @@ export class Editor2D {
     ctx.stroke();
   }
 
-  drawFixture(rect, selected, kind, base) {
+  drawFixture(rect, state, kind) {
     const ctx = this.ctx;
     const cx = rect.x + rect.w / 2;
     const cy = rect.y + rect.h / 2;
     const r = Math.max(5, Math.min(rect.w, rect.h) / 2);
+    const base = `rgb(${kind.color.map(c => Math.round(c * 255)).join(",")})`;
+    const c = this.furnitureColors(state);
 
     // Soft glow, as if the ceiling lamp is lit.
-    ctx.fillStyle = selected ? "rgba(47,125,225,0.22)" : "rgba(255,228,140,0.16)";
+    ctx.fillStyle = state === "invalid" ? "rgba(255,59,48,0.22)"
+      : state === "valid" ? "rgba(57,255,20,0.22)"
+      : state === "selected" ? "rgba(47,125,225,0.22)"
+      : "rgba(255,228,140,0.16)";
     ctx.beginPath();
     ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
     ctx.fill();
 
     // Lamp body.
-    ctx.fillStyle = selected ? "rgba(47,125,225,0.4)" : base + "30";
+    ctx.fillStyle = state === "invalid" ? "rgba(255,59,48,0.4)"
+      : state === "valid" ? "rgba(57,255,20,0.4)"
+      : state === "selected" ? "rgba(47,125,225,0.4)"
+      : base + "30";
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = selected ? "#2f7de1" : base;
-    ctx.lineWidth = selected ? 3 : 2;
+    ctx.strokeStyle = state === "default" ? base : c.stroke;
+    ctx.lineWidth = state === "default" ? 2 : c.width;
     ctx.stroke();
 
     // Bulb.
@@ -729,7 +762,7 @@ export class Editor2D {
     ctx.font = "600 9px -apple-system, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillStyle = selected ? "#3d8bfd" : "#e8e8ea";
+    ctx.fillStyle = state === "default" ? "#e8e8ea" : c.text;
     ctx.fillText(kind.label, cx, cy + r + 3);
   }
 

@@ -2,6 +2,7 @@
 // Mirrors the native Swift RoomStore.
 
 import * as P from "./plan.js";
+import { playDoorSound } from "./audio.js";
 
 export const TOOL_HELP = {
   select: "Drag walls, doors, windows, and furniture · click to select",
@@ -19,16 +20,20 @@ export const store = {
   pendingFurnitureKind: null,
   lastFurnitureKind: null,
   rotation: 0, // 2D plan view rotation in degrees (0/90/180/270)
+  floor: 2, // which building floor the room is on (1 = ground floor)
   selectedWallID: null,
   selectedDoorID: null,
   selectedWindowID: null,
   selectedFurnitureID: null,
   documentName: null,
+  serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
   edited: false,
   status: "Ready",
   undoStack: [],
   redoStack: [],
   dragTransactionActive: false,
+  furnitureFeedback: null, // { id, state: "valid" | "invalid" } during move/rotate
+  feedbackTimer: null,
   listeners: new Set(),
 
   // MARK: Notifications
@@ -40,6 +45,18 @@ export const store = {
 
   emit() {
     this.listeners.forEach(fn => fn());
+  },
+
+  /// Briefly colours a furniture item green (valid) or red (invalid) in the
+  /// 2D editor, then clears itself.
+  flashFurniture(id, state) {
+    this.furnitureFeedback = { id, state };
+    clearTimeout(this.feedbackTimer);
+    this.emit();
+    this.feedbackTimer = setTimeout(() => {
+      this.furnitureFeedback = null;
+      this.emit();
+    }, 700);
   },
 
   // MARK: Selection
@@ -98,6 +115,7 @@ export const store = {
     this.selectedDoorID = null;
     this.selectedWindowID = null;
     this.selectedFurnitureID = null;
+    this.furnitureFeedback = null;
   },
 
   select(p) {
@@ -106,7 +124,7 @@ export const store = {
       this.clearSelection();
       this.selectedFurnitureID = furniture.id;
       this.status = "Selected " + P.FURNITURE_KINDS[furniture.kind].title.toLowerCase()
-        + " · drag to move, B to turn";
+        + " · drag to move, R to turn";
       this.emit();
       return;
     }
@@ -266,6 +284,7 @@ export const store = {
       const d = room.doors.find(x => x.id === id);
       if (d) d.open = willOpen;
     });
+    playDoorSound();
     this.selectedDoorID = id;
     this.selectedWallID = null;
     this.selectedWindowID = null;
@@ -279,23 +298,28 @@ export const store = {
       const d = room.doors.find(x => x.id === id);
       if (d) d.swingInside = inside;
     });
+    playDoorSound();
   },
 
-  /// Flips which way a door opens. If it was closed, this opens it (keeping
-  /// its current direction); if it was open, it swings to the other side.
+  /// Right-click door toggle: open → close, closed → open to the opposite side.
   toggleDoorSwing(id) {
     const door = this.room.doors.find(d => d.id === id);
     if (!door) return;
-    const wasClosed = !door.open;
-    const message = wasClosed
-      ? "Opened door"
-      : (door.swingInside ? "Door now opens outside" : "Door now opens inside");
+    const wasOpen = door.open;
+    const message = wasOpen
+      ? "Closed door"
+      : (door.swingInside ? "Opened door to the outside" : "Opened door to the inside");
     this.commit(message, room => {
       const d = room.doors.find(x => x.id === id);
       if (!d) return;
-      d.open = true;
-      if (!wasClosed) d.swingInside = !d.swingInside;
+      if (wasOpen) {
+        d.open = false;
+      } else {
+        d.open = true;
+        d.swingInside = !d.swingInside;
+      }
     });
+    playDoorSound();
     this.selectedDoorID = id;
     this.selectedWallID = null;
     this.selectedWindowID = null;
@@ -405,9 +429,9 @@ export const store = {
     const item = this.room.furniture[index];
     const center = P.furnitureCenter(this.room, raw, item);
     const candidate = { ...item, center };
-    if (P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
-      this.room.furniture[index] = candidate;
-    }
+    const valid = P.isFurniturePlacementValid(this.room, candidate, new Set([id]));
+    if (valid) this.room.furniture[index] = candidate;
+    this.furnitureFeedback = { id, state: valid ? "valid" : "invalid" };
   },
 
   rotateSelectedFurniture() {
@@ -430,10 +454,11 @@ export const store = {
       z: P.clamp(candidate.center.z, d / 2, this.room.length - d / 2),
     };
     if (!P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
-      this.status = "Not enough space to turn it here";
-      this.emit();
+      this.status = "Can't turn it there — it would hit a wall";
+      this.flashFurniture(id, "invalid");
       return;
     }
+    this.flashFurniture(id, "valid");
     this.commit("Turned " + P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(), room => {
       room.furniture[index] = candidate;
     });
@@ -450,7 +475,7 @@ export const store = {
     };
     if (!P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
       this.status = "Can't move any further that way";
-      this.emit();
+      this.flashFurniture(id, "invalid");
       return;
     }
     this.commit("Moved " + P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(), room => {
@@ -567,6 +592,15 @@ export const store = {
     this.emit();
   },
 
+  /// Shifts the simulated building floor (1 = ground floor) for the 3D view.
+  setFloor(delta) {
+    const next = Math.max(1, Math.min(30, this.floor + delta));
+    if (next === this.floor) return;
+    this.floor = next;
+    this.status = "Floor " + next;
+    this.emit();
+  },
+
   renameRoom(name) {
     const trimmed = name.trim();
     if (!trimmed || trimmed === this.room.name) return;
@@ -632,6 +666,7 @@ export const store = {
   endDrag(message) {
     if (!this.dragTransactionActive) return;
     this.dragTransactionActive = false;
+    this.furnitureFeedback = null;
     P.sanitize(this.room);
     this.redoStack.length = 0;
     this.edited = true;
@@ -642,6 +677,7 @@ export const store = {
   discardDrag() {
     if (!this.dragTransactionActive) return;
     this.dragTransactionActive = false;
+    this.furnitureFeedback = null;
     this.undoStack.pop();
   },
 
@@ -661,12 +697,13 @@ export const store = {
     this.mode = "2d";
     this.rotation = 0;
     this.documentName = null;
+    this.serverRoomName = null;
     this.edited = false;
     this.status = "Started a new room (7-room demo)";
     this.emit();
   },
 
-  loadRoom(room, name) {
+  loadRoom(room, name, fromServer = false) {
     this.room = room;
     this.undoStack.length = 0;
     this.redoStack.length = 0;
@@ -676,8 +713,21 @@ export const store = {
     this.mode = "2d";
     this.rotation = 0;
     this.documentName = name || room.name;
+    this.serverRoomName = fromServer ? name : null;
     this.edited = false;
     this.status = "Opened " + this.documentName;
+    this.emit();
+  },
+
+  /// Applies a room pushed from a teammate over the live channel, without
+  /// resetting the current view mode or tool.
+  applyRemoteRoom(room) {
+    this.room = room;
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.clearSelection();
+    this.edited = false;
+    this.status = "Room updated by teammate";
     this.emit();
   },
 
