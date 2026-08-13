@@ -35,6 +35,7 @@ export const store = {
   redoStack: [],
   dragTransactionActive: false,
   furnitureFeedback: null, // { id, state: "valid" | "invalid" } during move/rotate
+  furnitureGaps: null,     // { wall: {cm,dir}, furniture: {cm,kind} } for the selected/moving item
   feedbackTimer: null,
   listeners: new Set(),
 
@@ -59,6 +60,38 @@ export const store = {
       this.furnitureFeedback = null;
       this.emit();
     }, 700);
+  },
+
+  /// Computes the nearest wall gap and nearest other-furniture gap (in cm) for
+  /// a furniture item, so the 2D editor can show how much space surrounds it.
+  refreshFurnitureGaps(id) {
+    const item = this.room.furniture.find(f => f.id === id);
+    if (!item) {
+      this.furnitureGaps = null;
+      return;
+    }
+    const f = P.furnitureFootprint(item);
+
+    let wallGap = Infinity;
+    for (const wall of this.room.walls) {
+      const d = P.wallRectDistance(wall, f);
+      const gap = Math.max(0, d - P.WALL_THICKNESS / 2);
+      if (gap < wallGap) wallGap = gap;
+    }
+
+    let nearest = null;
+    for (const other of this.room.furniture) {
+      if (other.id === id) continue;
+      if (P.FURNITURE_KINDS[other.kind].category === "fixture") continue; // ceiling lights don't count as floor neighbours
+      const gap = P.rectDistance(f, P.furnitureFootprint(other));
+      if (gap < (nearest ? nearest.cm / 100 : Infinity)) nearest = { cm: Math.round(gap * 100), kind: other.kind };
+    }
+
+    this.furnitureGaps = {
+      id,
+      wall: wallGap === Infinity ? null : { cm: Math.round(wallGap * 100) },
+      furniture: nearest,
+    };
   },
 
   // MARK: Selection
@@ -118,6 +151,7 @@ export const store = {
     this.selectedWindowID = null;
     this.selectedFurnitureID = null;
     this.furnitureFeedback = null;
+    this.furnitureGaps = null;
   },
 
   select(p) {
@@ -125,6 +159,7 @@ export const store = {
     if (furniture) {
       this.clearSelection();
       this.selectedFurnitureID = furniture.id;
+      this.refreshFurnitureGaps(furniture.id);
       this.status = "Selected " + P.FURNITURE_KINDS[furniture.kind].title.toLowerCase()
         + " · drag to move, R to turn";
       this.emit();
@@ -435,6 +470,7 @@ export const store = {
     const valid = P.isFurniturePlacementValid(this.room, candidate, new Set([id]));
     if (valid) this.room.furniture[index] = candidate;
     this.furnitureFeedback = { id, state: valid ? "valid" : "invalid" };
+    this.refreshFurnitureGaps(id);
   },
 
   rotateSelectedFurniture() {

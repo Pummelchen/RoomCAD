@@ -330,6 +330,33 @@ export function furnitureNear(room, p, tolerance = 0.02) {
   return null;
 }
 
+/// Minimum distance between two axis-aligned footprints (0 when touching or
+/// overlapping).
+export function rectDistance(a, b) {
+  const dx = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX));
+  const dz = Math.max(0, Math.max(a.minZ, b.minZ) - Math.min(a.maxZ, b.maxZ));
+  return Math.hypot(dx, dz);
+}
+
+/// Minimum distance from a footprint to an axis-aligned wall centreline.
+export function wallRectDistance(wall, f) {
+  const horizontal = Math.abs(wall.end.z - wall.start.z) < 1e-6;
+  if (horizontal) {
+    const z0 = wall.start.z;
+    const x0 = Math.min(wall.start.x, wall.end.x);
+    const x1 = Math.max(wall.start.x, wall.end.x);
+    const dz = z0 < f.minZ ? f.minZ - z0 : z0 > f.maxZ ? z0 - f.maxZ : 0;
+    const dx = x1 < f.minX ? f.minX - x1 : x0 > f.maxX ? x0 - f.maxX : 0;
+    return Math.hypot(dx, dz);
+  }
+  const x0 = wall.start.x;
+  const z0 = Math.min(wall.start.z, wall.end.z);
+  const z1 = Math.max(wall.start.z, wall.end.z);
+  const dx = x0 < f.minX ? f.minX - x0 : x0 > f.maxX ? x0 - f.maxX : 0;
+  const dz = z1 < f.minZ ? f.minZ - z1 : z0 > f.maxZ ? z0 - f.maxZ : 0;
+  return Math.hypot(dx, dz);
+}
+
 // MARK: - Opening spacing
 
 export function openingSpacing(room, id, kind) {

@@ -331,6 +331,9 @@ export class Editor2D {
   beginSelectDrag(p) {
     const furniture = P.furnitureNear(store.room, p);
     if (furniture) {
+      store.clearSelection();
+      store.selectedFurnitureID = furniture.id;
+      store.refreshFurnitureGaps(furniture.id);
       store.beginDrag();
       return { type: "moveFurniture", id: furniture.id };
     }
@@ -583,6 +586,7 @@ export class Editor2D {
       this.drawFurniture(item, item.id === store.selectedFurnitureID);
     }
     this.drawFurnitureSize();
+    this.drawFurnitureGaps();
 
     if (this.drag && this.drag.type === "drawWall") {
       const a = this.screen(this.drag.anchor);
@@ -810,6 +814,26 @@ export class Editor2D {
     const f = P.furnitureFootprint(item);
     const c = this.screen({ x: (f.minX + f.maxX) / 2, z: f.maxZ });
     this.drawChipText(w + " × " + d + " cm", { x: c.x, y: c.y + 14 });
+  }
+
+  /// Shows how much space surrounds the selected/moving furniture: distance to
+  /// the nearest wall and to the nearest other piece of furniture, in cm.
+  drawFurnitureGaps() {
+    const gaps = store.furnitureGaps;
+    if (!gaps) return;
+    const item = store.room.furniture.find(f => f.id === gaps.id);
+    if (!item) return;
+    const f = P.furnitureFootprint(item);
+    const c = this.screen({ x: (f.minX + f.maxX) / 2, z: f.maxZ });
+    let y = c.y + 34; // below the size chip
+    if (gaps.wall) {
+      this.drawChipText("wall " + gaps.wall.cm + " cm", { x: c.x, y });
+      y += 22;
+    }
+    if (gaps.furniture) {
+      const title = P.FURNITURE_KINDS[gaps.furniture.kind].title.toLowerCase();
+      this.drawChipText(gaps.furniture.cm + " cm to " + title, { x: c.x, y });
+    }
   }
 
   /// Draws the measure-tool ruler (dragging or the last result).
