@@ -11,6 +11,7 @@ export const TOOL_HELP = {
   window: "Click a wall to add a window, then drag it to slide",
   furniture: "Pick furniture from the palette, then click the floor to place it",
   erase: "Click anything to erase it",
+  measure: "Click and drag between two points to measure the distance in cm",
 };
 
 export const store = {

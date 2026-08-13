@@ -190,7 +190,7 @@ function furnitureSection(item) {
   const d = swaps ? kind.w : kind.d;
   let html = `<h4>${esc(kind.title)}</h4>`;
   if (kind.category === "fixture") {
-    html += `<div class="inspector-note">Ceiling fixture — mounted directly under the roof.</div>`;
+    html += `<div class="inspector-note">Ceiling light — hangs from the ceiling.</div>`;
   } else {
     html += statRow("Size", P.cm(w) + " × " + P.cm(d));
     html += `<button class="inspector-button" data-action="turn">Turn 90°</button>`;
@@ -201,18 +201,22 @@ function furnitureSection(item) {
 
 function roomSection() {
   const room = store.room;
-  const canvas = P.canvasOf(room);
+  const area = (room.width * room.length).toFixed(2);
   let html = `<h4>Room</h4>`;
   html += `<div class="field"><label>Room Name</label>` +
     `<input type="text" data-action="rename" value="${esc(room.name)}"></div>`;
-  html += `<div class="field"><label>Canvas width (m)</label>` +
-    `<input type="number" data-action="canvas-w" value="${canvas.width.toFixed(2)}" min="2" max="60" step="0.1"></div>`;
-  html += `<div class="field"><label>Canvas length (m)</label>` +
-    `<input type="number" data-action="canvas-l" value="${canvas.length.toFixed(2)}" min="2" max="60" step="0.1"></div>`;
-  html += `<div class="field"><label>Ceiling height (m)</label>` +
-    `<input type="number" data-action="height" value="${room.height.toFixed(2)}" min="2.2" max="5" step="0.1"></div>`;
-  html += `<div class="inspector-note">Select a wall, door, window, or furniture item to edit it. ` +
-    `Resize the canvas to make room for more rooms; the grey plate stays in the 2D view only.</div>`;
+  html += `<div class="field"><label>Width (cm)</label><div class="value-row">` +
+    `<input type="number" data-action="room-w" value="${Math.round(room.width * 100)}" min="200" max="2000" step="1">` +
+    `<span class="readout">= ${room.width.toFixed(2)} m</span></div></div>`;
+  html += `<div class="field"><label>Length (cm)</label><div class="value-row">` +
+    `<input type="number" data-action="room-l" value="${Math.round(room.length * 100)}" min="200" max="2000" step="1">` +
+    `<span class="readout">= ${room.length.toFixed(2)} m</span></div></div>`;
+  html += `<div class="field"><label>Wall height (cm)</label><div class="value-row">` +
+    `<input type="number" data-action="height" value="${Math.round(room.height * 100)}" min="220" max="500" step="1">` +
+    `<span class="readout">= ${room.height.toFixed(2)} m</span></div></div>`;
+  html += `<div class="stat-row"><span>Floor area</span><span>${area} m²</span></div>`;
+  html += `<div class="inspector-note">Tap a wall, door, window, or furniture to edit it. ` +
+    `The grey area is just extra drawing space for more rooms.</div>`;
   html += `<div class="floor-row">` +
     `<label>Outside floor</label>` +
     `<div class="floor-control">` +
@@ -247,12 +251,12 @@ inspectorContent.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset.action === "rename") {
     store.renameRoom(t.value);
-  } else if (t.dataset.action === "canvas-w") {
-    store.updateCanvasSize(Number(t.value), P.canvasOf(store.room).length);
-  } else if (t.dataset.action === "canvas-l") {
-    store.updateCanvasSize(P.canvasOf(store.room).width, Number(t.value));
+  } else if (t.dataset.action === "room-w") {
+    store.updateRoomSize(Number(t.value) / 100, store.room.length);
+  } else if (t.dataset.action === "room-l") {
+    store.updateRoomSize(store.room.width, Number(t.value) / 100);
   } else if (t.dataset.action === "height") {
-    store.updateRoomHeight(Number(t.value));
+    store.updateRoomHeight(Number(t.value) / 100);
   } else if (t.dataset.action === "width") {
     store.endDrag("Set width");
   } else if (t.dataset.action === "offset") {
@@ -605,6 +609,7 @@ document.addEventListener("keydown", e => {
     case "KeyD": store.chooseTool("door"); break;
     case "KeyG": store.chooseTool("window"); break;
     case "KeyE": store.chooseTool("erase"); break;
+    case "KeyM": store.chooseTool("measure"); break;
     case "KeyF":
       // Toggle the last used furniture kind on/off.
       if (store.tool === "furniture" && store.pendingFurnitureKind) {

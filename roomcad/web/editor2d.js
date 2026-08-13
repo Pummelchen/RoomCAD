@@ -20,6 +20,8 @@ export class Editor2D {
     this.pointers = new Map();
     this.pinch = null;
     this.contextMenu = document.getElementById("context-menu");
+    this.measureDrag = null;   // { start, end } while dragging the measure tool
+    this.measureResult = null; // last measured { start, end } (stays on screen)
 
     this.attachEvents();
     this.observeSize();
@@ -315,6 +317,10 @@ export class Editor2D {
         this.drag = { type: "drawWall", anchor, current: anchor };
         break;
       }
+      case "measure":
+        this.measureDrag = { start: p, end: p };
+        this.drag = { type: "measure" };
+        break;
       default:
         // click tools resolve on pointerup
         this.drag = { type: "click" };
@@ -412,6 +418,9 @@ export class Editor2D {
             store.moveWall(this.drag.id, p.x - this.lastPlan.x, p.z - this.lastPlan.z);
           }
           break;
+        case "measure":
+          if (this.measureDrag) this.measureDrag.end = p;
+          break;
       }
     }
     this.lastPlan = p;
@@ -486,6 +495,12 @@ export class Editor2D {
       case "moveWall":
         if (moved) store.endDrag("Moved wall");
         else store.discardDrag();
+        break;
+      case "measure":
+        this.measureResult = this.measureDrag
+          ? { start: this.measureDrag.start, end: this.measureDrag.end }
+          : null;
+        this.measureDrag = null;
         break;
     }
     this.draw();
@@ -567,6 +582,7 @@ export class Editor2D {
     for (const item of room.furniture) {
       this.drawFurniture(item, item.id === store.selectedFurnitureID);
     }
+    this.drawFurnitureSize();
 
     if (this.drag && this.drag.type === "drawWall") {
       const a = this.screen(this.drag.anchor);
@@ -592,6 +608,8 @@ export class Editor2D {
     if (store.tool === "wall" && this.hover) {
       this.drawSnapDot(P.snapPoint(room, this.hover));
     }
+
+    this.drawMeasure();
   }
 
   activeOpening() {
@@ -781,9 +799,71 @@ export class Editor2D {
     this.drawChip(Math.round(P.wallLength(wall) * 100), at);
   }
 
+  /// Shows the size of the selected furniture in centimetres on the plan.
+  drawFurnitureSize() {
+    const item = store.selectedFurniture();
+    if (!item) return;
+    const kind = P.FURNITURE_KINDS[item.kind];
+    const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
+    const w = Math.round((swaps ? kind.d : kind.w) * 100);
+    const d = Math.round((swaps ? kind.w : kind.d) * 100);
+    const f = P.furnitureFootprint(item);
+    const c = this.screen({ x: (f.minX + f.maxX) / 2, z: f.maxZ });
+    this.drawChipText(w + " × " + d + " cm", { x: c.x, y: c.y + 14 });
+  }
+
+  /// Draws the measure-tool ruler (dragging or the last result).
+  drawMeasure() {
+    const m = this.measureDrag || this.measureResult;
+    if (!m) return;
+    const ctx = this.ctx;
+    const a = this.screen(m.start);
+    const b = this.screen(m.end);
+    ctx.strokeStyle = "#3ddc6a";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const pt of [a, b]) {
+      ctx.fillStyle = "#3ddc6a";
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    this.drawChip(Math.round(P.distance(m.start, m.end) * 100), {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    });
+  }
+
   drawChip(cmValue, at) {
     const ctx = this.ctx;
     const text = cmValue + " cm";
+    ctx.font = "600 11px -apple-system, sans-serif";
+    const metrics = ctx.measureText(text);
+    const padX = 5;
+    const padY = 3;
+    const w = metrics.width + padX * 2;
+    const h = 18;
+    ctx.fillStyle = "rgba(30,30,34,0.95)";
+    this.roundRect(at.x - w / 2, at.y - h / 2, w, h, 5);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 0.5;
+    this.roundRect(at.x - w / 2, at.y - h / 2, w, h, 5);
+    ctx.stroke();
+    ctx.fillStyle = "#f0f0f2";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, at.x, at.y + 0.5);
+  }
+
+  /// Like drawChip, but for an arbitrary label (e.g. "90 × 200 cm").
+  drawChipText(text, at) {
+    const ctx = this.ctx;
     ctx.font = "600 11px -apple-system, sans-serif";
     const metrics = ctx.measureText(text);
     const padX = 5;
