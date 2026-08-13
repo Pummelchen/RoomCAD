@@ -13,7 +13,8 @@ export const FURNITURE_KINDS = {
   table:    { title: "Table",    category: "furniture", w: 0.70, d: 0.70, h: 0.75, color: [0.95, 0.72, 0.22], label: "TABLE", standHeight: 0.75 },
   chair:    { title: "Chair",    category: "furniture", w: 0.45, d: 0.47, h: 0.82, color: [0.90, 0.38, 0.32], label: "CHAIR", standHeight: 0.50 },
   wardrobe: { title: "Wardrobe", category: "furniture", w: 1.00, d: 0.60, h: 2.00, color: [0.82, 0.52, 0.28], label: "WARDROBE", standHeight: 2.00 },
-  light:    { title: "Light",    category: "fixture",  w: 0.24, d: 0.24, h: 0.24, color: [0.98, 0.85, 0.35], label: "LIGHT", standHeight: 0, ceiling: true },
+  light:      { title: "Bulb",        category: "fixture", w: 0.24, d: 0.24, h: 0.24, color: [0.98, 0.85, 0.35], label: "BULB",  standHeight: 0, ceiling: true, watts: 60 },
+  lightPanel: { title: "Office Panel", category: "fixture", w: 0.60, d: 0.60, h: 0.06, color: [0.95, 0.97, 1.00], label: "PANEL", standHeight: 0, ceiling: true, watts: 200 },
 };
 
 export const WALL_THICKNESS = 0.10;

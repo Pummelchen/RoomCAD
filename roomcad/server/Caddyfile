@@ -30,6 +30,8 @@
 
 91.99.176.243:8443 {
 	tls internal
+	# Serve the latest web standards, including HTTP/3 over QUIC (UDP 8443).
+	protocols h1 h2 h3
 	encode gzip
 	header {
 		-X-Frame-Options "DENY"

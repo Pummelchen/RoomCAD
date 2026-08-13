@@ -84,7 +84,7 @@ function renderToolbar() {
   });
   document.querySelectorAll("#build-palette [data-tool]").forEach(b => {
     const active = b.dataset.tool === "light"
-      ? (store.tool === "furniture" && store.pendingFurnitureKind === "light")
+      ? (store.tool === "furniture" && (store.pendingFurnitureKind === "light" || store.pendingFurnitureKind === "lightPanel"))
       : store.tool === b.dataset.tool;
     b.classList.toggle("active", active);
   });
@@ -104,7 +104,7 @@ function renderStatus() {
   statusMessage.textContent = store.status + extra;
   statusHint.textContent = store.mode === "2d"
     ? TOOL_HELP[store.tool] + " · Drag empty space to pan"
-    : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · right-click: door swing";
+    : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · L lights · right-click: door swing";
 }
 
 function renderInspector() {
@@ -303,12 +303,30 @@ document.getElementById("fit").addEventListener("click", () => editor.fit());
 document.getElementById("rotate-left").addEventListener("click", () => store.rotatePlan(-90));
 document.getElementById("rotate-right").addEventListener("click", () => store.rotatePlan(90));
 
-// Build palette in the left sidebar: Wall / Door / Window / Light.
+// Build palette in the left sidebar: Wall / Door / Window go straight to their
+// tool; Light opens a small choice between the 60 W bulb and the 200 W panel.
+const lightButton = document.getElementById("light-button");
+const lightMenu = document.getElementById("light-menu");
 document.querySelectorAll("#build-palette [data-tool]").forEach(b => {
   b.addEventListener("click", () => {
-    if (b.dataset.tool === "light") store.beginFurniturePlacement("light");
-    else store.chooseTool(b.dataset.tool);
+    if (b.dataset.tool === "light") {
+      lightMenu.hidden = !lightMenu.hidden;
+    } else {
+      lightMenu.hidden = true;
+      store.chooseTool(b.dataset.tool);
+    }
   });
+});
+lightMenu.querySelectorAll("[data-light-kind]").forEach(b => {
+  b.addEventListener("click", () => {
+    lightMenu.hidden = true;
+    store.beginFurniturePlacement(b.dataset.lightKind);
+  });
+});
+document.addEventListener("click", e => {
+  if (!lightMenu.hidden && !lightButton.contains(e.target) && !lightMenu.contains(e.target)) {
+    lightMenu.hidden = true;
+  }
 });
 
 document.getElementById("furniture-palette").querySelectorAll("[data-kind]").forEach(b => {

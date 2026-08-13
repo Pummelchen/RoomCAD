@@ -839,3 +839,68 @@ body {
 #context-menu button.danger:hover {
   background: rgba(255, 107, 94, 0.12);
 }
+
+/* ── Light choice menu ───────────────────────────────── */
+
+#build-palette {
+  position: relative;
+}
+
+#light-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 5px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#light-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+#light-menu button:hover {
+  background: var(--accent-soft);
+}
+
+#light-menu .icon {
+  width: 18px;
+  text-align: center;
+}
+
+/* ── 3D FPS counter ──────────────────────────────────── */
+
+#fps-counter {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #e9e9ee;
+  background: rgba(10, 14, 26, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 4px 10px;
+  border-radius: 7px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}

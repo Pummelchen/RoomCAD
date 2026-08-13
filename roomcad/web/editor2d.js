@@ -845,42 +845,59 @@ export class Editor2D {
     const ctx = this.ctx;
     const cx = rect.x + rect.w / 2;
     const cy = rect.y + rect.h / 2;
-    const r = Math.max(5, Math.min(rect.w, rect.h) / 2);
     const base = `rgb(${kind.color.map(c => Math.round(c * 255)).join(",")})`;
     const c = this.furnitureColors(state);
-
-    // Soft glow, as if the ceiling lamp is lit.
-    ctx.fillStyle = state === "invalid" ? "rgba(255,59,48,0.22)"
+    const glow = state === "invalid" ? "rgba(255,59,48,0.22)"
       : state === "valid" ? "rgba(57,255,20,0.22)"
       : state === "selected" ? "rgba(47,125,225,0.22)"
       : "rgba(255,228,140,0.16)";
-    ctx.beginPath();
-    ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Lamp body.
-    ctx.fillStyle = state === "invalid" ? "rgba(255,59,48,0.4)"
+    const body = state === "invalid" ? "rgba(255,59,48,0.4)"
       : state === "valid" ? "rgba(57,255,20,0.4)"
       : state === "selected" ? "rgba(47,125,225,0.4)"
       : base + "30";
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = state === "default" ? base : c.stroke;
-    ctx.lineWidth = state === "default" ? 2 : c.width;
-    ctx.stroke();
 
-    // Bulb.
-    ctx.fillStyle = "#fff6d8";
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 0.34, 0, Math.PI * 2);
-    ctx.fill();
+    if (kind === P.FURNITURE_KINDS.lightPanel) {
+      // Square 60×60 cm office panel.
+      const pad = 4;
+      ctx.fillStyle = glow;
+      this.roundRect(rect.x - pad, rect.y - pad, rect.w + pad * 2, rect.h + pad * 2, 8);
+      ctx.fill();
+      ctx.fillStyle = body;
+      this.roundRect(rect.x, rect.y, rect.w, rect.h, 6);
+      ctx.fill();
+      ctx.strokeStyle = state === "default" ? base : c.stroke;
+      ctx.lineWidth = state === "default" ? 2 : c.width;
+      this.roundRect(rect.x, rect.y, rect.w, rect.h, 6);
+      ctx.stroke();
+      // Diffuser.
+      ctx.fillStyle = "#fff6d8";
+      this.roundRect(rect.x + rect.w * 0.18, rect.y + rect.h * 0.18, rect.w * 0.64, rect.h * 0.64, 4);
+      ctx.fill();
+    } else {
+      // Classic round bulb.
+      const r = Math.max(5, Math.min(rect.w, rect.h) / 2);
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = state === "default" ? base : c.stroke;
+      ctx.lineWidth = state === "default" ? 2 : c.width;
+      ctx.stroke();
+      ctx.fillStyle = "#fff6d8";
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.34, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.font = "600 9px -apple-system, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     ctx.fillStyle = state === "default" ? "#e8e8ea" : c.text;
-    ctx.fillText(kind.label, cx, cy + r + 3);
+    ctx.fillText(kind.label, cx, rect.y + rect.h + 3);
   }
 
   drawFurnitureGhost(kind, raw) {
@@ -892,17 +909,27 @@ export class Editor2D {
     const k = P.FURNITURE_KINDS[kind];
     const color = valid ? "#34c759" : "#ff3b30";
     if (k.category === "fixture") {
-      const cx = rect.x + rect.w / 2;
-      const cy = rect.y + rect.h / 2;
-      const r = Math.max(5, Math.min(rect.w, rect.h) / 2);
       ctx.fillStyle = valid ? "rgba(52,199,89,0.22)" : "rgba(255,59,48,0.22)";
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      if (k === P.FURNITURE_KINDS.lightPanel) {
+        this.roundRect(rect.x, rect.y, rect.w, rect.h, 6);
+        ctx.fill();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        this.roundRect(rect.x, rect.y, rect.w, rect.h, 6);
+        ctx.stroke();
+      } else {
+        const cx = rect.x + rect.w / 2;
+        const cy = rect.y + rect.h / 2;
+        const r = Math.max(5, Math.min(rect.w, rect.h) / 2);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
       return;
     }

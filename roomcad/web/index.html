@@ -72,8 +72,16 @@
             <button data-tool="window" title="Add a window (G)">
               <span class="icon">🪟</span><span>Window</span>
             </button>
-            <button data-tool="light" title="Ceiling light (60 W)">
+            <button id="light-button" data-tool="light" title="Add a ceiling light">
               <span class="icon">💡</span><span>Light</span>
+            </button>
+          </div>
+          <div id="light-menu" hidden>
+            <button data-light-kind="light" title="60 W classic bulb with safety cage">
+              <span class="icon">💡</span><span>60 W Bulb</span>
+            </button>
+            <button data-light-kind="lightPanel" title="200 W office panel, 60 × 60 cm">
+              <span class="icon">🔲</span><span>200 W Office Panel</span>
             </button>
           </div>
         </div>
@@ -99,7 +107,8 @@
       <section id="canvas-area">
         <canvas id="plan-canvas"></canvas>
         <div id="walk-host" hidden>
-          <div id="walk-hint">Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · right-click: door swing</div>
+          <div id="fps-counter">— FPS</div>
+          <div id="walk-hint">Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · L lights · right-click: door swing</div>
           <div id="paintball-ui" hidden>
             <div id="paint-crosshair"></div>
           </div>

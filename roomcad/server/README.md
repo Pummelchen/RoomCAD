@@ -65,3 +65,12 @@ serves `web/` as static files.
 Run `./deploy.sh` from this directory (uses your SSH key). It packages the web
 app + API, uploads them to the VPS, installs the service/Caddy config, and
 restarts both services. It never touches `rooms.db`, so live data is preserved.
+
+## HTTP/3 (QUIC)
+
+Caddy 2.6+ serves HTTP/3 automatically for every TLS site, and the production
+`Caddyfile` makes that explicit with `protocols h1 h2 h3` on the `:8443` site.
+Caddy therefore accepts HTTP/3 over **UDP 8443** (and standard UDP 443 where
+available) in addition to HTTP/1.1 + HTTP/2 over TCP. No extra module is
+needed — just make sure the firewall allows UDP on the TLS port.
+
