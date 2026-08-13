@@ -450,6 +450,17 @@ async function openRoomModal() {
       openStoredRoom(r.name);
     });
     li.appendChild(button);
+    const remove = document.createElement("button");
+    remove.className = "room-delete";
+    remove.textContent = "✕";
+    remove.title = "Delete this room";
+    remove.addEventListener("click", e => {
+      e.stopPropagation();
+      if (!window.confirm("Delete " + r.name + "?\n\nThis removes the file from the server.")) return;
+      removeStoredRoom(r.name);
+      li.remove();
+    });
+    li.appendChild(remove);
     list.appendChild(li);
   }
   modal.hidden = false;
@@ -473,18 +484,24 @@ async function openStoredRoom(name) {
   }
 }
 
+let roomsRequestSeq = 0;
+
 async function renderRooms() {
-  roomsList.innerHTML = "";
+  const seq = ++roomsRequestSeq;
   let rooms;
   try {
     rooms = await apiListRooms();
   } catch {
+    if (seq !== roomsRequestSeq) return; // a newer request superseded us
+    roomsList.innerHTML = "";
     const li = document.createElement("li");
     li.className = "rooms-error";
     li.textContent = "Server not reachable";
     roomsList.appendChild(li);
     return;
   }
+  if (seq !== roomsRequestSeq) return; // stale response, ignore it
+  roomsList.innerHTML = "";
   const seen = new Set();
   for (const r of rooms) {
     if (seen.has(r.name)) continue; // avoid duplicates

@@ -465,18 +465,25 @@ export class Walk3D {
         break;
       }
       case "wardrobe": {
+        const doorW = W / 2 - 0.05;
+        const doorH = H - 0.30;
+        const doorY = 0.15 + doorH / 2;
         // Body
         add(new THREE.BoxGeometry(W - 0.02, H - 0.16, D - 0.02), M.wood, 0, 0.12 + (H - 0.16) / 2, 0);
         // Plinth
         add(new THREE.BoxGeometry(W - 0.04, 0.10, D - 0.04), M.woodDark, 0, 0.05, 0);
         // Top cornice
         add(new THREE.BoxGeometry(W, 0.04, D), M.woodDark, 0, H - 0.02, 0);
-        // Two doors (front = -Z), offset forward so they never z-fight the body.
-        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, -W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.03);
-        add(new THREE.BoxGeometry(W / 2 - 0.05, H - 0.30, 0.02), M.woodDark, W / 4, 0.15 + (H - 0.30) / 2, -D / 2 + 0.03);
-        // Handles
-        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, -W / 4, H * 0.52, -D / 2 + 0.045, 0, 0, Math.PI / 2);
-        add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 10), M.metal, W / 4, H * 0.52, -D / 2 + 0.045, 0, 0, Math.PI / 2);
+        // Two doors, each with a raised ornamental panel and a round knob.
+        for (const sx of [-1, 1]) {
+          const doorX = sx * W / 4;
+          // Door (offset forward so it never z-fights the body).
+          add(new THREE.BoxGeometry(doorW, doorH, 0.02), M.woodDark, doorX, doorY, -D / 2 + 0.03);
+          // Ornamental raised panel in lighter wood.
+          add(new THREE.BoxGeometry(doorW - 0.10, doorH - 0.16, 0.012), M.wood, doorX, doorY, -D / 2 + 0.044);
+          // Round knob near the inner edge of each door.
+          add(new THREE.CylinderGeometry(0.02, 0.022, 0.02, 14), M.metal, sx * 0.055, H * 0.52, -D / 2 + 0.058, Math.PI / 2, 0, 0);
+        }
         break;
       }
     }
@@ -1233,10 +1240,11 @@ export class Walk3D {
   }
 
   spawnPaintball(from, to, hit) {
-    const geometry = new THREE.SphereGeometry(0.045, 8, 8);
-    const material = new THREE.MeshLambertMaterial({ color: 0x2ecc40 });
+    const geometry = new THREE.SphereGeometry(0.045, 16, 16);
+    const material = new THREE.MeshStandardMaterial({ color: 0x2ecc40, roughness: 0.35, emissive: 0x14a828, emissiveIntensity: 0.6 });
     const ball = new THREE.Mesh(geometry, material);
     ball.userData.ball = true;
+    ball.castShadow = true; // the bullet casts a shadow from the sun as it flies
     ball.position.copy(from);
     this.scene.add(ball);
     this.paintballs.push({
