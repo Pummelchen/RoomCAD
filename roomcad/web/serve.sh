@@ -25,5 +25,5 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 cd "$DIR"
-echo "RoomCAD V2 web → http://localhost:8080"
+echo "RoomCAD web → http://localhost:8080"
 exec "$BIN" run --config Caddyfile --adapter caddyfile

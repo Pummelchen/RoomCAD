@@ -1,4 +1,4 @@
-// store.js — editing state and operations for RoomCAD V2 web.
+// store.js — editing state and operations for RoomCAD web.
 // Mirrors the native Swift RoomStore.
 
 import * as P from "./plan.js";

@@ -1,4 +1,4 @@
-// plan.js — room model and geometry for RoomCAD V2 web.
+// plan.js — room model and geometry for RoomCAD web.
 // Mirrors the native Swift app 1:1, including the .room JSON format, so rooms
 // can be exchanged between the web version and the native app.
 
@@ -850,7 +850,7 @@ export function serializeRoom(room) {
 export function parseRoom(text) {
   const data = JSON.parse(text);
   if (!data || data.format !== ROOM_FILE_FORMAT) {
-    throw new Error("This is not a RoomCAD V2 room file.");
+    throw new Error("This is not a RoomCAD room file.");
   }
   if (data.version > ROOM_FILE_VERSION) {
     throw new Error("This room uses a newer format version.");

@@ -1,4 +1,4 @@
-# RoomCAD V2 — web app
+# RoomCAD — web app
 
 This directory is the web edition of [RoomCAD](../../README.md): a
 browser-based room planner (vanilla JavaScript ES modules + Three.js +
@@ -9,7 +9,7 @@ details.
 ## Run locally
 
 ```bash
-cd V2/web
+cd roomcad/web
 ./serve.sh          # starts Caddy on http://localhost:8080
 ```
 

@@ -638,7 +638,7 @@ store.onChange(() => {
   renderToolbar();
   renderRooms();
   document.title = (store.documentName || store.room.name)
-    + (store.edited ? " · Edited" : "") + " — RoomCAD V2";
+    + (store.edited ? " · Edited" : "") + " — RoomCAD";
   // Live sharing: auto-push edits to the server room (debounced).
   if (store.serverRoomName && store.edited) scheduleAutoSave();
 });
@@ -649,4 +649,4 @@ renderInspector();
 renderStatus();
 renderToolbar();
 renderRooms();
-document.title = (store.documentName || store.room.name) + " — RoomCAD V2";
+document.title = (store.documentName || store.room.name) + " — RoomCAD";

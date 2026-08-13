@@ -2,6 +2,6 @@
 .build/
 .swiftpm/
 dist/
-Pix/
+pix/
 *.xcuserstate
 *.bc

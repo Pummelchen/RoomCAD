@@ -23,7 +23,7 @@ structural, architectural or building-code tool.
 Open the deployed site and enter the password. To run it locally:
 
 ```bash
-cd V2/web
+cd roomcad/web
 ./serve.sh        # starts Caddy on http://localhost:8080
 ```
 

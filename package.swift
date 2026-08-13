@@ -10,7 +10,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "RoomCADApp",
-            path: "Sources/RoomCADApp",
+            path: "sources/roomcadapp",
             swiftSettings: [
                 .unsafeFlags(["-strict-memory-safety"])
             ]
@@ -18,7 +18,7 @@ let package = Package(
         .testTarget(
             name: "RoomCADAppTests",
             dependencies: ["RoomCADApp"],
-            path: "Tests/RoomCADAppTests",
+            path: "tests/roomcadapptests",
             swiftSettings: [
                 .unsafeFlags(["-strict-memory-safety"])
             ]

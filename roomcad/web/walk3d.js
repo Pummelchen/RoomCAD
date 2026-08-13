@@ -1,4 +1,4 @@
-// walk3d.js — first-person 3D walkthrough for RoomCAD V2 web (Three.js).
+// walk3d.js — first-person 3D walkthrough for RoomCAD web (Three.js).
 
 import * as THREE from "three";
 import { RoomEnvironment } from "./lib/RoomEnvironment.js";
