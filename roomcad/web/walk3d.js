@@ -816,11 +816,11 @@ export class Walk3D {
     this.sun.intensity = (this.lightsOn ? 2.8 : 0) * Math.max(0.2, Math.min(1, altDeg / 12));
   }
 
-  /// Builds the outside world with the Three.js generators: a CityGenerator
-  /// (skyscrapers + sidewalks + roads), a TerrainGenerator for the far ground,
-  /// and a ring of TreeGenerator trees. A central clearance keeps the room
-  /// clear of buildings. Everything lives in one group so floor changes shift
-  /// it together.
+  /// Builds the outside world in layers: a CityGenerator street + sidewalk
+  /// grid (skyscrapers fill the lots only), street trees along the sidewalks,
+  /// and surrounding terrain. A central clearance keeps the room clear of
+  /// buildings. Everything lives in one group so floor changes shift it
+  /// together.
   buildCity(room) {
     const canvas = P.canvasOf(room);
     const cx = canvas.width / 2;
@@ -872,40 +872,85 @@ export class Walk3D {
     road.receiveShadow = true;
     group.add(road);
 
-    // Gentle terrain as the horizon ground beyond the city.
+    // Surrounding terrain: gentle hills that rise no higher than the road, so
+    // the city sits cleanly on top and the hills fill the horizon around it.
     this.terrainGenerator = new TerrainGenerator({
       seed: seed + 1,
-      size: Math.max(floorW, floorD) * 4,
-      segments: 128,
-      heightScale: 6,
-      frequency: 0.004,
-      octaves: 4,
-      erosion: 0.5,
-      talusPasses: 4,
+      size: Math.max(floorW, floorD) * 5,
+      segments: 160,
+      heightScale: 12,
+      frequency: 0.003,
+      octaves: 5,
+      erosion: 0.55,
+      talusPasses: 6,
     });
     const terrain = this.terrainGenerator.build();
-    terrain.position.set(0, -0.15, 0);
+    const terrainGeom = this.terrainGenerator.geometry;
+    if (terrainGeom) {
+      terrainGeom.computeBoundingBox();
+      const terrainTop = terrainGeom.boundingBox ? terrainGeom.boundingBox.max.y : 0;
+      terrain.position.set(0, -0.06 - terrainTop, 0); // highest terrain point at road level
+    } else {
+      terrain.position.set(0, -0.06, 0);
+    }
     group.add(terrain);
 
-    // A ring of trees around the city edge.
-    const treeGroup = new THREE.Group();
-    const ringR = Math.max(floorW, floorD) / 2 + 14;
-    const treeCount = 28;
-    for (let i = 0; i < treeCount; i++) {
-      const a = (i / treeCount) * Math.PI * 2;
-      const tree = new TreeGenerator(this.treeMaterial);
-      tree.setSeed(i * 7 + 3);
-      tree.setTrunkLength(5 + (i % 5));
-      tree.setTrunkRadius(0.3 + (i % 3) * 0.08);
-      const mesh = tree.build();
-      mesh.position.set(Math.cos(a) * ringR, 0, Math.sin(a) * ringR);
-      mesh.castShadow = mesh.receiveShadow = true;
-      treeGroup.add(mesh);
-    }
-    group.add(treeGroup);
+    // Street trees along the sidewalk edges of each block.
+    group.add(this.buildStreetTrees(
+      this.cityGenerator.layout,
+      { halfW: clearHalfW, halfL: clearHalfL },
+      this.treeMaterial
+    ));
 
     group.position.set(cx, -(store.floor - 1) * FLOOR_HEIGHT, cz);
     this.city = group;
+  }
+
+  /// Plants street trees along the sidewalk edges of every city block, inset
+  /// from the curb. Trees inside the central room clearance are skipped.
+  buildStreetTrees(layout, clearance, treeMaterial) {
+    const group = new THREE.Group();
+    const spacing = 14; // metres between trees along a sidewalk
+    const inset = 1.6;  // inset from the curb toward the lot interior
+    const spots = [];
+    const add = (x, z) => {
+      if (clearance && Math.abs(x) < clearance.halfW && Math.abs(z) < clearance.halfL) return;
+      spots.push({ x, z });
+    };
+
+    for (let bx = 0; bx < layout.blocksX; bx++) {
+      for (let bz = 0; bz < layout.blocksZ; bz++) {
+        const x0 = -layout.cityW / 2 + bx * (layout.blockW + layout.street);
+        const z0 = -layout.cityD / 2 + bz * (layout.blockD + layout.street);
+        const x1 = x0 + layout.blockW;
+        const z1 = z0 + layout.blockD;
+        for (let x = x0 + inset; x <= x1 - inset + 0.001; x += spacing) {
+          add(x, z0 + inset);
+          add(x, z1 - inset);
+        }
+        for (let z = z0 + inset; z <= z1 - inset + 0.001; z += spacing) {
+          add(x0 + inset, z);
+          add(x1 - inset, z);
+        }
+      }
+    }
+
+    let seed = 1000;
+    for (const s of spots) {
+      seed++;
+      const tree = new TreeGenerator(treeMaterial);
+      tree.setSeed(seed);
+      tree.setLevels(3);
+      tree.setRadialSegments(4);
+      tree.setSectionLength(2.2);
+      tree.setTrunkLength(5 + (seed % 4));
+      tree.setTrunkRadius(0.24 + (seed % 2) * 0.06);
+      const mesh = tree.build();
+      mesh.position.set(s.x, 0.15, s.z); // on the raised sidewalk
+      mesh.castShadow = mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    return group;
   }
 
   /// Applies the current lighting mode: uniform daylight (placed lights off)
