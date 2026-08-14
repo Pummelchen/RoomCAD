@@ -734,6 +734,52 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ── Toast notifications ────────────────────────────── */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 5000;
+  max-width: 70vw;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+#toast.error {
+  border-color: rgba(255, 107, 94, 0.6);
+  color: #ffd7d3;
+}
+
+/* ── Server latency ball (next to the version) ──────── */
+
+.latency-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin: 0 3px 1px 0;
+  vertical-align: middle;
+}
+
+.lat-green { background: #39ff14; }
+.lat-orange { background: #f5a623; }
+.lat-red { background: #ff6b5e; }
+
 /* ── Login gate ─────────────────────────────────────── */
 
 #login-screen {

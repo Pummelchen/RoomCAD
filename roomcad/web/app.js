@@ -433,9 +433,17 @@ fileInput.addEventListener("change", () => {
 });
 
 // Rooms are saved on the webserver (not downloaded) as ternak_roomN.rcad.
+function apiReject(res) {
+  if (res.status === 401) {
+    location.reload(); // session expired — the login gate will re-appear
+    return new Error("unauthorized");
+  }
+  return new Error("request failed (" + res.status + ")");
+}
+
 async function apiListRooms() {
   const res = await fetch("/api/rooms");
-  if (!res.ok) throw new Error("list failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
@@ -447,31 +455,31 @@ async function apiSaveRoom(json, name, clientId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("save failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
 async function apiLoadRoom(name) {
   const res = await fetch("/api/load/" + encodeURIComponent(name));
-  if (!res.ok) throw new Error("load failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
 async function apiLoadRoomVersion(name, version) {
   const res = await fetch("/api/load/" + encodeURIComponent(name) + "?version=" + version);
-  if (!res.ok) throw new Error("load failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
 async function apiVersions(name) {
   const res = await fetch("/api/versions/" + encodeURIComponent(name));
-  if (!res.ok) throw new Error("versions failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
 async function apiDeleteRoom(name) {
   const res = await fetch("/api/rooms/" + encodeURIComponent(name), { method: "DELETE" });
-  if (!res.ok) throw new Error("delete failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
@@ -481,7 +489,7 @@ async function apiLiveDraft(json, name, clientId, version) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ json, clientId, version }),
   });
-  if (!res.ok) throw new Error("live push failed");
+  if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
@@ -561,6 +569,7 @@ async function saveRoom() {
   } catch {
     store.status = "Could not save to the server";
     store.emit();
+    toast("Could not save — server not reachable", "error");
     btn.classList.remove("saving");
   }
 }
@@ -636,6 +645,7 @@ async function openRoomModal() {
   } catch {
     list.innerHTML = '<li class="rooms-error">Server not reachable</li>';
     modal.hidden = false;
+    toast("Server not reachable", "error");
     return;
   }
   const seen = new Set();
@@ -854,7 +864,14 @@ document.addEventListener("keydown", e => {
 // MARK: - Live collaboration (unsaved, real-time sharing)
 
 function renderLiveButton() {
+  // Hide the button when we're the only session; there's nobody to share with.
+  if (store.presenceCount <= 1) {
+    liveButton.hidden = true;
+    return;
+  }
+  liveButton.hidden = false;
   liveButton.classList.toggle("live-on", store.live);
+  liveButton.textContent = store.live ? `🟢 Live (${store.presenceCount})` : "🟢 Live";
 }
 
 function toggleLive() {
@@ -875,6 +892,38 @@ function toggleLive() {
   pushLiveDraft(); // publish our current state right away
 }
 
+// MARK: - Server status (presence + latency), polled every 10 s
+
+const versionBadge = document.getElementById("app-version");
+
+function updateVersionBadge() {
+  let html = "v2.0";
+  if (store.serverLatency != null) {
+    const ms = store.serverLatency;
+    const cls = ms < 150 ? "lat-green" : ms < 400 ? "lat-orange" : "lat-red";
+    html += ` · <span class="latency-dot ${cls}"></span> Server ${ms}ms`;
+  } else {
+    html += ` · <span class="latency-dot lat-red"></span> offline`;
+  }
+  versionBadge.innerHTML = html;
+}
+
+async function pollStatus() {
+  const t0 = performance.now();
+  try {
+    const res = await fetch("/api/status");
+    const ms = Math.round(performance.now() - t0);
+    if (res.status === 401) { location.reload(); return; }
+    const data = await res.json();
+    store.presenceCount = data.count || 1;
+    store.serverLatency = ms;
+  } catch {
+    store.serverLatency = null;
+  }
+  updateVersionBadge();
+  renderLiveButton();
+}
+
 let livePushTimer = null;
 
 function scheduleLivePush() {
@@ -891,6 +940,7 @@ function pushLiveDraft() {
     .catch(() => {
       store.status = "Live: could not reach the server";
       store.emit();
+      toast("Live sync lost — reconnecting…", "error");
     });
 }
 
@@ -911,6 +961,21 @@ store.onChange(() => {
   if (store.live && store.serverRoomName && store.edited) scheduleLivePush();
 });
 
+// MARK: - Toast notifications (thin, transient error/info UX)
+
+const toastEl = document.getElementById("toast");
+let toastTimer = null;
+
+function toast(message, kind = "info") {
+  if (!toastEl) return;
+  toastEl.textContent = message;
+  toastEl.className = "show " + kind;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.className = "";
+  }, 3200);
+}
+
 // MARK: - Init
 
 renderInspector();
@@ -918,3 +983,7 @@ renderStatus();
 renderToolbar();
 renderRooms();
 document.title = (store.documentName || store.room.name) + " — RoomCAD";
+updateVersionBadge();
+pollStatus();
+setInterval(pollStatus, 10000);
+

@@ -116,10 +116,14 @@ def main():
     # 0. Auth.
     status, _, _ = request(port, "GET", "/api/rooms")
     check("unauthenticated /api/rooms is 401", status == 401, f"{status}")
+    status, _, _ = request(port, "GET", "/api/status")
+    check("unauthenticated /api/status is 401", status == 401, f"{status}")
     status, _, _ = request(port, "POST", "/api/login", {"password": "wrong"})
     check("wrong password is 401", status == 401, f"{status}")
     cookie = login(port)
     check("login issues a session cookie", cookie.startswith("roomcad_auth="))
+    status, resp, _ = request(port, "GET", "/api/status", cookie=cookie)
+    check("status reports one active session", status == 200 and resp.get("count") == 1, f"{status} {resp}")
 
     # 1. A live draft is stored and broadcast, but NOT saved to the DB.
     draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1}

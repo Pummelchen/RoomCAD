@@ -31,6 +31,10 @@ PASSWORD = os.environ.get("ROOMCAD_PASSWORD")
 SESSION_COOKIE = "roomcad_auth"
 SESSIONS = set()
 SESSION_LOCK = threading.Lock()
+# Active browser sessions: session token -> last-seen time. Any authenticated
+# request refreshes it, so /api/status can report how many people are around.
+PRESENCE = {}
+PRESENCE_LOCK = threading.Lock()
 
 WATCHERS = {}
 WATCH_LOCK = threading.Lock()
@@ -110,6 +114,16 @@ def room_list():
 
 def sanitize(name):
     return re.sub(r"[^A-Za-z0-9_-]", "", name)
+
+
+def active_count(ttl=30):
+    """Number of session tokens seen within the last `ttl` seconds."""
+    now = time.time()
+    with PRESENCE_LOCK:
+        stale = [t for t, seen in PRESENCE.items() if now - seen > ttl]
+        for t in stale:
+            del PRESENCE[t]
+        return len(PRESENCE)
 
 
 def save_room(name, room_json, client_id):
@@ -229,10 +243,13 @@ class Handler(BaseHTTPRequestHandler):
             return token in SESSIONS
 
     def _require_auth(self):
-        if self._is_authed():
-            return True
-        self._send({"error": "unauthorized"}, 401)
-        return False
+        if not self._is_authed():
+            self._send({"error": "unauthorized"}, 401)
+            return False
+        token = self._cookie(SESSION_COOKIE)
+        with PRESENCE_LOCK:
+            PRESENCE[token] = time.time()
+        return True
 
     def _sse_write(self, payload):
         self.wfile.write(("data: " + payload + "\n\n").encode("utf-8"))
@@ -281,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
         if path == "/api/rooms":
             self._send(room_list())
+        elif path == "/api/status":
+            self._send({"count": active_count()})
         elif path.startswith("/api/watch/"):
             name = sanitize(urllib.parse.unquote(path[len("/api/watch/"):]))
             if name:

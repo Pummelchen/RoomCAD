@@ -174,6 +174,8 @@ export class Walk3D {
     this.terrainGenerator = null;
     this.treeMaterial = null;
     this.cityCanvasKey = "";
+    this.roomGroup = null;   // all room meshes; lifted per floor without re-drawing the city
+    this.lastFloorY = null;  // last applied floor lift, so we only rebuild physics on change
 
     this.attachInput();
     this.observeSize();
@@ -185,9 +187,21 @@ export class Walk3D {
         this.clearPaintball();
         this.updatePaintballUI();
       }
-      // Realtime floor change: raise/lower the whole city outside.
-      if (this.city) this.city.position.y = -(store.floor - 1) * FLOOR_HEIGHT;
+      // Lift the whole room (visual + physics) between floors, leaving the
+      // city fixed at ground level — no city re-draw, just a translate.
+      const baseY = this.floorY();
+      if (this.roomGroup && baseY !== this.lastFloorY) {
+        this.lastFloorY = baseY;
+        this.roomGroup.position.y = baseY;
+        if (this.skyMesh) this.skyMesh.position.y = baseY;
+        if (this.physicsReady) this.buildPhysics(store.room, false);
+      }
     });
+  }
+
+  /// The room's lift above the ground-level city (one floor = FLOOR_HEIGHT m).
+  floorY() {
+    return (store.floor - 1) * FLOOR_HEIGHT;
   }
 
   /// WebGPU + Rapier are async; build the scene and start once both are ready.
@@ -295,6 +309,10 @@ export class Walk3D {
     // Image-based lighting for PBR reflections.
     scene.environment = this.lightsOn ? this.environment : null;
 
+    // All room content lives in one group so the floor lift only translates it.
+    this.roomGroup = new THREE.Group();
+    scene.add(this.roomGroup);
+
     // Floor: white marble tiles with thin grey grout lines.
     this.floorMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0, envMapIntensity: 0 });
     const floor = new THREE.Mesh(
@@ -303,7 +321,7 @@ export class Walk3D {
     );
     floor.position.set(canvas.width / 2, -0.03, canvas.length / 2);
     floor.receiveShadow = true;
-    scene.add(floor);
+    this.roomGroup.add(floor);
     this.loadFloorTexture(room);
 
     // Ceiling
@@ -313,7 +331,7 @@ export class Walk3D {
     );
     ceiling.position.set(canvas.width / 2, room.height, canvas.length / 2);
     ceiling.receiveShadow = true;
-    scene.add(ceiling);
+    this.roomGroup.add(ceiling);
 
     // The virtual city beyond the windows (fall back to no city on error).
     try {
@@ -344,6 +362,8 @@ export class Walk3D {
     }
 
     this.buildGun();
+    this.roomGroup.position.y = this.floorY();
+    this.lastFloorY = this.floorY();
     this.applyTimeOfDay();
 
     // Refresh the physics colliders for the new room layout.
@@ -491,7 +511,7 @@ export class Walk3D {
     mesh.castShadow = true;
     mesh.position.set(centerX, doorTop / 2, centerZ);
     mesh.rotation.y = Math.atan2(leafX, leafZ);
-    this.scene.add(mesh);
+    this.roomGroup.add(mesh);
   }
 
   addBox(wall, span, h0, h1, thickness, color) {
@@ -505,7 +525,7 @@ export class Walk3D {
     mesh.position.set(center.x, (h0 + h1) / 2, center.z);
     const angle = Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
     mesh.rotation.y = Math.PI / 2 - angle;
-    this.scene.add(mesh);
+    this.roomGroup.add(mesh);
   }
 
   /// A transparent window pane. It doesn't cast a shadow so daylight passes
@@ -521,7 +541,7 @@ export class Walk3D {
     mesh.position.set(center.x, (h0 + h1) / 2, center.z);
     const angle = Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
     mesh.rotation.y = Math.PI / 2 - angle;
-    this.scene.add(mesh);
+    this.roomGroup.add(mesh);
   }
 
   /// Realistic furniture built from detailed primitives in the item's local
@@ -677,7 +697,7 @@ export class Walk3D {
 
     group.position.set(item.center.x, 0, item.center.z);
     group.rotation.y = -item.rotationDegrees * Math.PI / 180;
-    this.scene.add(group);
+    this.roomGroup.add(group);
   }
 
   /// A ceiling-mounted light: a bare 60 W bulb on a cord, or a 200 W
@@ -758,7 +778,7 @@ export class Walk3D {
     this.fixtureEmissives.push({ mat: emissiveMat, on: onIntensity });
 
     group.position.set(item.center.x, 0, item.center.z);
-    this.scene.add(group);
+    this.roomGroup.add(group);
 
     if (withPointLight) {
       const pl = new THREE.PointLight(pointColor, pointIntensity, pointDistance, 2);
@@ -771,7 +791,7 @@ export class Walk3D {
       pl.shadow.normalBias = 0.01;
       pl.shadow.camera.near = 0.05;
       pl.shadow.camera.far = pointDistance;
-      this.scene.add(pl);
+      this.roomGroup.add(pl);
       this.pointLights.push(pl);
     }
   }
@@ -838,7 +858,7 @@ export class Walk3D {
     });
     const sky = new THREE.Mesh(geo, mat);
     const canvas = P.canvasOf(room);
-    sky.position.set(canvas.width / 2, 0, canvas.length / 2);
+    sky.position.set(canvas.width / 2, this.floorY(), canvas.length / 2);
     sky.renderOrder = -10;
     this.scene.add(sky);
     this.skyMesh = sky;
@@ -885,8 +905,8 @@ export class Walk3D {
     const cx = canvas.width / 2;
     const cz = canvas.length / 2;
     const dist = 40;
-    this.sun.position.set(cx + dir.x * dist, dir.y * dist, cz + dir.z * dist);
-    this.sunTarget.position.set(cx, 0, cz);
+    this.sun.position.set(cx + dir.x * dist, this.floorY() + dir.y * dist, cz + dir.z * dist);
+    this.sunTarget.position.set(cx, this.floorY(), cz);
     this.sunTarget.updateMatrixWorld();
 
     const day = this.lightsOn;
@@ -1012,7 +1032,7 @@ export class Walk3D {
       { halfW: clearHalfW, halfL: clearHalfL }
     ));
 
-    group.position.set(cx, -(store.floor - 1) * FLOOR_HEIGHT, cz);
+    group.position.set(cx, 0, cz); // city is always at ground level; the room lifts
     this.city = group;
   }
 
@@ -1170,18 +1190,19 @@ export class Walk3D {
     this.playerBody = null;
     this.playerCollider = null;
     this.physicsBodies = [];
+    const baseY = this.floorY(); // physics lives at the room's current floor lift
 
     // Floor.
     const canvas = P.canvasOf(room);
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.03, canvas.length / 2)
-        .setTranslation(canvas.width / 2, -0.03, canvas.length / 2)
+        .setTranslation(canvas.width / 2, baseY - 0.03, canvas.length / 2)
     );
 
     // Ceiling (stops the player jumping through the roof).
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.05, canvas.length / 2)
-        .setTranslation(canvas.width / 2, room.height + 0.025, canvas.length / 2)
+        .setTranslation(canvas.width / 2, baseY + room.height + 0.025, canvas.length / 2)
     );
 
     // Invisible perimeter walls keep the physics simulation (and the player)
@@ -1190,16 +1211,16 @@ export class Walk3D {
     const pW = canvas.width;
     const pL = canvas.length;
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, room.height, 0)
+      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, baseY + room.height, 0)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, room.height, pL)
+      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, baseY + room.height, pL)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(0, room.height, pL / 2)
+      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(0, baseY + room.height, pL / 2)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(pW, room.height, pL / 2)
+      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(pW, baseY + room.height, pL / 2)
     );
 
     // Walls, split by open doorways so you can walk through them.
@@ -1214,7 +1235,7 @@ export class Walk3D {
       const desc = horizontal
         ? RAPIER.ColliderDesc.cuboid(len / 2, h / 2, t / 2)
         : RAPIER.ColliderDesc.cuboid(t / 2, h / 2, len / 2);
-      desc.setTranslation(midX, h / 2, midZ);
+      desc.setTranslation(midX, baseY + h / 2, midZ);
       this.world.createCollider(desc);
     }
 
@@ -1234,7 +1255,7 @@ export class Walk3D {
       const desc = horizontal
         ? RAPIER.ColliderDesc.cuboid(len / 2, doorTop / 2, 0.03)
         : RAPIER.ColliderDesc.cuboid(0.03, doorTop / 2, len / 2);
-      desc.setTranslation(midX, doorTop / 2, midZ);
+      desc.setTranslation(midX, baseY + doorTop / 2, midZ);
       this.world.createCollider(desc);
     }
 
@@ -1255,7 +1276,7 @@ export class Walk3D {
       const desc = horizontal
         ? RAPIER.ColliderDesc.cuboid(len / 2, headerH / 2, P.WALL_THICKNESS / 2)
         : RAPIER.ColliderDesc.cuboid(P.WALL_THICKNESS / 2, headerH / 2, len / 2);
-      desc.setTranslation(midX, doorTop + headerH / 2, midZ);
+      desc.setTranslation(midX, baseY + doorTop + headerH / 2, midZ);
       this.world.createCollider(desc);
     }
 
@@ -1268,7 +1289,7 @@ export class Walk3D {
       const d = f.maxZ - f.minZ;
       this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(w / 2, stand / 2, d / 2)
-          .setTranslation(f.minX + w / 2, stand / 2, f.minZ + d / 2)
+          .setTranslation(f.minX + w / 2, baseY + stand / 2, f.minZ + d / 2)
       );
     }
 
@@ -1278,7 +1299,7 @@ export class Walk3D {
     const origin = P.roomOrigin(room);
     const spawnX = resetPlayer ? origin.x + room.width / 2 : P.clamp(this.position.x, 0.3, canvas.width - 0.3);
     const spawnZ = resetPlayer ? origin.z + Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, canvas.length - 0.3);
-    const spawnY = resetPlayer ? 0.2 : Math.max(0.2, this.feetY);
+    const spawnY = baseY + (resetPlayer ? 0.2 : Math.max(0.2, this.feetY));
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
@@ -1751,22 +1772,23 @@ export class Walk3D {
 
     // Body sits at the feet; the camera (eyes) is at the capsule top.
     const room = store.room;
+    const baseY = this.floorY();
     const p = body.translation();
     if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z) ||
-        p.y > room.height + 3 || p.y < -10) {
+        p.y > baseY + room.height + 3 || p.y < baseY - 10) {
       // The body escaped the room somehow — teleport it back to the floor.
       const origin = P.roomOrigin(room);
-      body.setTranslation({ x: origin.x + room.width / 2, y: 0.3, z: origin.z + Math.max(0.5, room.length - 0.6) }, true);
+      body.setTranslation({ x: origin.x + room.width / 2, y: baseY + 0.3, z: origin.z + Math.max(0.5, room.length - 0.6) }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       const q = body.translation();
-      this.feetY = q.y;
+      this.feetY = q.y - baseY;
       const hh = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
       this.position.set(q.x, q.y + (hh + PLAYER_RADIUS) * 2, q.z);
       this.onGround = false;
       this.camera.position.copy(this.position);
       return;
     }
-    this.feetY = p.y;
+    this.feetY = p.y - baseY;
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const eyeHeight = (halfH + PLAYER_RADIUS) * 2;
     this.position.set(p.x, p.y + eyeHeight, p.z);
