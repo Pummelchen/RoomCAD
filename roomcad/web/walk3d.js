@@ -24,13 +24,11 @@ const CEILING_COLOR = 0xd9d9d5;
 const GLASS_COLOR = 0x9fc8e0;
 const LEAF_COLOR = 0x9a6f45;
 const BACKGROUND = 0x141c2c;
-const CITY_GROUND = 0x2b2d31;
 const BULB_COLOR = 0xfff2cf;
 const LIGHT_METAL = 0x33363c;
 const DAY_BACKGROUND = 0x8fb8e0;
 const DAY_FOG = 0xcfe0f0;
 const TWILIGHT_BACKGROUND = 0x6a4a5a; // warm purple-pink dusk sky
-const TWILIGHT_FOG = 0x9a7a86;
 const NIGHT_BACKGROUND = 0x0a0e1a;
 const NIGHT_FOG = 0x0a0e1a;
 
@@ -346,7 +344,7 @@ export class Walk3D {
     }
 
     this.buildGun();
-    this.applyLightingMode();
+    this.applyTimeOfDay();
 
     // Refresh the physics colliders for the new room layout.
     if (this.physicsReady) this.buildPhysics(room, resetCamera);
@@ -632,7 +630,7 @@ export class Walk3D {
 
   /// A ceiling-mounted light: a bare 60 W bulb on a cord, or a 200 W
   /// 60×60 cm office panel. Both are emissive and (when enabled) cast a point
-  /// light; `applyLightingMode` decides whether that light is actually used.
+  /// light; `applyTimeOfDay` decides whether that light is actually used.
   addLightFixture(item, roomHeight, withPointLight) {
     const group = new THREE.Group();
     const metal = new THREE.MeshStandardMaterial({ color: LIGHT_METAL, metalness: 0.7, roughness: 0.35 });
@@ -1063,17 +1061,11 @@ export class Walk3D {
     return group;
   }
 
-  /// Applies the current lighting mode: uniform daylight (placed lights off)
-  /// or placed-lights-only (ambient/sun off, fixtures illuminate locally).
-  /// The time of day further shapes the sun, sky and city lights.
-  applyLightingMode() {
-    this.applyTimeOfDay();
-  }
-
-  /// L toggles between the two lighting modes.
+  /// Applies the current lighting: uniform daylight (placed lights off) or
+  /// placed-lights-only, further shaped by the time of day (sun, sky, city).
   toggleLights() {
     this.lightsOn = !this.lightsOn;
-    this.applyLightingMode();
+    this.applyTimeOfDay();
   }
 
   // MARK: Post-processing (SSAO + bloom, WebGPU TSL)

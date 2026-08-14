@@ -10,17 +10,27 @@ import json
 import os
 import queue
 import re
+import secrets
 import sqlite3
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DB_PATH = "/var/roomcad/rooms.db"
-LEGACY_DIR = "/var/roomcad/rooms"  # old .rcad files, migrated once
+DB_PATH = os.environ.get("ROOMCAD_DB_PATH", "/var/roomcad/rooms.db")
+LEGACY_DIR = os.environ.get("ROOMCAD_LEGACY_DIR", "/var/roomcad/rooms")  # old .rcad files, migrated once
 PREFIX = "ternak_room"
 HOST = "127.0.0.1"
 PORT = 8078
+
+# Shared password + login sessions. The password is injected via the
+# ROOMCAD_PASSWORD environment variable (see roomcad.service); it is never
+# stored in this file so it stays out of the public repo. Logging in sets an
+# HttpOnly session cookie; every /api/* handler checks it.
+PASSWORD = os.environ.get("ROOMCAD_PASSWORD")
+SESSION_COOKIE = "roomcad_auth"
+SESSIONS = set()
+SESSION_LOCK = threading.Lock()
 
 WATCHERS = {}
 WATCH_LOCK = threading.Lock()
@@ -102,21 +112,20 @@ def sanitize(name):
     return re.sub(r"[^A-Za-z0-9_-]", "", name)
 
 
-def next_name():
-    conn = get_conn()
-    with DB_LOCK:
-        rows = conn.execute("SELECT DISTINCT name FROM rooms").fetchall()
-    nums = []
-    for r in rows:
-        m = re.fullmatch(re.escape(PREFIX) + r"(\d+)", r["name"])
-        if m:
-            nums.append(int(m.group(1)))
-    return f"{PREFIX}{(max(nums) if nums else 0) + 1}"
-
-
 def save_room(name, room_json, client_id):
+    """Inserts a new version. An empty `name` picks the next ternak_roomN
+    atomically inside the same lock as the insert, so two simultaneous saves
+    can never collide on the same new-room name."""
     conn = get_conn()
     with DB_LOCK:
+        if not name:
+            rows = conn.execute("SELECT DISTINCT name FROM rooms").fetchall()
+            nums = []
+            for r in rows:
+                m = re.fullmatch(re.escape(PREFIX) + r"(\d+)", r["name"])
+                if m:
+                    nums.append(int(m.group(1)))
+            name = f"{PREFIX}{(max(nums) if nums else 0) + 1}"
         row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM rooms WHERE name=?", (name,)).fetchone()
         version = row["v"] + 1
         conn.execute(
@@ -201,6 +210,30 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def _cookie(self, name):
+        """Reads a cookie value from the request's Cookie header (or None)."""
+        header = self.headers.get("Cookie")
+        if not header:
+            return None
+        for part in header.split(";"):
+            part = part.strip()
+            if part.startswith(name + "="):
+                return part[len(name) + 1:]
+        return None
+
+    def _is_authed(self):
+        token = self._cookie(SESSION_COOKIE)
+        if not token:
+            return False
+        with SESSION_LOCK:
+            return token in SESSIONS
+
+    def _require_auth(self):
+        if self._is_authed():
+            return True
+        self._send({"error": "unauthorized"}, 401)
+        return False
+
     def _sse_write(self, payload):
         self.wfile.write(("data: " + payload + "\n\n").encode("utf-8"))
         self.wfile.flush()
@@ -241,6 +274,8 @@ class Handler(BaseHTTPRequestHandler):
                 WATCHERS.get(name, set()).discard(q)
 
     def do_GET(self):
+        if not self._require_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
@@ -273,6 +308,36 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/login":
+            if not PASSWORD:
+                self._send({"error": "auth not configured"}, 500)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                password = str(data.get("password", ""))
+            except Exception:
+                self._send({"error": "bad request"}, 400)
+                return
+            if not secrets.compare_digest(password, PASSWORD):
+                self._send({"error": "wrong password"}, 401)
+                return
+            token = secrets.token_urlsafe(32)
+            with SESSION_LOCK:
+                SESSIONS.add(token)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "11")  # {"ok": true}
+            self.send_header("Cache-Control", "no-store")
+            self.send_header(
+                "Set-Cookie",
+                "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000" % (SESSION_COOKIE, token),
+            )
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+            return
+        if not self._require_auth():
+            return
         if path.startswith("/api/live/"):
             name = sanitize(urllib.parse.unquote(path[len("/api/live/"):]))
             if not name:
@@ -301,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length).decode("utf-8"))
             room_json = data.get("json", "")
             client_id = str(data.get("clientId", ""))
-            name = sanitize(data.get("name") or "") or next_name()
+            name = sanitize(data.get("name") or "")
         except Exception:
             self._send({"error": "bad request"}, 400)
             return
@@ -313,6 +378,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send({"name": name, "version": version})
 
     def do_DELETE(self):
+        if not self._require_auth():
+            return
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/api/rooms/"):
             name = sanitize(urllib.parse.unquote(path[len("/api/rooms/"):]))
@@ -325,5 +392,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if not PASSWORD:
+        print("WARNING: ROOMCAD_PASSWORD is not set — logins are disabled.", flush=True)
     get_conn()  # create DB + migrate on boot
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

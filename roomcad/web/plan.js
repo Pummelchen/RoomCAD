@@ -422,12 +422,6 @@ export function openingWall(room, id, kind) {
   return o ? room.walls.find(w => w.id === o.wallID) || null : null;
 }
 
-export function clampedOpeningOffset(room, offset, width, wallID) {
-  const wall = room.walls.find(w => w.id === wallID);
-  if (!wall) return null;
-  return clamp(offset, 0.10, wallLength(wall) - width - 0.10);
-}
-
 // MARK: - Wall slicing for the 3D view
 
 export function solidSpans(length, cuts) {
@@ -594,29 +588,6 @@ export function furnitureCenter(room, raw, item) {
 
 // MARK: - Walkthrough collision
 
-export function blocksPlayer(room, p, radius) {
-  const half = WALL_THICKNESS / 2 + 0.02;
-  for (const w of wallCollisionSegments(room)) {
-    if (wallProjection(w, p).distance <= radius + half) return true;
-  }
-  // Closed doors block the doorway; open doors leave it clear.
-  for (const door of room.doors) {
-    if (door.open === false) {
-      const wall = room.walls.find(w => w.id === door.wallID);
-      if (!wall) continue;
-      const a = wallPointAt(wall, door.offset);
-      const b = wallPointAt(wall, door.offset + door.width);
-      if (wallProjection({ start: a, end: b }, p).distance <= radius + 0.03) return true;
-    }
-  }
-  for (const item of room.furniture) {
-    const f = furnitureFootprint(item);
-    if (p.x >= f.minX - radius && p.x <= f.maxX + radius
-      && p.z >= f.minZ - radius && p.z <= f.maxZ + radius) return true;
-  }
-  return false;
-}
-
 /// Collision segments for the walls: each wall is split by its door openings,
 /// so open doorways are passable (closed doors are handled separately).
 export function wallCollisionSegments(room) {
@@ -633,112 +604,6 @@ export function wallCollisionSegments(room) {
     }
   }
   return segments;
-}
-
-/// The highest surface the player can stand on at (x, z), given their current
-/// feet height. Floor is 0; furniture tops count only when they're at or below
-/// the player's feet (so you land on them, not under them).
-export function supportHeight(room, x, z, feetY) {
-  let ground = 0;
-  for (const item of room.furniture) {
-    const stand = FURNITURE_KINDS[item.kind].standHeight;
-    if (stand > feetY + 0.001) continue;
-    const f = furnitureFootprint(item);
-    if (x >= f.minX && x <= f.maxX && z >= f.minZ && z <= f.maxZ) {
-      ground = Math.max(ground, stand);
-    }
-  }
-  return ground;
-}
-
-/// Pushes a player position out of walls, closed doors, and furniture, so it
-/// can never stay stuck inside geometry. Returns the resolved position.
-/// `feetY` makes furniture height-aware: furniture only blocks when the player
-/// is below its top surface.
-export function resolvePlayer(room, pos, radius, feetY = 0) {
-  let x = pos.x;
-  let z = pos.z;
-  const wallClearance = WALL_THICKNESS / 2 + 0.02;
-  const wallSegments = wallCollisionSegments(room);
-
-  for (let iter = 0; iter < 6; iter++) {
-    let moved = false;
-
-    for (const segment of wallSegments) {
-      const proj = wallProjection(segment, { x, z });
-      const minDist = radius + wallClearance;
-      if (proj.distance < minDist) {
-        const dx = x - proj.point.x;
-        const dz = z - proj.point.z;
-        const len = Math.hypot(dx, dz);
-        if (len < 1e-6) {
-          const perp = wallPerp(segment);
-          x += perp.x * minDist;
-          z += perp.z * minDist;
-        } else {
-          const push = minDist - proj.distance;
-          x += (dx / len) * push;
-          z += (dz / len) * push;
-        }
-        moved = true;
-      }
-    }
-
-    for (const door of room.doors) {
-      if (door.open !== false) continue;
-      const wall = room.walls.find(w => w.id === door.wallID);
-      if (!wall) continue;
-      const seg = {
-        start: wallPointAt(wall, door.offset),
-        end: wallPointAt(wall, door.offset + door.width),
-      };
-      const proj = wallProjection(seg, { x, z });
-      const minDist = radius + 0.03;
-      if (proj.distance < minDist) {
-        const dx = x - proj.point.x;
-        const dz = z - proj.point.z;
-        const len = Math.hypot(dx, dz) || 1;
-        x += (dx / len) * (minDist - proj.distance);
-        z += (dz / len) * (minDist - proj.distance);
-        moved = true;
-      }
-    }
-
-    for (const item of room.furniture) {
-      // On or above the top surface: walkable (jump onto, stand on, walk off).
-      if (feetY >= FURNITURE_KINDS[item.kind].standHeight - 0.10) continue;
-      const f = furnitureFootprint(item);
-      const cx = clamp(x, f.minX, f.maxX);
-      const cz = clamp(z, f.minZ, f.maxZ);
-      const dx = x - cx;
-      const dz = z - cz;
-      const dist = Math.hypot(dx, dz);
-      if (dist < radius) {
-        if (dist < 1e-6) {
-          // The player center is inside the footprint: escape along the
-          // nearest edge.
-          const left = x - f.minX;
-          const right = f.maxX - x;
-          const top = z - f.minZ;
-          const bottom = f.maxZ - z;
-          const m = Math.min(left, right, top, bottom);
-          if (m === left) x = f.minX - radius - 0.001;
-          else if (m === right) x = f.maxX + radius + 0.001;
-          else if (m === top) z = f.minZ - radius - 0.001;
-          else z = f.maxZ + radius + 0.001;
-        } else {
-          const push = radius - dist;
-          x += (dx / dist) * push;
-          z += (dz / dist) * push;
-        }
-        moved = true;
-      }
-    }
-
-    if (!moved) break;
-  }
-
-  return { x, z };
 }
 
 // MARK: - Sanitizing

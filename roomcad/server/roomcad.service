@@ -6,6 +6,9 @@ After=network.target
 Type=simple
 ExecStart=/usr/bin/python3 /var/roomcad/server.py
 WorkingDirectory=/var/roomcad
+# Holds ROOMCAD_PASSWORD (git-ignored, created manually on the host). The "-"
+# means "start anyway if missing" (logins are then disabled).
+EnvironmentFile=-/var/roomcad/roomcad.env
 Restart=always
 RestartSec=2
 

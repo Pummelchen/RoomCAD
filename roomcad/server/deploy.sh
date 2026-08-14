@@ -43,5 +43,10 @@ if ! ssh "$HOST" "nginx -t && systemctl reload nginx"; then
   echo "WARNING: nginx not reloaded — issue the roomcad…nip.io cert first (see README)."
 fi
 
+# The shared password lives in a host-local env file, never in git.
+if ! ssh "$HOST" "test -f /var/roomcad/roomcad.env"; then
+  echo "WARNING: /var/roomcad/roomcad.env is missing — logins are disabled until you create it with ROOMCAD_PASSWORD=… (see README)."
+fi
+
 rm -f "$TMP_TAR"
 echo "Deployed. roomcad, caddy and nginx are restarted."

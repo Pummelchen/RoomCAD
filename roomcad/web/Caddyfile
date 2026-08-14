@@ -1,12 +1,24 @@
 # RoomCAD web — local Caddy server
 # Start with: ./serve.sh   (or: ./bin/caddy run --config Caddyfile)
+#
+# Proxies /api/* to the Python backend on 127.0.0.1:8078 so save/load and live
+# collaboration work locally. Start the backend first, e.g.:
+#   ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
+#     python3 ../server/server.py
 
 :8080 {
-	root * .
-	file_server
-	encode gzip
-	header {
-		-X-Frame-Options "DENY"
-		-X-Content-Type-Options "nosniff"
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8078 {
+			flush_interval -1
+		}
+	}
+	handle {
+		root * .
+		file_server
+		encode gzip
+		header {
+			-X-Frame-Options "DENY"
+			-X-Content-Type-Options "nosniff"
+		}
 	}
 }

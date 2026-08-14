@@ -55,6 +55,23 @@ certbot certonly --webroot -w /var/minecraftai/web/site/public \
 The nginx `location /api/watch/` block disables buffering so the live
 collaboration SSE stream flushes immediately.
 
+## Authentication
+
+The site is protected by one shared password, checked server-side. The password
+is **not** stored in this repo — it lives in a host-local env file so it stays
+out of the public git history:
+
+```bash
+# /var/roomcad/roomcad.env  (chmod 600)
+ROOMCAD_PASSWORD=your-password
+```
+
+`roomcad.service` loads it via `EnvironmentFile`. `POST /api/login` checks the
+password and sets an `HttpOnly` session cookie; every other `/api/*` handler
+returns 401 without a valid cookie. The frontend `login.js` just drives the
+form and calls `/api/login`. If the env file is missing, the service starts but
+logins are disabled (fail-closed).
+
 ## Restoring from a lost VPS
 
 1. Provision a Linux host and install Caddy, nginx, certbot and Python 3
@@ -73,13 +90,15 @@ collaboration SSE stream flushes immediately.
    sqlite3 /var/roomcad/rooms.db < rooms.db.sql
    ```
 
-4. Install the service and Caddy config:
+4. Install the service, Caddy config and the password env file:
 
    ```bash
    cp roomcad.service /etc/systemd/system/roomcad.service
    cp Caddyfile /etc/caddy/Caddyfile
    chown root:caddy /etc/caddy/Caddyfile
    chmod 644 /etc/caddy/Caddyfile
+   printf 'ROOMCAD_PASSWORD=your-password\n' > /var/roomcad/roomcad.env
+   chmod 600 /var/roomcad/roomcad.env
    systemctl daemon-reload
    systemctl enable --now roomcad
    systemctl reload caddy
@@ -101,8 +120,8 @@ collaboration SSE stream flushes immediately.
 
 Run `./deploy.sh` from this directory (uses your SSH key). It packages the web
 app + API, uploads them to the VPS, installs the service/Caddy/nginx config,
-and restarts the services. It never touches `rooms.db`, so live data is
-preserved.
+and restarts the services. It never touches `rooms.db` or `roomcad.env`, so live
+data and the password are preserved.
 
 ## HTTP/3 (QUIC)
 

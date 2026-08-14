@@ -475,13 +475,13 @@ function watchRoom(name) {
       try {
         const data = JSON.parse(e.data);
         if (data.clientId === CLIENT_ID) return; // ignore our own echo
+        if (store.dragTransactionActive) return; // never clobber an active drag
         if (data.live) {
-          // Unsaved draft from a teammate. Apply only when Live is on, on the
-          // same saved version, and while we're not mid-drag.
+          // Unsaved draft from a teammate. Apply only when Live is on and on
+          // the same saved version.
           if (!store.live) return;
           if (data.version != null && store.serverRoomVersion != null
               && data.version !== store.serverRoomVersion) return;
-          if (store.dragTransactionActive) return;
           const room = P.parseRoom(data.json);
           store.applyRemoteRoom(room, null);
         } else {
@@ -489,9 +489,13 @@ function watchRoom(name) {
           const room = P.parseRoom(data.json);
           store.applyRemoteRoom(room, data.version);
         }
-      } catch {}
+      } catch (err) {
+        console.warn("Live update ignored:", err);
+      }
     };
-  } catch {}
+  } catch (err) {
+    console.warn("Live stream failed to open:", err);
+  }
 }
 
 async function saveRoom() {
@@ -633,7 +637,11 @@ async function openRoomModal() {
 }
 
 async function removeStoredRoom(name) {
-  try { await apiDeleteRoom(name); } catch {}
+  try {
+    await apiDeleteRoom(name);
+  } catch (err) {
+    console.warn("Delete room failed:", err);
+  }
   renderRooms();
 }
 
