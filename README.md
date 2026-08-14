@@ -42,6 +42,13 @@ cd roomcad/web
 | Walk / look | `WASD` / mouse |
 | Jump (×2) / crouch | `Space` / `C` |
 
+## Development
+
+The 3D view uses Three.js **WebGPU (`REVISION = "186dev"`)**, vendored under
+`roomcad/web/lib/` (including the city/skyscraper/terrain/tree generators).
+Physics is Rapier (WASM). There is no build step — the app is plain ES modules
+loaded via an import map.
+
 ## Documentation
 
 Everything else lives in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
