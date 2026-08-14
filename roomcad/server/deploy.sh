@@ -27,14 +27,21 @@ ssh "$HOST" "tar xzf '$TMP_TAR' -C '$REMOTE_ROOT' && \
   find '$REMOTE_ROOT/web' -name '._*' -delete && \
   rm -f '$TMP_TAR'"
 
-echo "Installing systemd unit and Caddyfile …"
+echo "Installing systemd unit, Caddyfile and nginx site …"
 scp "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
 scp "$SERVER_DIR/Caddyfile" "$HOST:/etc/caddy/Caddyfile"
+scp "$SERVER_DIR/nginx-roomcad.conf" "$HOST:/etc/nginx/sites-available/roomcad.conf"
 ssh "$HOST" "chown root:caddy /etc/caddy/Caddyfile && \
   chmod 644 /etc/caddy/Caddyfile && \
+  ln -sf /etc/nginx/sites-available/roomcad.conf /etc/nginx/sites-enabled/roomcad.conf && \
   systemctl daemon-reload && \
   systemctl restart roomcad && \
   systemctl reload caddy"
+# nginx reload is optional: on a fresh host the Let's Encrypt cert may not be
+# issued yet (see README), so don't fail the whole deploy over it.
+if ! ssh "$HOST" "nginx -t && systemctl reload nginx"; then
+  echo "WARNING: nginx not reloaded — issue the roomcad…nip.io cert first (see README)."
+fi
 
 rm -f "$TMP_TAR"
-echo "Deployed. roomcad and caddy are restarted."
+echo "Deployed. roomcad, caddy and nginx are restarted."

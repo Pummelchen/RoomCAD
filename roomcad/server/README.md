@@ -11,6 +11,7 @@ from scratch if the VPS is ever lost. The web app itself lives in
 | `server.py` | Python (stdlib) save + live-collaboration API, SQLite-backed |
 | `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078` |
 | `Caddyfile` | production Caddy config (reverse-proxies `/api/*` to the API, serves the web app, TLS) |
+| `nginx-roomcad.conf` | nginx site for `roomcad.91.99.176.243.nip.io` (Let's Encrypt HTTPS, proxies to Caddy `:8077`) |
 | `schema.sql` | SQLite schema (the `rooms` table + index) |
 | `rooms.db.sql` | full SQL dump of the rooms database (structure + content), restorable |
 | `deploy.sh` | one-command deploy of the web app + API to the VPS |
@@ -26,14 +27,38 @@ from scratch if the VPS is ever lost. The web app itself lives in
 
 /etc/systemd/system/roomcad.service
 /etc/caddy/Caddyfile
+/etc/nginx/sites-available/roomcad.conf   # (symlinked from sites-enabled/)
+/etc/letsencrypt/live/roomcad.91.99.176.243.nip.io/   # Let's Encrypt cert
 ```
 
 The API listens on `127.0.0.1:8078`; Caddy reverse-proxies `/api/*` to it and
 serves `web/` as static files.
 
+## HTTPS
+
+The public, trusted-HTTPS entry point is
+**https://roomcad.91.99.176.243.nip.io** (a nip.io wildcard that resolves to the
+VPS IP). nginx owns ports 80/443 on this host (it also serves the minecraftai
+site on `pummelchen…nip.io`), so Caddy cannot bind them; instead nginx terminates
+TLS and reverse-proxies to Caddy on `127.0.0.1:8077`, which then serves the web
+app and forwards `/api/*` to the Python API.
+
+The certificate is issued once with certbot and auto-renews via the systemd
+`certbot.timer` (config dir is `/etc/letsencrypt`, symlinked to
+`/var/minecraftai/web/letsencrypt`):
+
+```bash
+certbot certonly --webroot -w /var/minecraftai/web/site/public \
+  -d roomcad.91.99.176.243.nip.io --key-type ecdsa --agree-tos --non-interactive
+```
+
+The nginx `location /api/watch/` block disables buffering so the live
+collaboration SSE stream flushes immediately.
+
 ## Restoring from a lost VPS
 
-1. Provision a Linux host and install Caddy and Python 3 (stdlib only).
+1. Provision a Linux host and install Caddy, nginx, certbot and Python 3
+   (stdlib only).
 2. Restore this directory:
 
    ```bash
@@ -60,11 +85,24 @@ serves `web/` as static files.
    systemctl reload caddy
    ```
 
+5. Install the nginx site and obtain the certificate (run certbot *before*
+   `nginx -t`, since the HTTPS block references the cert):
+
+   ```bash
+   cp nginx-roomcad.conf /etc/nginx/sites-available/roomcad.conf
+   ln -s /etc/nginx/sites-available/roomcad.conf /etc/nginx/sites-enabled/roomcad.conf
+   nginx -t && systemctl reload nginx
+   certbot certonly --webroot -w /var/minecraftai/web/site/public \
+     -d roomcad.91.99.176.243.nip.io --key-type ecdsa --agree-tos --non-interactive
+   nginx -t && systemctl reload nginx
+   ```
+
 ## Deploying
 
 Run `./deploy.sh` from this directory (uses your SSH key). It packages the web
-app + API, uploads them to the VPS, installs the service/Caddy config, and
-restarts both services. It never touches `rooms.db`, so live data is preserved.
+app + API, uploads them to the VPS, installs the service/Caddy/nginx config,
+and restarts the services. It never touches `rooms.db`, so live data is
+preserved.
 
 ## HTTP/3 (QUIC)
 
