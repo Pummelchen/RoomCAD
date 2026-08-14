@@ -367,6 +367,7 @@ document.getElementById("new-room").addEventListener("click", () => {
 });
 document.getElementById("save-room").addEventListener("click", saveRoom);
 document.getElementById("open-room").addEventListener("click", openRoomModal);
+document.getElementById("export-room").addEventListener("click", exportRoom);
 document.getElementById("open-close").addEventListener("click", () => {
   document.getElementById("open-modal").hidden = true;
 });
@@ -497,6 +498,25 @@ async function saveRoom() {
     store.emit();
     btn.classList.remove("saving");
   }
+}
+
+/// Exports the current room (canvas + walls + furniture) as a .rcad download.
+/// The same `parseRoom` path is used on import, so the file round-trips.
+function exportRoom() {
+  const json = P.serializeRoom(store.room);
+  const base = (store.serverRoomName || store.documentName || store.room.name || "room")
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  const blob = new Blob([json], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = base + ".rcad";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  store.status = "Exported " + base + ".rcad";
+  store.emit();
 }
 
 function openFileDialog() {
