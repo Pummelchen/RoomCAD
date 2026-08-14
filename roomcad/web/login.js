@@ -12,6 +12,10 @@ function showLogin() {
   input.focus();
 }
 
+// app.js calls this when an API call returns 401 (session expired), so the
+// login form re-appears instead of the page reloading in a loop.
+window.__roomcadShowLogin = showLogin;
+
 // Already logged in? The session cookie is HttpOnly, so ask the server.
 fetch("/api/rooms")
   .then(res => {

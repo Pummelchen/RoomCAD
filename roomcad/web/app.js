@@ -435,7 +435,8 @@ fileInput.addEventListener("change", () => {
 // Rooms are saved on the webserver (not downloaded) as ternak_roomN.rcad.
 function apiReject(res) {
   if (res.status === 401) {
-    location.reload(); // session expired — the login gate will re-appear
+    // Session expired — surface the login form (never auto-reload, which loops).
+    if (window.__roomcadShowLogin) window.__roomcadShowLogin();
     return new Error("unauthorized");
   }
   return new Error("request failed (" + res.status + ")");
@@ -913,7 +914,10 @@ async function pollStatus() {
   try {
     const res = await fetch("/api/status");
     const ms = Math.round(performance.now() - t0);
-    if (res.status === 401) { location.reload(); return; }
+    if (res.status === 401) {
+      if (window.__roomcadShowLogin) window.__roomcadShowLogin();
+      return;
+    }
     const data = await res.json();
     store.presenceCount = data.count || 1;
     store.serverLatency = ms;
