@@ -370,6 +370,9 @@ document.getElementById("open-room").addEventListener("click", openRoomModal);
 document.getElementById("open-close").addEventListener("click", () => {
   document.getElementById("open-modal").hidden = true;
 });
+document.getElementById("version-close").addEventListener("click", () => {
+  document.getElementById("version-modal").hidden = true;
+});
 document.getElementById("open-import").addEventListener("click", openFileDialog);
 fileInput.addEventListener("change", () => {
   const file = fileInput.files && fileInput.files[0];
@@ -414,6 +417,18 @@ async function apiLoadRoom(name) {
   return res.json();
 }
 
+async function apiLoadRoomVersion(name, version) {
+  const res = await fetch("/api/load/" + encodeURIComponent(name) + "?version=" + version);
+  if (!res.ok) throw new Error("load failed");
+  return res.json();
+}
+
+async function apiVersions(name) {
+  const res = await fetch("/api/versions/" + encodeURIComponent(name));
+  if (!res.ok) throw new Error("versions failed");
+  return res.json();
+}
+
 async function apiDeleteRoom(name) {
   const res = await fetch("/api/rooms/" + encodeURIComponent(name), { method: "DELETE" });
   if (!res.ok) throw new Error("delete failed");
@@ -442,20 +457,45 @@ function watchRoom(name) {
 }
 
 async function saveRoom() {
+  const btn = document.getElementById("save-room");
+  btn.classList.remove("saved");
+  btn.classList.add("saving");
   try {
     // Update the existing server slot when the room was opened from the
     // server, otherwise create a new ternak_roomN (no duplicate copies).
-    const result = await apiSaveRoom(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID);
+    const json = P.serializeRoom(store.room);
+    const result = await apiSaveRoom(json, store.serverRoomName, CLIENT_ID);
+
+    // Verify the saved data is not corrupted by loading the new version back
+    // and parsing it (also confirm the stored JSON round-trips unchanged).
+    let verified = false;
+    try {
+      const data = await apiLoadRoomVersion(result.name, result.version);
+      const room = P.parseRoom(data.json);
+      verified = !!room && data.json === json;
+    } catch {
+      verified = false;
+    }
+
     store.serverRoomName = result.name;
     store.serverRoomVersion = result.version;
-    store.status = "Saved as " + result.name + " · v" + result.version;
+    store.status = verified
+      ? "Saved as " + result.name + " · v" + result.version
+      : "Saved, but the data could not be verified";
     store.edited = false;
     store.emit();
     renderRooms();
     watchRoom(result.name);
+
+    btn.classList.remove("saving");
+    if (verified) {
+      btn.classList.add("saved");
+      setTimeout(() => btn.classList.remove("saved"), 3000);
+    }
   } catch {
     store.status = "Could not save to the server";
     store.emit();
+    btn.classList.remove("saving");
   }
 }
 
@@ -476,7 +516,7 @@ function showRoomContextMenu(x, y, name) {
   openBtn.textContent = "Open";
   openBtn.addEventListener("click", () => {
     hideRoomContextMenu();
-    openStoredRoom(name);
+    showVersionModal(name);
   });
   roomContextMenu.appendChild(openBtn);
   const delBtn = document.createElement("button");
@@ -523,7 +563,7 @@ async function openRoomModal() {
       `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => {
       modal.hidden = true;
-      openStoredRoom(r.name);
+      showVersionModal(r.name);
     });
     li.appendChild(button);
     li.addEventListener("contextmenu", e => {
@@ -540,10 +580,49 @@ async function removeStoredRoom(name) {
   renderRooms();
 }
 
-async function openStoredRoom(name) {
+/// Asks which version of a room to open, then loads the chosen one. A room
+/// with a single version opens straight away.
+async function showVersionModal(name) {
+  let versions;
+  try {
+    versions = await apiVersions(name);
+  } catch {
+    window.alert("Could not load the versions for " + name + ".");
+    return;
+  }
+  if (!versions.length) {
+    window.alert("This room has no saved versions.");
+    return;
+  }
+  if (versions.length === 1) {
+    openStoredRoom(name, versions[0].version);
+    return;
+  }
+  const modal = document.getElementById("version-modal");
+  const list = document.getElementById("version-list");
+  document.getElementById("version-title").textContent = name + " — choose a version";
+  list.innerHTML = "";
+  for (const v of versions) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.innerHTML = `<div class="room-name">Version ${v.version}</div>` +
+      `<div class="room-meta">${new Date(v.savedAt).toLocaleString()}</div>`;
+    button.addEventListener("click", () => {
+      modal.hidden = true;
+      openStoredRoom(name, v.version);
+    });
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+  modal.hidden = false;
+}
+
+async function openStoredRoom(name, version) {
   if (!confirmDiscard()) return;
   try {
-    const data = await apiLoadRoom(name);
+    const data = version != null
+      ? await apiLoadRoomVersion(name, version)
+      : await apiLoadRoom(name);
     const room = P.parseRoom(data.json);
     store.loadRoom(room, data.name, true);
     store.serverRoomVersion = data.version;
@@ -580,7 +659,7 @@ async function renderRooms() {
     const button = document.createElement("button");
     button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
       `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
-    button.addEventListener("click", () => openStoredRoom(r.name));
+    button.addEventListener("click", () => showVersionModal(r.name));
     li.appendChild(button);
     li.addEventListener("contextmenu", e => {
       e.preventDefault();

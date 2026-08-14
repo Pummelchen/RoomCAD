@@ -106,6 +106,21 @@ body {
   font-weight: 600;
 }
 
+/* Save feedback: orange while saving, neon green once verified. */
+#save-room.saving {
+  background: #f5a623;
+  border-color: #f5a623;
+  color: #1a1206;
+  font-weight: 600;
+}
+
+#save-room.saved {
+  background: #39ff14;
+  border-color: #39ff14;
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
 #toolbar button.primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -431,19 +446,22 @@ body {
   color: var(--danger);
 }
 
-#open-list {
+#open-list,
+#version-list {
   list-style: none;
   overflow-y: auto;
   min-height: 60px;
   margin-bottom: 10px;
 }
 
-#open-list li {
+#open-list li,
+#version-list li {
   position: relative;
   margin-bottom: 4px;
 }
 
-#open-list button {
+#open-list button,
+#version-list button {
   width: 100%;
   text-align: left;
   border: 1px solid transparent;
@@ -454,16 +472,19 @@ body {
   color: var(--text);
 }
 
-#open-list button:hover {
+#open-list button:hover,
+#version-list button:hover {
   background: var(--accent-soft);
 }
 
-#open-list .room-name {
+#open-list .room-name,
+#version-list .room-name {
   font-weight: 600;
   font-size: 13px;
 }
 
-#open-list .room-meta {
+#open-list .room-meta,
+#version-list .room-meta {
   font-size: 11px;
   color: var(--muted);
 }
