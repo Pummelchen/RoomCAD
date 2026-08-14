@@ -456,7 +456,12 @@ export const store = {
       room.furniture.push(candidate);
     });
     this.selectedFurnitureID = candidate.id;
-    this.status = P.FURNITURE_KINDS[kind].title + " placed · click again or press Esc to stop";
+    this.refreshFurnitureGaps(candidate.id);
+    // Return to the default Select tool so the palette button de-selects and
+    // the cursor goes back to normal after one placement.
+    this.pendingFurnitureKind = null;
+    this.tool = "select";
+    this.status = P.FURNITURE_KINDS[kind].title + " placed";
     this.emit();
   },
 

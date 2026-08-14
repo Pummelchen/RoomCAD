@@ -321,7 +321,7 @@ body {
   width: 100%;
   height: 100%;
   display: block;
-  cursor: crosshair;
+  cursor: default;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -329,7 +329,7 @@ body {
 }
 
 #plan-canvas.selecting {
-  cursor: default;
+  cursor: grab;
 }
 
 #walk-host {

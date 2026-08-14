@@ -152,6 +152,7 @@ export class Editor2D {
       if (e.code === "Space") {
         this.spaceDown = false;
         this.canvas.classList.remove("selecting");
+        this.draw();
       }
     });
     window.addEventListener("blur", () => {
@@ -159,6 +160,7 @@ export class Editor2D {
       this.canvas.classList.remove("selecting");
       this.drag = null;
       this.pointers.clear();
+      this.draw();
     });
     // Dismiss the context menu on any outside click or on Escape.
     window.addEventListener("pointerdown", e => {
@@ -614,6 +616,17 @@ export class Editor2D {
     }
 
     this.drawMeasure();
+
+    // Cursor reflects the active tool: arrow for Select, crosshair for tools.
+    if (this.drag && this.drag.type === "pan") {
+      this.canvas.style.cursor = "grabbing";
+    } else if (this.spaceDown) {
+      this.canvas.style.cursor = "grab";
+    } else if (store.tool === "select") {
+      this.canvas.style.cursor = "default";
+    } else {
+      this.canvas.style.cursor = "crosshair";
+    }
   }
 
   activeOpening() {
