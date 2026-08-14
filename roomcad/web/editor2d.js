@@ -769,7 +769,9 @@ export class Editor2D {
     for (const door of room.doors.filter(d => d.wallID === wall.id)) {
       this.drawDoor(wall, door);
     }
-    for (const span of windowSpans) this.drawWindow(wall, span);
+    for (const win of room.windows.filter(w => w.wallID === wall.id)) {
+      this.drawWindow(wall, win, win.id === store.selectedWindowID);
+    }
   }
 
   drawDoor(wall, door) {
@@ -811,17 +813,19 @@ export class Editor2D {
     }
   }
 
-  drawWindow(wall, span) {
+  drawWindow(wall, window, selected = false) {
     const ctx = this.ctx;
-    const a = this.screen(P.wallPointAt(wall, span.from));
-    const b = this.screen(P.wallPointAt(wall, span.to));
-    ctx.strokeStyle = "#8fc4ec";
-    ctx.lineWidth = 5;
+    const a = this.screen(P.wallPointAt(wall, window.offset));
+    const b = this.screen(P.wallPointAt(wall, window.offset + window.width));
+    const color = selected ? "#ff3b30" : "#8fc4ec";
+    const inner = selected ? "#ff9b94" : "#eaf4fb";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = selected ? 7 : 5;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    ctx.strokeStyle = "#eaf4fb";
+    ctx.strokeStyle = inner;
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
