@@ -24,6 +24,11 @@ PORT = 8078
 
 WATCHERS = {}
 WATCH_LOCK = threading.Lock()
+# Latest unsaved "live" draft per room (in-memory only; lost on restart, which
+# is fine — they are drafts). A new watcher receives this on connect so it
+# joins mid-edit in sync with everyone else.
+LIVE = {}
+LIVE_LOCK = threading.Lock()
 DB_LOCK = threading.Lock()
 _conn = None
 
@@ -166,6 +171,21 @@ def notify(name, room_json, client_id, version):
         q.put(payload)
 
 
+def notify_live(name, draft):
+    """Broadcast an unsaved live draft to every watcher of a room."""
+    payload = json.dumps({
+        "name": name,
+        "json": draft["json"],
+        "clientId": draft["clientId"],
+        "version": draft["version"],
+        "live": True,
+    })
+    with WATCH_LOCK:
+        queues = list(WATCHERS.get(name, set()))
+    for q in queues:
+        q.put(payload)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -199,6 +219,17 @@ class Handler(BaseHTTPRequestHandler):
             cur = load_room(name)
             if cur:
                 self._sse_write(json.dumps({"name": name, "json": cur["json"], "clientId": "", "version": cur["version"]}))
+            with LIVE_LOCK:
+                draft = LIVE.get(name)
+            if draft:
+                # Join mid-edit: hand over the latest unsaved draft too.
+                self._sse_write(json.dumps({
+                    "name": name,
+                    "json": draft["json"],
+                    "clientId": draft["clientId"],
+                    "version": draft["version"],
+                    "live": True,
+                }))
             while True:
                 payload = q.get()
                 try:
@@ -242,6 +273,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/live/"):
+            name = sanitize(urllib.parse.unquote(path[len("/api/live/"):]))
+            if not name:
+                self._send({"error": "bad name"}, 400)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                room_json = str(data.get("json", ""))
+                client_id = str(data.get("clientId", ""))
+                version = data.get("version")
+            except Exception:
+                self._send({"error": "bad request"}, 400)
+                return
+            draft = {"json": room_json, "clientId": client_id, "version": version}
+            with LIVE_LOCK:
+                LIVE[name] = draft
+            notify_live(name, draft)
+            self._send({"ok": True})
+            return
         if path != "/api/save":
             self._send({"error": "not found"}, 404)
             return
@@ -255,6 +306,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "bad request"}, 400)
             return
         version = save_room(name, room_json, client_id)
+        # A real save supersedes any unsaved draft for this room.
+        with LIVE_LOCK:
+            LIVE.pop(name, None)
         notify(name, room_json, client_id, version)
         self._send({"name": name, "version": version})
 

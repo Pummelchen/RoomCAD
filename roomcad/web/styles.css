@@ -121,6 +121,24 @@ body {
   font-weight: 600;
 }
 
+/* Live collaboration toggle — neon green when on. */
+#live-room {
+  border-color: rgba(57, 255, 20, 0.55);
+  color: #b7ffad;
+}
+
+#live-room:hover {
+  background: rgba(57, 255, 20, 0.14);
+}
+
+#live-room.live-on {
+  background: #39ff14;
+  border-color: #39ff14;
+  color: #0a0a0a;
+  font-weight: 700;
+  box-shadow: 0 0 12px rgba(57, 255, 20, 0.65);
+}
+
 #toolbar button.primary {
   background: var(--accent);
   border-color: var(--accent);

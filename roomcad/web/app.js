@@ -19,6 +19,7 @@ const roomsList = document.getElementById("rooms-list");
 const fileInput = document.getElementById("file-input");
 const undoButton = document.getElementById("undo");
 const redoButton = document.getElementById("redo");
+const liveButton = document.getElementById("live-room");
 
 const editor = new Editor2D(planCanvas);
 let walk3d = null;
@@ -96,10 +97,11 @@ function renderToolbar() {
   });
   undoButton.disabled = !store.canUndo();
   redoButton.disabled = !store.canRedo();
+  renderLiveButton();
 }
 
 function renderStatus() {
-  let extra = store.serverRoomName ? " · Shared live" : "";
+  let extra = store.live ? " · Live" : (store.serverRoomName ? " · Shared" : "");
   if (store.serverRoomName && store.serverRoomVersion) extra += " · v" + store.serverRoomVersion;
   statusMessage.textContent = store.status + extra;
   statusHint.textContent = store.mode === "2d"
@@ -368,6 +370,7 @@ document.getElementById("new-room").addEventListener("click", () => {
 document.getElementById("save-room").addEventListener("click", saveRoom);
 document.getElementById("open-room").addEventListener("click", openRoomModal);
 document.getElementById("export-room").addEventListener("click", exportRoom);
+document.getElementById("live-room").addEventListener("click", toggleLive);
 document.getElementById("open-close").addEventListener("click", () => {
   document.getElementById("open-modal").hidden = true;
 });
@@ -436,6 +439,16 @@ async function apiDeleteRoom(name) {
   return res.json();
 }
 
+async function apiLiveDraft(json, name, clientId, version) {
+  const res = await fetch("/api/live/" + encodeURIComponent(name), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ json, clientId, version }),
+  });
+  if (!res.ok) throw new Error("live push failed");
+  return res.json();
+}
+
 let eventSource = null;
 
 /// Subscribes to live updates for a server room (Google-Docs style sharing).
@@ -450,8 +463,20 @@ function watchRoom(name) {
       try {
         const data = JSON.parse(e.data);
         if (data.clientId === CLIENT_ID) return; // ignore our own echo
-        const room = P.parseRoom(data.json);
-        store.applyRemoteRoom(room, data.version);
+        if (data.live) {
+          // Unsaved draft from a teammate. Apply only when Live is on, on the
+          // same saved version, and while we're not mid-drag.
+          if (!store.live) return;
+          if (data.version != null && store.serverRoomVersion != null
+              && data.version !== store.serverRoomVersion) return;
+          if (store.dragTransactionActive) return;
+          const room = P.parseRoom(data.json);
+          store.applyRemoteRoom(room, null);
+        } else {
+          // A real save (from anyone) — apply it and adopt the new version.
+          const room = P.parseRoom(data.json);
+          store.applyRemoteRoom(room, data.version);
+        }
       } catch {}
     };
   } catch {}
@@ -782,16 +807,50 @@ document.addEventListener("keydown", e => {
   e.preventDefault();
 });
 
-// MARK: - Store change subscription
+// MARK: - Live collaboration (unsaved, real-time sharing)
 
-let autoSaveTimer = null;
-
-function scheduleAutoSave() {
-  if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(() => {
-    if (store.serverRoomName && store.edited) saveRoom();
-  }, 600);
+function renderLiveButton() {
+  liveButton.classList.toggle("live-on", store.live);
 }
+
+function toggleLive() {
+  if (store.live) {
+    store.live = false;
+    store.status = "Live off — changes stay on this browser until you save";
+    store.emit();
+    return;
+  }
+  if (!store.serverRoomName) {
+    store.status = "Save or open a room from the server first, then turn Live on";
+    store.emit();
+    return;
+  }
+  store.live = true;
+  store.status = "Live — teammates see your changes instantly (nothing is saved yet)";
+  store.emit();
+  pushLiveDraft(); // publish our current state right away
+}
+
+let livePushTimer = null;
+
+function scheduleLivePush() {
+  if (livePushTimer) clearTimeout(livePushTimer);
+  livePushTimer = setTimeout(() => {
+    livePushTimer = null;
+    pushLiveDraft();
+  }, 150);
+}
+
+function pushLiveDraft() {
+  if (!store.live || !store.serverRoomName) return;
+  apiLiveDraft(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID, store.serverRoomVersion)
+    .catch(() => {
+      store.status = "Live: could not reach the server";
+      store.emit();
+    });
+}
+
+// MARK: - Store change subscription
 
 store.onChange(() => {
   if (store.mode === "3d" && walk3d) walk3d.update(store.room);
@@ -801,8 +860,8 @@ store.onChange(() => {
   renderRooms();
   document.title = (store.documentName || store.room.name)
     + (store.edited ? " · Edited" : "") + " — RoomCAD";
-  // Live sharing: auto-push edits to the server room (debounced).
-  if (store.serverRoomName && store.edited) scheduleAutoSave();
+  // Live: push edits to teammates as drafts (no save, no version bump).
+  if (store.live && store.serverRoomName && store.edited) scheduleLivePush();
 });
 
 // MARK: - Init

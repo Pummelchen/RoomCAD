@@ -29,6 +29,7 @@ export const store = {
   documentName: null,
   serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
   serverRoomVersion: null, // the current save version of that slot
+  live: false, // real-time (unsaved) collaboration with teammates
   edited: false,
   status: "Ready",
   undoStack: [],
@@ -761,6 +762,7 @@ export const store = {
     this.documentName = null;
     this.serverRoomName = null;
     this.serverRoomVersion = null;
+    this.live = false;
     this.edited = false;
     this.status = "Started a new room (7-room demo)";
     this.emit();
@@ -778,6 +780,7 @@ export const store = {
     this.documentName = name || room.name;
     this.serverRoomName = fromServer ? name : null;
     this.serverRoomVersion = null;
+    this.live = false;
     this.edited = false;
     this.status = "Opened " + this.documentName;
     this.emit();
