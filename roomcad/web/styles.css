@@ -119,19 +119,16 @@ body {
 }
 
 #toolbar #undo,
-#toolbar #redo,
-#toolbar #rotate-left,
-#toolbar #rotate-right {
-  font-size: 26px;
-  line-height: 1;
-  font-weight: 700;
-  padding: 2px 12px;
+#toolbar #redo {
+  padding: 5px 9px;
 }
 
-/* Shorter, more compact undo/redo glyphs so they match the turn buttons. */
-#toolbar .icon-short {
-  display: inline-block;
-  transform: scaleY(0.78);
+/* Undo/redo SVG icons. */
+#toolbar #undo .icon-svg,
+#toolbar #redo .icon-svg {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 .divider {
