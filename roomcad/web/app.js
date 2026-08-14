@@ -903,7 +903,7 @@ function updateVersionBadge() {
     const ms = store.serverLatency;
     const cls = ms < 150 ? "lat-green" : ms < 400 ? "lat-orange" : "lat-red";
     html += ` · <span class="latency-dot ${cls}"></span> Server ${ms}ms`;
-  } else {
+  } else if (store.serverOffline) {
     html += ` · <span class="latency-dot lat-red"></span> offline`;
   }
   versionBadge.innerHTML = html;
@@ -921,8 +921,10 @@ async function pollStatus() {
     const data = await res.json();
     store.presenceCount = data.count || 1;
     store.serverLatency = ms;
+    store.serverOffline = false;
   } catch {
     store.serverLatency = null;
+    store.serverOffline = true;
   }
   updateVersionBadge();
   renderLiveButton();

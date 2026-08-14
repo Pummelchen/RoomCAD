@@ -25,6 +25,7 @@
 	handle {
 		root * /var/roomcad/web
 		file_server
+		header Cache-Control "no-cache"
 	}
 }
 
@@ -43,5 +44,6 @@
 	handle {
 		root * /var/roomcad/web
 		file_server
+		header Cache-Control "no-cache"
 	}
 }

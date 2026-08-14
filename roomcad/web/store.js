@@ -33,6 +33,7 @@ export const store = {
   live: false, // real-time (unsaved) collaboration with teammates
   presenceCount: 1, // how many browser sessions are connected (from /api/status)
   serverLatency: null, // round-trip ms to the server (from the status poll)
+  serverOffline: false, // true only after a status poll actually failed (network)
   timeOfDay: 15, // hour of day (0–24, 24 h clock) driving the 3D sun + city lights
   layoutSeed: 1, // seed for the auto room layout; "redesign" bumps it for a new variant
   layoutCount: 3, // how many private rooms to generate
