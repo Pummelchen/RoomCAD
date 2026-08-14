@@ -231,6 +231,14 @@ function roomSection() {
   html += `<div class="field"><label>Canvas size (m)</label><div class="value-row">` +
     `<input type="number" data-action="canvas-size" value="${P.canvasOf(room).width.toFixed(1)}" min="${Math.ceil(Math.max(room.width, room.length))}" max="60" step="0.5">` +
     `<span class="readout">square</span></div></div>`;
+  html += `<div class="inspector-sep"></div>`;
+  html += `<div class="floor-row">` +
+    `<label>Time of day (24 h)</label>` +
+    `<div class="floor-control">` +
+    `<button class="inspector-button floor-btn" data-action="time-down" title="Earlier hour">&lt;</button>` +
+    `<span class="floor-value">${String((Math.round(store.timeOfDay) % 24 + 24) % 24).padStart(2, "0")}:00</span>` +
+    `<button class="inspector-button floor-btn" data-action="time-up" title="Later hour">&gt;</button>` +
+    `</div></div>`;
   return html;
 }
 
@@ -294,6 +302,10 @@ inspectorContent.addEventListener("click", e => {
     store.setFloor(1);
   } else if (t.dataset.action === "floor-down") {
     store.setFloor(-1);
+  } else if (t.dataset.action === "time-up") {
+    store.setTimeOfDay(store.timeOfDay + 1);
+  } else if (t.dataset.action === "time-down") {
+    store.setTimeOfDay(store.timeOfDay - 1);
   }
   // Blur the button so the inspector re-renders with the updated state.
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -853,7 +865,10 @@ function pushLiveDraft() {
 // MARK: - Store change subscription
 
 store.onChange(() => {
-  if (store.mode === "3d" && walk3d) walk3d.update(store.room);
+  if (store.mode === "3d" && walk3d) {
+    walk3d.update(store.room);
+    walk3d.applyTimeOfDay();
+  }
   renderInspector();
   renderStatus();
   renderToolbar();

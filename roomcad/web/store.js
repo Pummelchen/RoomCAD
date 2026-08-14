@@ -30,6 +30,7 @@ export const store = {
   serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
   serverRoomVersion: null, // the current save version of that slot
   live: false, // real-time (unsaved) collaboration with teammates
+  timeOfDay: 15, // hour of day (0–24, 24 h clock) driving the 3D sun + city lights
   edited: false,
   status: "Ready",
   undoStack: [],
@@ -664,6 +665,14 @@ export const store = {
     this.emit();
   },
 
+  /// Sets the hour of day (24 h clock, wraps 0–24) that drives the 3D sun and
+  /// the city's street / office lights.
+  setTimeOfDay(hour) {
+    this.timeOfDay = ((Math.round(hour) % 24) + 24) % 24;
+    this.status = "Time " + this.timeOfDay + ":00";
+    this.emit();
+  },
+
   renameRoom(name) {
     const trimmed = name.trim();
     if (!trimmed || trimmed === this.room.name) return;
@@ -763,6 +772,7 @@ export const store = {
     this.serverRoomName = null;
     this.serverRoomVersion = null;
     this.live = false;
+    this.timeOfDay = 15;
     this.edited = false;
     this.status = "Started a new room (7-room demo)";
     this.emit();
@@ -781,6 +791,7 @@ export const store = {
     this.serverRoomName = fromServer ? name : null;
     this.serverRoomVersion = null;
     this.live = false;
+    this.timeOfDay = 15;
     this.edited = false;
     this.status = "Opened " + this.documentName;
     this.emit();

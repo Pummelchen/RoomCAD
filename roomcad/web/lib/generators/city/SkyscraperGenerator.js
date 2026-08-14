@@ -20,7 +20,7 @@ import {
 } from 'three';
 
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { attribute, cameraPosition, color, cross, dot, float, floor, Fn, fract, fwidth, hash as ihash, mix, mod, modelWorldMatrixInverse, mx_fractal_noise_float, normalLocal, normalView, normalWorldGeometry, positionLocal, positionView, positionWorld, select, smoothstep, step, uint, uv, varying, vec2, vec3, vec4 } from 'three/tsl';
+import { attribute, cameraPosition, color, cross, dot, float, floor, Fn, fract, fwidth, hash as ihash, mix, mod, modelWorldMatrixInverse, mx_fractal_noise_float, normalLocal, normalView, normalWorldGeometry, positionLocal, positionView, positionWorld, select, smoothstep, step, uint, uniform, uv, varying, vec2, vec3, vec4 } from 'three/tsl';
 
 import { mergeGeometries } from '../../utils/BufferGeometryUtils.js';
 
@@ -31,8 +31,8 @@ const _identity = /*@__PURE__*/ new Matrix4();
 
 // material-zone codes baked per vertex into the merged geometry, so one material can
 // branch on partId and shade every zone
-const PartId = { WALL: 0, PIER: 1, FRAME: 2, ORNAMENT: 3, GLASS: 4, AC: 5 };
-const { WALL, PIER, FRAME, ORNAMENT, GLASS, AC } = PartId;
+const PartId = { WALL: 0, PIER: 1, FRAME: 2, ORNAMENT: 3, GLASS: 4, AC: 5, ENTRANCE: 6 };
+const { WALL, PIER, FRAME, ORNAMENT, GLASS, AC, ENTRANCE } = PartId;
 
 // fraction of a floor's height taken by the glazed opening; the remainder is
 // the spandrel band. shared by the window module and the spandrels so they tile.
@@ -312,6 +312,7 @@ class SkyscraperGenerator {
 		const acUnits = []; // window air-conditioner boxes on a random subset of shaft windows
 		const finials = []; // pinnacles along the crown
 		const extras = []; // bespoke geometry: the base arcade and the setback / roof slabs
+		const entrances = []; // base-arcade back planes, tagged ENTRANCE so they glow at night
 
 		const addPier = ( frame, u, vBottom, height ) => {
 
@@ -362,7 +363,7 @@ class SkyscraperGenerator {
 		// the base: a gothic arcade, capped by a string course
 		for ( const frame of faces ) {
 
-			addArcade( extras, frame, baseHeight, p );
+			addArcade( extras, entrances, frame, baseHeight, p );
 			addCornice( trim, frame, baseTop - p.stringCourseHeight, p.stringCourseHeight, 0.5 );
 
 		}
@@ -409,6 +410,8 @@ class SkyscraperGenerator {
 		groups.push( { geometry: nonIndexed( buildFinialGeometry( p ) ), matrices: finials, partId: ORNAMENT, rigid: true } );
 
 		for ( const geometry of extras ) groups.push( { geometry: nonIndexed( geometry ), matrices: [ _identity ], partId: WALL, rigid: true } ); // base arcade + slabs, in building-local space
+
+		for ( const geometry of entrances ) groups.push( { geometry: nonIndexed( geometry ), matrices: [ _identity ], partId: ENTRANCE, rigid: true } ); // entrance glow planes
 
 		groups.push( { geometry: _unitBox, matrices: backWalls, partId: WALL } ); // last — hidden behind the facade
 
@@ -713,7 +716,7 @@ function addParapet( target, frame, vTop, p ) {
  * The base storey: a wall pierced by tall pointed-arch openings, extruded with
  * thickness so the openings read as deep recesses.
  */
-function addArcade( target, frame, height, p ) {
+function addArcade( target, entrances, frame, height, p ) {
 
 	const archWidth = p.bayWidth * p.archBayWidthRatio;
 	const { count, margin } = frame.bays( archWidth );
@@ -752,11 +755,12 @@ function addArcade( target, frame, height, p ) {
 
 	target.push( geometry );
 
-	// a dark plane set behind the openings so the recesses read
+	// a plane set behind the openings: a dark recess by day, a warm lit entrance at
+	// night (tagged ENTRANCE so the material can glow it when the city goes dark)
 
 	const back = new PlaneGeometry( frame.length, height );
 	back.applyMatrix4( frame.matrix( frame.length / 2, height / 2, - thickness - 0.4 ) );
-	target.push( back );
+	entrances.push( back );
 
 }
 
@@ -982,6 +986,13 @@ function bumpNormal( height ) {
 // size, baked per window by addWindows ), so neighbouring panes share one interior. the
 // view ray is cast into that box and the walls, floor, ceiling and a few furniture pieces
 // it meets are shaded procedurally, keyed off a per-room hash. returns vec4( colour, lit ).
+
+// Global day/night controls, shared by every building material. `nightAmount` is
+// 0 in daylight and 1 in deep night (twilight ramps between); `lateNight` is 0 at
+// dusk and 1 after midnight, so upper-floor offices switch off as the night wears on.
+const nightAmountUniform = /*@__PURE__*/ uniform( 0 );
+const lateNightUniform = /*@__PURE__*/ uniform( 0 );
+
 const interior = /*@__PURE__*/ Fn( () => {
 
 	// flat so floor() below can't split one pane across two cell ids ( centre is per-room )
@@ -1026,7 +1037,13 @@ const interior = /*@__PURE__*/ Fn( () => {
 	const hash = ( kx, ky, kz ) => ihash( ckey.add( uint( Math.round( ( kx + ky * 7 + kz * 13 ) * 100 ) ) ) );
 	const seed = hash( 12.9898, 78.233, 37.719 );
 	const seed2 = hash( 39.346, 11.135, 83.155 );
-	const lit = step( 0.8, hash( 63.21, 9.17, 51.43 ) ); // ~20% of rooms have the lights on; the rest sit dark
+	// Office lights follow the time of day: nothing is lit in daylight; in the evening
+	// most upper-floor offices are on, then they switch off progressively through the
+	// night. The ground floor (entrances/retail) stays lit all night.
+	const isGround = step( roomCenter.y, 6.0 ); // entrance/retail floor (below ~6 m)
+	const officeThreshold = mix( 0.35, 0.85, lateNightUniform ); // dusk ~65 % lit → late ~15 %
+	const officeLit = step( officeThreshold, hash( 63.21, 9.17, 51.43 ) );
+	const lit = nightAmountUniform.mul( mix( officeLit, float( 1.0 ), isGround ) );
 
 	// each room's bulb colour. most run warm, drifting from a dim amber ( ~2400K ) up to a
 	// warm white ( ~3200K ); a minority run cool, from a fluorescent / LED daylight to a TV's
@@ -1315,6 +1332,7 @@ function createSkyscraperMaterial( buildingBase = color( 0xc6c0b2 ) ) {
 	const isFrame = partId.equal( FRAME );
 	const isOrnament = partId.equal( ORNAMENT );
 	const isAC = partId.equal( AC );
+	const isEntrance = partId.equal( ENTRANCE );
 
 	// stone zones: brick + weathering on the building's colour, lightened for
 	// piers / ornament and darkened for window frames
@@ -1383,12 +1401,20 @@ function createSkyscraperMaterial( buildingBase = color( 0xc6c0b2 ) ) {
 	const acRelief = acGrille.mul( acSlats.mul( 0.012 ).sub( 0.01 ) );
 	const acRough = float( 0.52 ).add( acGrille.mul( 0.08 ) );
 
+	// base-arcade entrances: a dark recess by day, a warm lit shopfront / lobby at
+	// night (the emissive term carries the glow, so it blooms through the arch).
+	const entranceColor = mix( color( 0x16120e ), color( 0xffd9a0 ), nightAmountUniform );
+	const entranceGlow = nightAmountUniform.mul( color( 0xffc87a ) ).mul( 2.0 );
+
 	const material = new MeshStandardNodeMaterial();
-	material.colorNode = select( isGlass, glassColor, select( isFrame, frameColor, select( isOrnament, ornamentColor, select( isAC, acColor, stoneColor ) ) ) );
+	material.colorNode = select( isGlass, glassColor, select( isEntrance, entranceColor, select( isFrame, frameColor, select( isOrnament, ornamentColor, select( isAC, acColor, stoneColor ) ) ) ) );
 	material.roughnessNode = select( isGlass, float( 0.18 ), select( isOrnament, float( 0.8 ), select( isAC, acRough, rough ) ) ); // glass kept smooth for a sky reflection, but soft enough not to alias over the interior
 	material.metalnessNode = float( 0 ); // all dielectric — stone, glass and the plastic AC shells
-	material.emissiveNode = select( isGlass, room.xyz.mul( room.w ).mul( 4 ).mul( grime.mul( 0.6 ).oneMinus() ), color( 0x000000 ) ); // room.w = emissive weight ( 0 unlit, < 1 behind curtains ), muted further by grime
-	material.normalNode = bumpNormal( select( isGlass.or( isFrame ).or( isOrnament ), float( 0 ), select( isAC, acRelief, reliefHeight ) ) ); // glass / frames / ornament stay flat; AC has its own louvers
+	material.emissiveNode = select( isGlass, room.xyz.mul( room.w ).mul( 4 ).mul( grime.mul( 0.6 ).oneMinus() ), select( isEntrance, entranceGlow, color( 0x000000 ) ) ); // room.w = emissive weight ( 0 unlit, < 1 behind curtains ), muted further by grime
+	material.normalNode = bumpNormal( select( isGlass.or( isFrame ).or( isOrnament ).or( isEntrance ), float( 0 ), select( isAC, acRelief, reliefHeight ) ) ); // glass / frames / ornament / entrances stay flat; AC has its own louvers
+
+	material.nightAmount = nightAmountUniform;
+	material.lateNight = lateNightUniform;
 
 	return material;
 
