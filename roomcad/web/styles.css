@@ -954,3 +954,13 @@ body {
   background: var(--line);
   margin: 0 4px;
 }
+
+/* The plan-rotate buttons use larger arrows so they're easy to hit. */
+#zoom-controls #rotate-left,
+#zoom-controls #rotate-right {
+  font-size: 26px;
+  line-height: 1;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+}
