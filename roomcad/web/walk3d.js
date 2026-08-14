@@ -703,6 +703,14 @@ export class Walk3D {
     if (withPointLight) {
       const pl = new THREE.PointLight(pointColor, pointIntensity, pointDistance, 2);
       pl.position.set(item.center.x, lightY, item.center.z);
+      // Cast shadows so walls actually block the light and it only reaches the
+      // neighbouring rooms through open doorways, instead of leaking through.
+      pl.castShadow = true;
+      pl.shadow.mapSize.set(512, 512);
+      pl.shadow.bias = -0.0004;
+      pl.shadow.normalBias = 0.04;
+      pl.shadow.camera.near = 0.05;
+      pl.shadow.camera.far = pointDistance;
       this.scene.add(pl);
       this.pointLights.push(pl);
     }
