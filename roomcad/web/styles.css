@@ -205,24 +205,6 @@ body {
   position: relative;
 }
 
-#rooms-list .room-delete {
-  position: absolute;
-  right: 4px;
-  top: 8px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-}
-
-#rooms-list .room-delete:hover {
-  background: rgba(255, 107, 94, 0.14);
-  color: var(--danger);
-}
-
 /* ── Furniture palette ───────────────────────────────── */
 
 .palette {
@@ -459,25 +441,6 @@ body {
 #open-list li {
   position: relative;
   margin-bottom: 4px;
-}
-
-#open-list .room-delete {
-  position: absolute;
-  right: 4px;
-  top: 8px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  z-index: 1;
-}
-
-#open-list .room-delete:hover {
-  background: rgba(255, 107, 94, 0.14);
-  color: var(--danger);
 }
 
 #open-list button {

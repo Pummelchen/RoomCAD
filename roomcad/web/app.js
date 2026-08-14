@@ -463,6 +463,43 @@ function openFileDialog() {
   fileInput.click();
 }
 
+/// Right-click context menu for a room entry (Open + Delete).
+const roomContextMenu = document.getElementById("context-menu");
+
+function showRoomContextMenu(x, y, name) {
+  roomContextMenu.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "ctx-title";
+  head.textContent = name;
+  roomContextMenu.appendChild(head);
+  const openBtn = document.createElement("button");
+  openBtn.textContent = "Open";
+  openBtn.addEventListener("click", () => {
+    hideRoomContextMenu();
+    openStoredRoom(name);
+  });
+  roomContextMenu.appendChild(openBtn);
+  const delBtn = document.createElement("button");
+  delBtn.className = "danger";
+  delBtn.textContent = "Delete";
+  delBtn.addEventListener("click", () => {
+    hideRoomContextMenu();
+    if (!window.confirm("Delete " + name + "?\n\nThis removes the room from the server.")) return;
+    removeStoredRoom(name);
+  });
+  roomContextMenu.appendChild(delBtn);
+  roomContextMenu.hidden = false;
+  const rect = roomContextMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  roomContextMenu.style.left = Math.max(8, left) + "px";
+  roomContextMenu.style.top = Math.max(8, top) + "px";
+}
+
+function hideRoomContextMenu() {
+  if (roomContextMenu) roomContextMenu.hidden = true;
+}
+
 /// Lists the rooms stored on the server in a modal, click one to open it.
 async function openRoomModal() {
   const modal = document.getElementById("open-modal");
@@ -489,17 +526,10 @@ async function openRoomModal() {
       openStoredRoom(r.name);
     });
     li.appendChild(button);
-    const remove = document.createElement("button");
-    remove.className = "room-delete";
-    remove.textContent = "✕";
-    remove.title = "Delete this room";
-    remove.addEventListener("click", e => {
-      e.stopPropagation();
-      if (!window.confirm("Delete " + r.name + "?\n\nThis removes the file from the server.")) return;
-      removeStoredRoom(r.name);
-      li.remove();
+    li.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      showRoomContextMenu(e.clientX, e.clientY, r.name);
     });
-    li.appendChild(remove);
     list.appendChild(li);
   }
   modal.hidden = false;
@@ -552,15 +582,10 @@ async function renderRooms() {
       `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => openStoredRoom(r.name));
     li.appendChild(button);
-    const remove = document.createElement("button");
-    remove.className = "room-delete";
-    remove.textContent = "✕";
-    remove.title = "Remove from this list";
-    remove.addEventListener("click", e => {
-      e.stopPropagation();
-      removeStoredRoom(r.name);
+    li.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      showRoomContextMenu(e.clientX, e.clientY, r.name);
     });
-    li.appendChild(remove);
     roomsList.appendChild(li);
   }
 }
