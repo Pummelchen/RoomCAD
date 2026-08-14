@@ -224,6 +224,9 @@ function roomSection() {
     `<span class="floor-value">Floor ${store.floor}</span>` +
     `<button class="inspector-button floor-btn" data-action="floor-up" title="Floor up">▲</button>` +
     `</div></div>`;
+  html += `<div class="field"><label>Canvas size (m)</label><div class="value-row">` +
+    `<input type="number" data-action="canvas-size" value="${P.canvasOf(room).width.toFixed(1)}" min="${Math.ceil(Math.max(room.width, room.length))}" max="60" step="0.5">` +
+    `<span class="readout">square</span></div></div>`;
   return html;
 }
 
@@ -257,6 +260,9 @@ inspectorContent.addEventListener("change", e => {
     store.updateRoomSize(store.room.width, Number(t.value) / 100);
   } else if (t.dataset.action === "height") {
     store.updateRoomHeight(Number(t.value) / 100);
+  } else if (t.dataset.action === "canvas-size") {
+    const s = Number(t.value);
+    store.updateCanvasSize(s, s);
   } else if (t.dataset.action === "width") {
     store.endDrag("Set width");
   } else if (t.dataset.action === "offset") {
@@ -303,7 +309,6 @@ document.querySelectorAll("#grid-picker [data-grid]").forEach(b => {
 });
 undoButton.addEventListener("click", () => store.undo());
 redoButton.addEventListener("click", () => store.redo());
-document.getElementById("fit").addEventListener("click", () => editor.fit());
 document.getElementById("rotate-left").addEventListener("click", () => store.rotatePlan(-90));
 document.getElementById("rotate-right").addEventListener("click", () => store.rotatePlan(90));
 

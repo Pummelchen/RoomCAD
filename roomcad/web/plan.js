@@ -101,16 +101,21 @@ export function centerRoom(room) {
   const canvas = canvasOf(room);
   const marginX = (canvas.width - room.width) / 2;
   const marginZ = (canvas.length - room.length) / 2;
+  const prev = roomOrigin(room);
+  const dx = marginX - prev.x;
+  const dz = marginZ - prev.z;
   room.origin = { x: marginX, z: marginZ };
-  room.walls = room.walls.map(w => ({
-    ...w,
-    start: { x: w.start.x + marginX, z: w.start.z + marginZ },
-    end: { x: w.end.x + marginX, z: w.end.z + marginZ },
-  }));
-  room.furniture = room.furniture.map(f => ({
-    ...f,
-    center: { x: f.center.x + marginX, z: f.center.z + marginZ },
-  }));
+  if (dx !== 0 || dz !== 0) {
+    room.walls = room.walls.map(w => ({
+      ...w,
+      start: { x: w.start.x + dx, z: w.start.z + dz },
+      end: { x: w.end.x + dx, z: w.end.z + dz },
+    }));
+    room.furniture = room.furniture.map(f => ({
+      ...f,
+      center: { x: f.center.x + dx, z: f.center.z + dz },
+    }));
+  }
   return room;
 }
 

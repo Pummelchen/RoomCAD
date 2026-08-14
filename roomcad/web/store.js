@@ -617,7 +617,7 @@ export const store = {
   },
 
   /// Resizes the buildable base plate (canvas). The plate always keeps at
-  /// least the main room's footprint.
+  /// least the main room's footprint and stays centred around the room.
   updateCanvasSize(width, length) {
     const canvas = P.canvasOf(this.room);
     const w = P.clamp(width, Math.max(2, this.room.width), 60);
@@ -625,6 +625,7 @@ export const store = {
     if (w === canvas.width && l === canvas.length) return;
     this.commit("Resized canvas to " + P.cm(w) + " × " + P.cm(l), room => {
       room.canvas = { width: w, length: l };
+      P.centerRoom(room);
     });
     this.clearSelection();
   },
