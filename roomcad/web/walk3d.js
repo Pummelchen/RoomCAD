@@ -219,7 +219,8 @@ export class Walk3D {
 
   build(room, resetCamera = false) {
     if (resetCamera) {
-      this.position.set(room.width / 2, 1.5, Math.max(0.5, room.length - 0.6));
+      const origin = P.roomOrigin(room);
+      this.position.set(origin.x + room.width / 2, 1.5, origin.z + Math.max(0.5, room.length - 0.6));
       this.yaw = 0;
       this.pitch = 0;
       this.crouching = false;
@@ -1137,8 +1138,9 @@ export class Walk3D {
     // Player capsule: the body sits at the feet; the capsule rises from it.
     // A fresh reset spawns inside the main room; an in-place rebuild keeps the
     // player wherever they are across the full canvas.
-    const spawnX = resetPlayer ? room.width / 2 : P.clamp(this.position.x, 0.3, canvas.width - 0.3);
-    const spawnZ = resetPlayer ? Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, canvas.length - 0.3);
+    const origin = P.roomOrigin(room);
+    const spawnX = resetPlayer ? origin.x + room.width / 2 : P.clamp(this.position.x, 0.3, canvas.width - 0.3);
+    const spawnZ = resetPlayer ? origin.z + Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, canvas.length - 0.3);
     const spawnY = resetPlayer ? 0.2 : Math.max(0.2, this.feetY);
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const body = this.world.createRigidBody(
@@ -1623,7 +1625,8 @@ export class Walk3D {
     if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z) ||
         p.y > room.height + 3 || p.y < -10) {
       // The body escaped the room somehow — teleport it back to the floor.
-      body.setTranslation({ x: room.width / 2, y: 0.3, z: Math.max(0.5, room.length - 0.6) }, true);
+      const origin = P.roomOrigin(room);
+      body.setTranslation({ x: origin.x + room.width / 2, y: 0.3, z: origin.z + Math.max(0.5, room.length - 0.6) }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       const q = body.translation();
       this.feetY = q.y;

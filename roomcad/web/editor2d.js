@@ -572,8 +572,9 @@ export class Editor2D {
     ctx.lineWidth = 1;
     ctx.strokeRect(plate.x + 0.5, plate.y + 0.5, plate.w - 1, plate.h - 1);
 
-    // Main room floor, drawn on top of the plate.
-    const floor = this.rect({ minX: 0, maxX: room.width, minZ: 0, maxZ: room.length });
+    // Main room floor, drawn on top of the plate (centred via the room origin).
+    const origin = P.roomOrigin(room);
+    const floor = this.rect({ minX: origin.x, maxX: origin.x + room.width, minZ: origin.z, maxZ: origin.z + room.length });
     ctx.fillStyle = "#1b1916";
     ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
 

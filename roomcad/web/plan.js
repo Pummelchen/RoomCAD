@@ -60,9 +60,10 @@ export function freshRoom(name = "My Room", width = 6, length = 4, height = 2.6)
     width,
     length,
     height,
-    // The buildable base plate. Bigger than the main room so extra rooms can
-    // be drawn around it. This is the 2D drawing surface and the 3D floor.
-    canvas: { width: width + 4, length: length + 4 },
+    // The buildable base plate (25 × 25 m by default). The room sits inside it
+    // at `origin`, so it can be centred on the grid.
+    canvas: { width: 25, length: 25 },
+    origin: { x: 0, z: 0 },
     grid: "fiveCentimeters",
     walls: [
       { id: uid(), start: point(0, 0), end: point(width, 0) },
@@ -83,6 +84,34 @@ export function canvasOf(room) {
     return room.canvas;
   }
   return { width: room.width, length: room.length };
+}
+
+/// The room's bottom-left corner on the canvas (0,0 for rooms saved before the
+/// origin field existed).
+export function roomOrigin(room) {
+  if (room.origin && typeof room.origin.x === "number" && typeof room.origin.z === "number") {
+    return room.origin;
+  }
+  return { x: 0, z: 0 };
+}
+
+/// Shifts the room's walls and furniture so the room footprint is centred on
+/// the canvas, and records the resulting origin.
+export function centerRoom(room) {
+  const canvas = canvasOf(room);
+  const marginX = (canvas.width - room.width) / 2;
+  const marginZ = (canvas.length - room.length) / 2;
+  room.origin = { x: marginX, z: marginZ };
+  room.walls = room.walls.map(w => ({
+    ...w,
+    start: { x: w.start.x + marginX, z: w.start.z + marginZ },
+    end: { x: w.end.x + marginX, z: w.end.z + marginZ },
+  }));
+  room.furniture = room.furniture.map(f => ({
+    ...f,
+    center: { x: f.center.x + marginX, z: f.center.z + marginZ },
+  }));
+  return room;
 }
 
 // MARK: - Grid and snapping
@@ -723,6 +752,11 @@ export function sanitize(room) {
   if (room.canvas.length < room.length) room.canvas.length = room.length;
   const canvas = room.canvas;
 
+  // Room origin on the canvas (defaults to the top-left corner for old files).
+  if (!room.origin) room.origin = { x: 0, z: 0 };
+  room.origin.x = clamp(room.origin.x, 0, canvas.width);
+  room.origin.z = clamp(room.origin.z, 0, canvas.length);
+
   room.walls = room.walls
     .filter(w => wallLength(w) >= 0.15)
     .map(w => ({
@@ -921,6 +955,8 @@ export function demoRoom() {
     );
   }
 
+  // Centre the whole room on the 25 × 25 m canvas.
+  centerRoom(room);
   return room;
 }
 
