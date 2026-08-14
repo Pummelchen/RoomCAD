@@ -607,7 +607,7 @@ export class Walk3D {
     this.scene.add(group);
   }
 
-  /// A ceiling-mounted light: a 60 W bulb with a safety cage, or a 200 W
+  /// A ceiling-mounted light: a bare 60 W bulb on a cord, or a 200 W
   /// 60×60 cm office panel. Both are emissive and (when enabled) cast a point
   /// light; `applyLightingMode` decides whether that light is actually used.
   addLightFixture(item, roomHeight, withPointLight) {
@@ -669,23 +669,6 @@ export class Walk3D {
       bulb.position.set(0, cy, 0);
       group.add(bulb);
       bulb.castShadow = false;
-
-      const cageRadius = 0.085;
-      const wire = () => new THREE.CylinderGeometry(0.006, 0.006, 1, 6);
-      const ring = y => {
-        const m = new THREE.Mesh(new THREE.TorusGeometry(cageRadius, 0.006, 8, 20), metal);
-        m.rotation.x = Math.PI / 2;
-        m.position.set(0, y, 0);
-        return m;
-      };
-      group.add(ring(cy + 0.05));
-      group.add(ring(cy - 0.07));
-      for (let i = 0; i < 4; i++) {
-        const a = i * Math.PI / 2;
-        const bar = new THREE.Mesh(wire(), metal);
-        bar.position.set(Math.cos(a) * cageRadius, cy - 0.01, Math.sin(a) * cageRadius);
-        group.add(bar);
-      }
 
       lightY = cy;
       pointColor = 0xffe6b8;
