@@ -22,6 +22,7 @@ export class Editor2D {
     this.contextMenu = document.getElementById("context-menu");
     this.measureDrag = null;   // { start, end } while dragging the measure tool
     this.measureResult = null; // last measured { start, end } (stays on screen)
+    this.zoomEl = document.getElementById("zoom-level");
 
     this.attachEvents();
     this.observeSize();
@@ -98,6 +99,27 @@ export class Editor2D {
     this.scale = newScale;
     this.origin = { x: cx - plan.x * this.scale, y: cy - plan.z * this.scale };
     this.draw();
+  }
+
+  /// Sets an absolute zoom (pixels per metre), anchored at the canvas centre.
+  zoomTo(scale) {
+    const rect = this.canvas.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const plan = this.plan({ x: cx, y: cy });
+    this.scale = P.clamp(scale, 20, 400);
+    this.origin = { x: cx - plan.x * this.scale, y: cy - plan.z * this.scale };
+    this.draw();
+  }
+
+  /// Steps the zoom by a factor, anchored at the canvas centre.
+  zoomBy(factor) {
+    this.zoomTo(this.scale * factor);
+  }
+
+  /// Current zoom as a percentage of the 100 px/m baseline.
+  zoomPercent() {
+    return Math.round(this.scale);
   }
 
   // MARK: Size handling
@@ -627,6 +649,9 @@ export class Editor2D {
     } else {
       this.canvas.style.cursor = "crosshair";
     }
+
+    // Keep the zoom readout in sync.
+    if (this.zoomEl) this.zoomEl.textContent = this.zoomPercent() + "%";
   }
 
   activeOpening() {

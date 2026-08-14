@@ -307,6 +307,13 @@ document.getElementById("fit").addEventListener("click", () => editor.fit());
 document.getElementById("rotate-left").addEventListener("click", () => store.rotatePlan(-90));
 document.getElementById("rotate-right").addEventListener("click", () => store.rotatePlan(90));
 
+// Bottom-right zoom controls.
+document.getElementById("zoom-out").addEventListener("click", () => editor.zoomBy(1 / 1.25));
+document.getElementById("zoom-in").addEventListener("click", () => editor.zoomBy(1.25));
+document.getElementById("zoom-100").addEventListener("click", () => editor.zoomTo(100));
+document.getElementById("zoom-200").addEventListener("click", () => editor.zoomTo(200));
+document.getElementById("zoom-fit").addEventListener("click", () => editor.fit());
+
 // Build palette in the left sidebar: Wall / Door / Window go straight to their
 // tool; Light opens a small choice between the 60 W bulb and the 200 W panel.
 const lightButton = document.getElementById("light-button");

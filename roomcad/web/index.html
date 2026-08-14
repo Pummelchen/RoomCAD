@@ -114,6 +114,15 @@
 
       <section id="canvas-area">
         <canvas id="plan-canvas"></canvas>
+        <div id="zoom-controls" class="plan-only">
+          <button id="zoom-out" title="Zoom out">−</button>
+          <span id="zoom-level" title="Current zoom">100%</span>
+          <button id="zoom-in" title="Zoom in">+</button>
+          <span class="zoom-divider"></span>
+          <button id="zoom-100" title="Zoom to 100%">100%</button>
+          <button id="zoom-200" title="Zoom to 200%">200%</button>
+          <button id="zoom-fit" title="Fit the whole plan into the screen">Fit</button>
+        </div>
         <div id="walk-host" hidden>
           <div id="fps-counter">— FPS</div>
           <div id="walk-hint">Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · L lights · right-click: door swing</div>
