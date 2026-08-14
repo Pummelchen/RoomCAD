@@ -705,6 +705,12 @@ body {
   line-height: 1.5;
 }
 
+.inspector-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 14px 0;
+}
+
 /* ── Status bar ──────────────────────────────────────── */
 
 #statusbar {

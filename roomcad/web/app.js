@@ -217,6 +217,7 @@ function roomSection() {
   html += `<div class="stat-row"><span>Floor area</span><span>${area} m²</span></div>`;
   html += `<div class="inspector-note">Tap a wall, door, window, or furniture to edit it. ` +
     `The grey area is just extra drawing space for more rooms.</div>`;
+  html += `<div class="inspector-sep"></div>`;
   html += `<div class="floor-row">` +
     `<label>Outside floor</label>` +
     `<div class="floor-control">` +
@@ -224,6 +225,7 @@ function roomSection() {
     `<span class="floor-value">Floor ${store.floor}</span>` +
     `<button class="inspector-button floor-btn" data-action="floor-up" title="Floor up">▲</button>` +
     `</div></div>`;
+  html += `<div class="inspector-sep"></div>`;
   html += `<div class="field"><label>Canvas size (m)</label><div class="value-row">` +
     `<input type="number" data-action="canvas-size" value="${P.canvasOf(room).width.toFixed(1)}" min="${Math.ceil(Math.max(room.width, room.length))}" max="60" step="0.5">` +
     `<span class="readout">square</span></div></div>`;
