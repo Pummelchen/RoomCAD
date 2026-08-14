@@ -12,6 +12,7 @@ export const TOOL_HELP = {
   furniture: "Pick furniture from the palette, then click the floor to place it",
   erase: "Click anything to erase it",
   measure: "Click and drag between two points to measure the distance in cm",
+  public: "Drag a rectangle to mark shared (public) floor space",
 };
 
 export const store = {
@@ -31,6 +32,10 @@ export const store = {
   serverRoomVersion: null, // the current save version of that slot
   live: false, // real-time (unsaved) collaboration with teammates
   timeOfDay: 15, // hour of day (0–24, 24 h clock) driving the 3D sun + city lights
+  layoutSeed: 1, // seed for the auto room layout; "redesign" bumps it for a new variant
+  layoutCount: 3, // how many private rooms to generate
+  layoutArea: 12, // target m² per room (guide for the layout)
+  layoutWindows: false, // add one window per room (only on outside-facing walls)
   edited: false,
   status: "Ready",
   undoStack: [],
@@ -671,6 +676,54 @@ export const store = {
     this.timeOfDay = ((Math.round(hour) % 24) + 24) % 24;
     this.status = "Time " + this.timeOfDay + ":00";
     this.emit();
+  },
+
+  /// Adds a user-drawn rectangle to the shared (public) floor space. Public
+  /// areas are left untouched by the auto room layout.
+  markPublicArea(rect) {
+    const area = {
+      x: P.clean(Math.min(rect.x1, rect.x2)),
+      z: P.clean(Math.min(rect.z1, rect.z2)),
+      w: P.clean(Math.abs(rect.x2 - rect.x1)),
+      l: P.clean(Math.abs(rect.z2 - rect.z1)),
+    };
+    if (area.w < 0.5 || area.l < 0.5) {
+      this.status = "Drag a bigger public area";
+      this.emit();
+      return;
+    }
+    this.commit("Marked public space", room => {
+      room.publicAreas.push(area);
+    });
+  },
+
+  /// Runs the auto room layout and replaces the walls/doors/windows with the
+  /// generated design. Each call is a commit, so undo/redo steps between designs.
+  generateLayout(config) {
+    const result = P.autoLayoutRooms(this.room, {
+      count: config.count,
+      windows: config.windows,
+      seed: this.layoutSeed,
+    });
+    if (!result) {
+      this.status = "Not enough private space for that many rooms";
+      this.emit();
+      return false;
+    }
+    this.commit("Generated " + result.rooms.length + " rooms", room => {
+      room.walls = result.walls;
+      room.doors = result.doors;
+      room.windows = result.windows;
+    });
+    this.status = "Generated " + result.rooms.length + " rooms · ~" + result.areaPerRoom.toFixed(1) + " m² each";
+    this.emit();
+    return true;
+  },
+
+  /// Generates a different (but still balanced) design by using the next seed.
+  redesignLayout(config) {
+    this.layoutSeed = (this.layoutSeed + 1) % 100000;
+    return this.generateLayout(config);
   },
 
   renameRoom(name) {

@@ -621,6 +621,58 @@ export class Walk3D {
         }
         break;
       }
+      case "desk": {
+        add(new THREE.BoxGeometry(W, 0.04, D), M.wood, 0, H - 0.02, 0);
+        for (const sx of [-1, 1]) {
+          add(new THREE.BoxGeometry(0.06, H - 0.05, 0.06), M.woodDark, sx * (W / 2 - 0.05), (H - 0.05) / 2, 0);
+        }
+        // Monitor on a small stand toward the back (+Z).
+        add(new THREE.BoxGeometry(0.06, 0.12, 0.16), M.metal, 0, H + 0.06, D / 2 - 0.1);
+        add(new THREE.BoxGeometry(W * 0.45, 0.3, 0.04), M.metal, 0, H + 0.26, D / 2 - 0.14);
+        break;
+      }
+      case "sofa": {
+        add(new THREE.BoxGeometry(W, 0.28, D), M.fabric, 0, 0.2, 0);
+        add(new THREE.BoxGeometry(W - 0.12, 0.16, D - 0.16), M.cushion, 0, 0.42, 0);
+        add(new THREE.BoxGeometry(W - 0.12, 0.5, 0.16), M.cushion, 0, 0.66, D / 2 - 0.1); // backrest (+Z)
+        for (const sx of [-1, 1]) add(new THREE.BoxGeometry(0.16, 0.24, D), M.cushion, sx * (W / 2 - 0.05), 0.56, 0);
+        legs(W / 2 - 0.05, D / 2 - 0.05, 0.12, 0.025);
+        break;
+      }
+      case "shelf": {
+        add(new THREE.BoxGeometry(W - 0.04, H, D - 0.04), M.woodDark, 0, H / 2, 0);
+        const rows = 4;
+        for (let i = 1; i < rows; i++) {
+          add(new THREE.BoxGeometry(W - 0.08, 0.03, D - 0.06), M.wood, 0, (H / rows) * i, 0);
+        }
+        break;
+      }
+      case "nightstand": {
+        add(new THREE.BoxGeometry(W - 0.03, H - 0.08, D - 0.03), M.wood, 0, 0.04 + (H - 0.08) / 2, 0);
+        add(new THREE.BoxGeometry(W, 0.04, D), M.woodDark, 0, H - 0.02, 0);
+        add(new THREE.BoxGeometry(0.06, 0.1, 0.02), M.woodDark, 0, H - 0.28, -D / 2 + 0.02); // drawer front (-Z)
+        legs(W / 2 - 0.04, D / 2 - 0.04, 0.06, 0.018);
+        break;
+      }
+      case "dresser": {
+        add(new THREE.BoxGeometry(W - 0.03, H - 0.08, D - 0.03), M.wood, 0, 0.04 + (H - 0.08) / 2, 0);
+        add(new THREE.BoxGeometry(W, 0.05, D), M.woodDark, 0, H - 0.025, 0);
+        const rows = 3;
+        for (let i = 0; i < rows; i++) {
+          const y = 0.10 + (H - 0.2) * (i + 0.5) / rows;
+          add(new THREE.BoxGeometry(W - 0.1, 0.06, 0.015), M.woodDark, 0, y, -D / 2 + 0.02);
+        }
+        legs(W / 2 - 0.04, D / 2 - 0.04, 0.08, 0.02);
+        break;
+      }
+      case "armchair": {
+        add(new THREE.BoxGeometry(W - 0.05, 0.24, D - 0.05), M.fabric, 0, 0.18, 0);
+        add(new THREE.BoxGeometry(W - 0.05, 0.12, D - 0.15), M.cushion, 0, 0.36, 0);
+        add(new THREE.BoxGeometry(W - 0.1, 0.5, 0.14), M.cushion, 0, 0.62, D / 2 - 0.07); // backrest (+Z)
+        for (const sx of [-1, 1]) add(new THREE.BoxGeometry(0.13, 0.22, D - 0.05), M.cushion, sx * (W / 2 - 0.04), 0.5, 0);
+        legs(W / 2 - 0.05, D / 2 - 0.05, 0.15, 0.022);
+        break;
+      }
     }
 
     group.position.set(item.center.x, 0, item.center.z);

@@ -375,6 +375,9 @@ export class Editor2D {
         this.drag = { type: "drawWall", anchor, current: anchor };
         break;
       }
+      case "public":
+        this.drag = { type: "publicArea", anchor: p, current: p };
+        break;
       case "measure":
         this.measureDrag = { start: p, end: p };
         this.drag = { type: "measure" };
@@ -465,6 +468,9 @@ export class Editor2D {
         case "drawWall":
           this.drag.current = P.snapWallEnd(store.room, p, this.drag.anchor);
           break;
+        case "publicArea":
+          this.drag.current = p;
+          break;
         case "moveFurniture":
           store.moveFurniture(this.drag.id, p);
           break;
@@ -534,6 +540,12 @@ export class Editor2D {
           store.status = "Walls need to be at least 30 cm long";
           store.emit();
         }
+        break;
+      case "publicArea":
+        store.markPublicArea({
+          x1: drag.anchor.x, z1: drag.anchor.z,
+          x2: drag.current.x, z2: drag.current.z,
+        });
         break;
       case "moveFurniture":
         if (moved) store.endDrag("Moved furniture");
@@ -613,6 +625,17 @@ export class Editor2D {
     ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
 
     this.drawGrid(room);
+
+    // Public-space rectangles (excluded from auto-layout), drawn under walls.
+    for (const a of room.publicAreas || []) this.drawPublicArea(a);
+    if (this.drag && this.drag.type === "publicArea") {
+      this.drawPublicArea({
+        x: Math.min(this.drag.anchor.x, this.drag.current.x),
+        z: Math.min(this.drag.anchor.z, this.drag.current.z),
+        w: Math.abs(this.drag.current.x - this.drag.anchor.x),
+        l: Math.abs(this.drag.current.z - this.drag.anchor.z),
+      }, true);
+    }
 
     // Highlight wall under the cursor for door/window placement
     if ((store.tool === "door" || store.tool === "window") && this.hover) {
@@ -696,6 +719,26 @@ export class Editor2D {
     if (store.selectedDoorID) return { kind: "door", id: store.selectedDoorID };
     if (store.selectedWindowID) return { kind: "window", id: store.selectedWindowID };
     return null;
+  }
+
+  /// Draws a public-space rectangle (semi-transparent green) or its preview.
+  drawPublicArea(area, preview = false) {
+    const ctx = this.ctx;
+    const r = this.rect({ minX: area.x, maxX: area.x + area.w, minZ: area.z, maxZ: area.z + area.l });
+    ctx.fillStyle = preview ? "rgba(57,255,20,0.14)" : "rgba(57,255,20,0.10)";
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = preview ? "#39ff14" : "rgba(57,255,20,0.45)";
+    ctx.lineWidth = preview ? 2 : 1.5;
+    ctx.setLineDash(preview ? [6, 4] : [4, 4]);
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    ctx.setLineDash([]);
+    if (!preview && r.w > 34 && r.h > 16) {
+      ctx.font = "600 11px -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(57,255,20,0.8)";
+      ctx.fillText("PUBLIC", r.x + r.w / 2, r.y + r.h / 2);
+    }
   }
 
   drawGrid(room) {
@@ -1052,8 +1095,8 @@ export class Editor2D {
     const sb = this.screen(b);
     const color = state === "default" ? "#cfd2d8" : c.front;
 
-    if (item.kind === "wardrobe") {
-      // Two door knobs mark the front edge.
+    if (item.kind === "wardrobe" || item.kind === "dresser") {
+      // Two door/drawer knobs mark the front edge.
       const t = 0.22;
       ctx.fillStyle = color;
       for (const k of [t, 1 - t]) {
@@ -1063,8 +1106,15 @@ export class Editor2D {
         ctx.arc(kx, ky, 2.6, 0, Math.PI * 2);
         ctx.fill();
       }
+    } else if (item.kind === "nightstand") {
+      // A single centred drawer knob.
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc((sa.x + sb.x) / 2, (sa.y + sb.y) / 2, 2.4, 0, Math.PI * 2);
+      ctx.fill();
     } else {
-      // Backrest (chair) / pillow side (bed): a thick band along the edge.
+      // Backrest (chair/sofa/armchair) / pillow or open side (bed, desk, shelf):
+      // a thick band along the edge.
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
@@ -1079,11 +1129,12 @@ export class Editor2D {
   featureDirection(item) {
     const r = ((item.rotationDegrees % 360) + 360) % 360;
     const idx = r / 90;
-    if (item.kind === "chair") {
+    if (item.kind === "chair" || item.kind === "sofa" || item.kind === "armchair") {
       // Backrest sits on the +D side.
       return ["bottom", "left", "top", "right"][idx];
     }
-    // Bed pillows and wardrobe doors/knobs sit on the -D side.
+    // Bed pillows, desk/shelf fronts and wardrobe/dresser/nightstand fronts sit
+    // on the -D side.
     return ["top", "right", "bottom", "left"][idx];
   }
 

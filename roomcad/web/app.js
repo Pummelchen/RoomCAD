@@ -239,6 +239,20 @@ function roomSection() {
     `<span class="floor-value">${String((Math.round(store.timeOfDay) % 24 + 24) % 24).padStart(2, "0")}:00</span>` +
     `<button class="inspector-button floor-btn" data-action="time-up" title="Later hour">&gt;</button>` +
     `</div></div>`;
+  html += `<div class="inspector-sep"></div>`;
+  html += `<h4>Auto layout</h4>`;
+  html += `<div class="field"><label>Rooms</label><div class="value-row">` +
+    `<input type="number" data-action="layout-count" value="${store.layoutCount}" min="1" max="20" step="1">` +
+    `<span class="readout">rooms</span></div></div>`;
+  html += `<div class="field"><label>m² per room</label><div class="value-row">` +
+    `<input type="number" data-action="layout-area" value="${store.layoutArea}" min="2" max="200" step="0.5">` +
+    `<span class="readout">target</span></div></div>`;
+  html += `<div class="field"><label>Window in each room ` +
+    `<input type="checkbox" data-action="layout-windows" ${store.layoutWindows ? "checked" : ""}></label></div>`;
+  html += `<div class="inspector-note">Mark shared (public) floor space with the 🟩 Public tool, then ` +
+    `Generate partitions the rest into rooms. Each has one door; windows only go on outside walls.</div>`;
+  html += `<button class="inspector-button" data-action="layout-generate">Generate rooms</button>`;
+  html += `<button class="inspector-button" data-action="layout-redesign">Redesign (new layout)</button>`;
   return html;
 }
 
@@ -279,6 +293,12 @@ inspectorContent.addEventListener("change", e => {
     store.endDrag("Set width");
   } else if (t.dataset.action === "offset") {
     store.endDrag("Adjusted position");
+  } else if (t.dataset.action === "layout-count") {
+    store.layoutCount = Math.max(1, Math.min(20, Math.round(Number(t.value))));
+  } else if (t.dataset.action === "layout-area") {
+    store.layoutArea = Math.max(2, Math.min(200, Number(t.value)));
+  } else if (t.dataset.action === "layout-windows") {
+    store.layoutWindows = t.checked;
   }
 });
 
@@ -306,6 +326,10 @@ inspectorContent.addEventListener("click", e => {
     store.setTimeOfDay(store.timeOfDay + 1);
   } else if (t.dataset.action === "time-down") {
     store.setTimeOfDay(store.timeOfDay - 1);
+  } else if (t.dataset.action === "layout-generate") {
+    store.generateLayout({ count: store.layoutCount, area: store.layoutArea, windows: store.layoutWindows });
+  } else if (t.dataset.action === "layout-redesign") {
+    store.redesignLayout({ count: store.layoutCount, area: store.layoutArea, windows: store.layoutWindows });
   }
   // Blur the button so the inspector re-renders with the updated state.
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();

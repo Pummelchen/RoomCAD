@@ -9,10 +9,16 @@ export const GRID_STEPS = {
 };
 
 export const FURNITURE_KINDS = {
-  bed:      { title: "Bed",      category: "furniture", w: 0.90, d: 2.00, h: 0.90, color: [0.30, 0.65, 0.85], label: "BED", standHeight: 0.44 },
-  table:    { title: "Table",    category: "furniture", w: 0.70, d: 0.70, h: 0.75, color: [0.95, 0.72, 0.22], label: "TABLE", standHeight: 0.75 },
-  chair:    { title: "Chair",    category: "furniture", w: 0.45, d: 0.47, h: 0.82, color: [0.90, 0.38, 0.32], label: "CHAIR", standHeight: 0.50 },
-  wardrobe: { title: "Wardrobe", category: "furniture", w: 1.00, d: 0.60, h: 2.00, color: [0.82, 0.52, 0.28], label: "WARDROBE", standHeight: 2.00 },
+  bed:      { title: "Bed",       category: "furniture", w: 0.90, d: 2.00, h: 0.90, color: [0.30, 0.65, 0.85], label: "BED", standHeight: 0.44 },
+  table:    { title: "Table",     category: "furniture", w: 0.70, d: 0.70, h: 0.75, color: [0.95, 0.72, 0.22], label: "TABLE", standHeight: 0.75 },
+  chair:    { title: "Chair",     category: "furniture", w: 0.45, d: 0.47, h: 0.82, color: [0.90, 0.38, 0.32], label: "CHAIR", standHeight: 0.50 },
+  wardrobe: { title: "Wardrobe",  category: "furniture", w: 1.00, d: 0.60, h: 2.00, color: [0.82, 0.52, 0.28], label: "WARDROBE", standHeight: 2.00 },
+  desk:     { title: "Desk",      category: "furniture", w: 1.20, d: 0.60, h: 0.75, color: [0.62, 0.42, 0.28], label: "DESK", standHeight: 0.75 },
+  sofa:     { title: "Sofa",      category: "furniture", w: 1.80, d: 0.85, h: 0.85, color: [0.45, 0.55, 0.68], label: "SOFA", standHeight: 0.42 },
+  shelf:    { title: "Bookshelf", category: "furniture", w: 0.80, d: 0.30, h: 1.80, color: [0.75, 0.58, 0.40], label: "SHELF", standHeight: 0 },
+  nightstand: { title: "Nightstand", category: "furniture", w: 0.40, d: 0.35, h: 0.50, color: [0.55, 0.45, 0.35], label: "NIGHT", standHeight: 0.50 },
+  dresser:  { title: "Dresser",   category: "furniture", w: 0.90, d: 0.45, h: 1.00, color: [0.48, 0.42, 0.55], label: "DRESSER", standHeight: 1.00 },
+  armchair: { title: "Armchair",  category: "furniture", w: 0.75, d: 0.80, h: 0.90, color: [0.55, 0.40, 0.30], label: "ARMCHAIR", standHeight: 0.42 },
   light:      { title: "Bulb",        category: "fixture", w: 0.24, d: 0.24, h: 0.24, color: [0.98, 0.85, 0.35], label: "BULB",  standHeight: 0, ceiling: true, watts: 60 },
   lightPanel: { title: "Office Panel", category: "fixture", w: 0.60, d: 0.60, h: 0.06, color: [0.95, 0.97, 1.00], label: "PANEL", standHeight: 0, ceiling: true, watts: 200 },
 };
@@ -74,6 +80,7 @@ export function freshRoom(name = "My Room", width = 6, length = 4, height = 2.6)
     doors: [],
     windows: [],
     furniture: [],
+    publicAreas: [], // shared floor rectangles (living room, corridor…) excluded from auto-layout
   };
 }
 
@@ -677,6 +684,203 @@ export function sanitize(room) {
     };
     return item;
   });
+
+  room.publicAreas = (room.publicAreas || []).map(a => {
+    const w = clamp(a.w, 1, canvas.width);
+    const l = clamp(a.l, 1, canvas.length);
+    return {
+      x: clamp(a.x, 0, canvas.width - w),
+      z: clamp(a.z, 0, canvas.length - l),
+      w,
+      l,
+    };
+  });
+}
+
+// MARK: - Auto room layout
+
+/// Deterministic PRNG so a seed always gives the same design, and a different
+/// seed gives a different (but still balanced) one for "redesign".
+function layoutRandom(seed) {
+  let s = (seed >>> 0) || 1;
+  return function () {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/// `a − b`: the up-to-four rectangles of `a` remaining after removing `b`.
+function rectSubtract(a, b) {
+  const ax2 = a.x + a.w, az2 = a.z + a.l;
+  const bx2 = b.x + b.w, bz2 = b.z + b.l;
+  const ox = Math.min(ax2, bx2) - Math.max(a.x, b.x);
+  const oz = Math.min(az2, bz2) - Math.max(a.z, b.z);
+  if (ox <= 0 || oz <= 0) return [a];
+  const out = [];
+  if (b.x > a.x) out.push({ x: a.x, z: a.z, w: b.x - a.x, l: a.l });
+  if (bx2 < ax2) out.push({ x: bx2, z: a.z, w: ax2 - bx2, l: a.l });
+  const x1 = Math.max(a.x, b.x), x2 = Math.min(ax2, bx2);
+  if (b.z > a.z) out.push({ x: x1, z: a.z, w: x2 - x1, l: b.z - a.z });
+  if (bz2 < az2) out.push({ x: x1, z: bz2, w: x2 - x1, l: az2 - bz2 });
+  return out.filter(r => r.w > 0.01 && r.l > 0.01);
+}
+
+function rectInRect(p, r) {
+  return p.x >= r.x - 0.01 && p.x <= r.x + r.w + 0.01
+    && p.z >= r.z - 0.01 && p.z <= r.z + r.l + 0.01;
+}
+
+/// Recursive guillotine split of a rectangle into `n` roughly-equal rooms along
+/// the longer axis. The rng jitters each cut so different seeds give different
+/// (still balanced) designs.
+function guillotineRooms(rect, n, rng, minDim) {
+  if (n <= 1) return [rect];
+  const k = clamp(n % 2 === 0 ? n / 2 : Math.floor(n / 2) + (rng() < 0.5 ? 1 : 0), 1, n - 1);
+  const alongX = rect.w >= rect.l;
+  if (alongX && rect.w < minDim * 2) return [rect];
+  if (!alongX && rect.l < minDim * 2) return [rect];
+  const ratio = clamp(k / n + (rng() * 2 - 1) * 0.08, 0.15, 0.85);
+  let first, second;
+  if (alongX) {
+    const split = clamp(rect.w * ratio, minDim, rect.w - minDim);
+    first = { x: rect.x, z: rect.z, w: split, l: rect.l };
+    second = { x: rect.x + split, z: rect.z, w: rect.w - split, l: rect.l };
+  } else {
+    const split = clamp(rect.l * ratio, minDim, rect.l - minDim);
+    first = { x: rect.x, z: rect.z, w: rect.w, l: split };
+    second = { x: rect.x, z: rect.z + split, w: rect.w, l: rect.l - split };
+  }
+  return [...guillotineRooms(first, k, rng, minDim), ...guillotineRooms(second, n - k, rng, minDim)];
+}
+
+/// Generates a fresh room layout: partitions the private area (the room
+/// rectangle minus the marked public areas) into `count` rooms, each with one
+/// door, and (optionally) one window on a wall facing the outside of the layout.
+/// Returns { walls, doors, windows, rooms, areaPerRoom } or null when no private
+/// space fits two-by-two-metre rooms.
+export function autoLayoutRooms(room, opts = {}) {
+  const count = clamp(Math.round(opts.count ?? 3), 1, 20);
+  const windows = !!opts.windows;
+  const rng = layoutRandom(opts.seed ?? 1);
+  const origin = roomOrigin(room);
+  const layout = { x: origin.x, z: origin.z, w: room.width, l: room.length };
+
+  const publics = (room.publicAreas || [])
+    .map(a => ({
+      x: clamp(a.x, layout.x, layout.x + layout.w),
+      z: clamp(a.z, layout.z, layout.z + layout.l),
+      w: clamp(a.w, 0, layout.w),
+      l: clamp(a.l, 0, layout.l),
+    }))
+    .filter(a => a.w > 0.5 && a.l > 0.5);
+
+  // Private = layout minus public rectangles.
+  let privateRects = [layout];
+  for (const p of publics) {
+    const next = [];
+    for (const r of privateRects) next.push(...rectSubtract(r, p));
+    privateRects = next;
+  }
+  privateRects = privateRects.filter(r => r.w >= 2 && r.l >= 2);
+  if (privateRects.length === 0) return null;
+
+  // Partition each private rectangle in proportion to its area.
+  const totalArea = privateRects.reduce((s, r) => s + r.w * r.l, 0);
+  let rooms = [];
+  for (const r of privateRects) {
+    const share = Math.max(1, Math.round(count * r.w * r.l / totalArea));
+    rooms.push(...guillotineRooms(r, share, rng, 2.0));
+  }
+  rooms = rooms.slice(0, count);
+
+  // Snap every rectangle to the 5 cm grid.
+  const snap = r => ({
+    x: clean(Math.round(r.x / 0.05) * 0.05),
+    z: clean(Math.round(r.z / 0.05) * 0.05),
+    w: clean(Math.round(r.w / 0.05) * 0.05),
+    l: clean(Math.round(r.l / 0.05) * 0.05),
+  });
+  rooms = rooms.map(snap);
+  const snapPublics = publics.map(snap);
+
+  // One wall per unique edge (outer boundary + public + rooms), so shared walls
+  // between neighbours are not duplicated.
+  const key = (ax, az, bx, bz) => {
+    const p1 = `${clean(ax)},${clean(az)}`, p2 = `${clean(bx)},${clean(bz)}`;
+    return p1 < p2 ? `${p1}|${p2}` : `${p2}|${p1}`;
+  };
+  const wallByKey = new Map();
+  const addEdge = (ax, az, bx, bz) => {
+    const k = key(ax, az, bx, bz);
+    if (wallByKey.has(k)) return wallByKey.get(k);
+    const wall = { id: uid(), start: point(clean(ax), clean(az)), end: point(clean(bx), clean(bz)) };
+    wallByKey.set(k, wall);
+    return wall;
+  };
+  const edgeOf = r => [
+    { a: { x: r.x, z: r.z }, b: { x: r.x + r.w, z: r.z } },
+    { a: { x: r.x, z: r.z + r.l }, b: { x: r.x + r.w, z: r.z + r.l } },
+    { a: { x: r.x, z: r.z }, b: { x: r.x, z: r.z + r.l } },
+    { a: { x: r.x + r.w, z: r.z }, b: { x: r.x + r.w, z: r.z + r.l } },
+  ];
+
+  addEdge(layout.x, layout.z, layout.x + layout.w, layout.z);
+  addEdge(layout.x + layout.w, layout.z, layout.x + layout.w, layout.z + layout.l);
+  addEdge(layout.x + layout.w, layout.z + layout.l, layout.x, layout.z + layout.l);
+  addEdge(layout.x, layout.z + layout.l, layout.x, layout.z);
+  for (const p of snapPublics) for (const e of edgeOf(p)) addEdge(e.a.x, e.a.z, e.b.x, e.b.z);
+  for (const r of rooms) for (const e of edgeOf(r)) addEdge(e.a.x, e.a.z, e.b.x, e.b.z);
+
+  // What lies just beyond an edge's midpoint: public, another room, or outside.
+  const neighbor = (r, e) => {
+    const cx = r.x + r.w / 2, cz = r.z + r.l / 2;
+    const mx = (e.a.x + e.b.x) / 2, mz = (e.a.z + e.b.z) / 2;
+    let dx = mx - cx, dz = mz - cz;
+    const len = Math.hypot(dx, dz) || 1;
+    const p = { x: mx + dx / len * 0.3, z: mz + dz / len * 0.3 };
+    if (!rectInRect(p, layout)) return "outer";
+    for (const pub of snapPublics) if (rectInRect(p, pub)) return "public";
+    return "interior";
+  };
+  const opening = (e, width) => {
+    const wall = wallByKey.get(key(e.a.x, e.a.z, e.b.x, e.b.z));
+    if (!wall) return null;
+    const len = wallLength(wall);
+    if (len < width + 0.2) return null;
+    const mid = { x: (e.a.x + e.b.x) / 2, z: (e.a.z + e.b.z) / 2 };
+    const offset = clamp(clean(wallProjection(wall, mid).offset - width / 2), 0.10, len - width - 0.10);
+    return { wallID: wall.id, offset, width, open: true, swingInside: true };
+  };
+
+  const doors = [];
+  const winList = [];
+  const usedDoorEdges = new Set();
+  const rank = { public: 0, interior: 1, outer: 2 };
+  for (const r of rooms) {
+    const edges = edgeOf(r).map(e => ({ ...e, kind: neighbor(r, e) }));
+    // Door: prefer a wall toward the public space, then a neighbour, then out.
+    const doorEdge = edges
+      .filter(e => !usedDoorEdges.has(key(e.a.x, e.a.z, e.b.x, e.b.z)))
+      .sort((a, b) => rank[a.kind] - rank[b.kind])[0]
+      || edges.sort((a, b) => rank[a.kind] - rank[b.kind])[0];
+    const dk = key(doorEdge.a.x, doorEdge.a.z, doorEdge.b.x, doorEdge.b.z);
+    usedDoorEdges.add(dk);
+    const door = opening(doorEdge, 0.9);
+    if (door) doors.push(door);
+
+    if (windows) {
+      const winEdge = edges.find(e => e.kind === "outer"
+        && Math.hypot(e.b.x - e.a.x, e.b.z - e.a.z) >= 1.2);
+      if (winEdge) {
+        const win = opening(winEdge, 1.0);
+        if (win) winList.push(win);
+      }
+    }
+  }
+
+  return { walls: [...wallByKey.values()], doors, windows: winList, rooms, areaPerRoom: clean(totalArea / rooms.length) };
 }
 
 // MARK: - The seven-room demo (restored from the original Swift plan)
