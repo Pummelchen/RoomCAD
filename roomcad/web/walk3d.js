@@ -413,21 +413,25 @@ export class Walk3D {
     const sill = Math.min(P.SILL_HEIGHT, height);
     const glassTop = Math.min(sill + P.GLASS_HEIGHT, height);
     const doorTop = Math.min(P.DOOR_HEIGHT, height);
+    // Slight overlap so solid wall segments seal against the floor, ceiling and
+    // each other. Without it the point-light shadows bleed a ~1cm bright line
+    // through every seam in dark mode.
+    const seal = 0.02;
 
     for (const span of plan.baseSpans) {
-      this.addBox(wall, span, 0, sill, P.WALL_THICKNESS, WALL_COLOR);
+      this.addBox(wall, span, -seal, sill, P.WALL_THICKNESS, WALL_COLOR);
     }
     for (const span of plan.midSpans) {
-      this.addBox(wall, span, sill, doorTop, P.WALL_THICKNESS, WALL_COLOR);
+      this.addBox(wall, span, sill - seal, doorTop + seal, P.WALL_THICKNESS, WALL_COLOR);
     }
     for (const span of plan.glassSpans) {
       this.addGlass(wall, span, sill, glassTop, P.WALL_THICKNESS * 0.55);
     }
     for (const span of plan.stripSpans) {
-      this.addBox(wall, span, glassTop, doorTop, P.WALL_THICKNESS, WALL_COLOR);
+      this.addBox(wall, span, glassTop, doorTop + seal, P.WALL_THICKNESS, WALL_COLOR);
     }
     if (doorTop < height) {
-      this.addBox(wall, plan.headerSpan, doorTop, height, P.WALL_THICKNESS, WALL_COLOR);
+      this.addBox(wall, plan.headerSpan, doorTop - seal, height + seal, P.WALL_THICKNESS, WALL_COLOR);
     }
     for (const door of doors.filter(d => d.wallID === wall.id)) {
       this.addDoorLeaf(wall, door, doorTop);
@@ -668,7 +672,6 @@ export class Walk3D {
       const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.055, 24, 18), bulbMat);
       bulb.position.set(0, cy, 0);
       group.add(bulb);
-      bulb.castShadow = false;
 
       lightY = cy;
       pointColor = 0xffe6b8;
@@ -676,8 +679,12 @@ export class Walk3D {
       pointDistance = 10;
     }
 
+    // The fixture is a light source, so its own parts must not cast shadows —
+    // otherwise the bulb, cord and canopy would darken the walls and floor
+    // around it (a bare bulb has nothing occluding it). They still receive
+    // shadows from furniture and walls.
     group.traverse(node => {
-      if (node.isMesh) { node.castShadow = true; node.receiveShadow = true; }
+      if (node.isMesh) { node.receiveShadow = true; }
     });
     this.fixtureEmissives.push({ mat: emissiveMat, on: onIntensity });
 
@@ -690,9 +697,9 @@ export class Walk3D {
       // Cast shadows so walls actually block the light and it only reaches the
       // neighbouring rooms through open doorways, instead of leaking through.
       pl.castShadow = true;
-      pl.shadow.mapSize.set(512, 512);
-      pl.shadow.bias = -0.0004;
-      pl.shadow.normalBias = 0.04;
+      pl.shadow.mapSize.set(1024, 1024);
+      pl.shadow.bias = -0.0002;
+      pl.shadow.normalBias = 0.01;
       pl.shadow.camera.near = 0.05;
       pl.shadow.camera.far = pointDistance;
       this.scene.add(pl);
