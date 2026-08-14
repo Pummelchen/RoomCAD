@@ -23,6 +23,8 @@ export class Editor2D {
     this.measureDrag = null;   // { start, end } while dragging the measure tool
     this.measureResult = null; // last measured { start, end } (stays on screen)
     this.zoomEl = document.getElementById("zoom-level");
+    this.zoomEditing = false;
+    if (this.zoomEl) this.zoomEl.addEventListener("dblclick", () => this.beginZoomEdit());
 
     this.attachEvents();
     this.observeSize();
@@ -117,9 +119,41 @@ export class Editor2D {
     this.zoomTo(this.scale * factor);
   }
 
+  /// Steps the zoom by a fixed number of percentage points (e.g. ±10).
+  zoomStep(delta) {
+    this.zoomTo(this.scale + delta);
+  }
+
   /// Current zoom as a percentage of the 100 px/m baseline.
   zoomPercent() {
     return Math.round(this.scale);
+  }
+
+  /// Double-clicking the zoom readout opens an inline number input (no "%").
+  beginZoomEdit() {
+    if (this.zoomEditing) return;
+    this.zoomEditing = true;
+    this.zoomEl.innerHTML = `<input type="number" id="zoom-input" value="${this.zoomPercent()}" min="20" max="400" step="5">`;
+    const input = this.zoomEl.querySelector("input");
+    input.focus();
+    input.select();
+    const finish = () => {
+      const v = Math.round(Number(input.value));
+      if (!isNaN(v)) this.zoomTo(v);
+      this.zoomEditing = false;
+      this.zoomEl.textContent = this.zoomPercent() + "%";
+    };
+    input.addEventListener("change", finish);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") finish();
+      else if (e.key === "Escape") {
+        this.zoomEditing = false;
+        this.zoomEl.textContent = this.zoomPercent() + "%";
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (this.zoomEditing) finish();
+    });
   }
 
   // MARK: Size handling
@@ -651,8 +685,8 @@ export class Editor2D {
       this.canvas.style.cursor = "crosshair";
     }
 
-    // Keep the zoom readout in sync.
-    if (this.zoomEl) this.zoomEl.textContent = this.zoomPercent() + "%";
+    // Keep the zoom readout in sync (unless the user is typing a value).
+    if (this.zoomEl && !this.zoomEditing) this.zoomEl.textContent = this.zoomPercent() + "%";
   }
 
   activeOpening() {

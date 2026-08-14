@@ -315,8 +315,8 @@ document.getElementById("rotate-left").addEventListener("click", () => store.rot
 document.getElementById("rotate-right").addEventListener("click", () => store.rotatePlan(90));
 
 // Bottom-right zoom controls.
-document.getElementById("zoom-out").addEventListener("click", () => editor.zoomBy(1 / 1.25));
-document.getElementById("zoom-in").addEventListener("click", () => editor.zoomBy(1.25));
+document.getElementById("zoom-out").addEventListener("click", () => editor.zoomStep(-10));
+document.getElementById("zoom-in").addEventListener("click", () => editor.zoomStep(10));
 document.getElementById("zoom-100").addEventListener("click", () => editor.zoomTo(100));
 document.getElementById("zoom-200").addEventListener("click", () => editor.zoomTo(200));
 document.getElementById("zoom-fit").addEventListener("click", () => editor.fit());

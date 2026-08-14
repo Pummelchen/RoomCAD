@@ -949,6 +949,20 @@ body {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   user-select: none;
+  cursor: text;
+}
+
+#zoom-level input {
+  width: 52px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 #zoom-controls .zoom-divider {
