@@ -369,6 +369,34 @@ def main():
     check("a client going away is not logged as a server error",
           hasattr(server, "RoomCADServer") and "handle_error" in vars(server.RoomCADServer))
 
+    # A POST to an unknown path must not poison the connection it arrived on.
+    # Answering without reading the body leaves those bytes in the socket, so
+    # the NEXT request on the same keep-alive connection is parsed starting in
+    # the middle of the previous body and fails with 400. Caddy pools upstream
+    # connections, which is exactly where this bites in production.
+    import socket as _socket
+    sock = _socket.create_connection(("127.0.0.1", port))
+    sock.settimeout(4)
+    junk = json.dumps({"password": "testpass"}).encode()
+    sock.sendall(b"POST /api/nope HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                 + str(len(junk)).encode() + b"\r\n\r\n" + junk)
+    sock.sendall(b"GET /api/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    raw = b""
+    try:
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except _socket.timeout:
+        pass
+    sock.close()
+    text = raw.decode("latin1")
+    check("an unread POST body does not corrupt the next request on the connection",
+          "Bad request syntax" not in text, text[:200])
+    check("both requests on the connection get a response",
+          text.count("HTTP/1.1 ") >= 2, f"{text.count('HTTP/1.1 ')} responses")
+
     # Empty watcher sets are removed rather than accumulating per room name.
     reader.stop()
     reader2.stop()

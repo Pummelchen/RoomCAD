@@ -412,7 +412,42 @@ def expire_live_drafts():
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def _drain(self):
+        """Swallows an unread request body.
+
+        Every early return that answers without reading the body — an unknown
+        path, a throttled login, a rejected name — used to leave those bytes in
+        the socket. On a keep-alive connection the next request is then parsed
+        starting in the middle of the previous body, so a client that merely
+        POSTs to the wrong URL breaks its *following* request too. Oversized
+        bodies are not drained; the connection is closed instead of reading
+        megabytes only to discard them.
+        """
+        if getattr(self, "_body_done", False):
+            return
+        self._body_done = True
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.close_connection = True
+            return
+        if length <= 0:
+            return
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            return
+        try:
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except Exception:
+            self.close_connection = True
+
     def _send(self, obj, code=200):
+        self._drain()
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -483,7 +518,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "payload too large"}, 413)
             return None
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            raw = self.rfile.read(length)
+        except Exception:
+            self.close_connection = True
+            self._body_done = True
+            self._send({"error": "bad request"}, 400)
+            return None
+        self._body_done = True
+        try:
+            return json.loads(raw.decode("utf-8"))
         except Exception:
             self._send({"error": "bad request"}, 400)
             return None
@@ -608,6 +651,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"error": "wrong password"}, 401)
                 return
             note_login_success(client)
+            self._drain()
             token = secrets.token_urlsafe(32)
             create_session(token)
             self.send_response(200)

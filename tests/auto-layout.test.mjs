@@ -235,5 +235,126 @@ function areaOf(r) { return r.w * r.l; }
   check("the rest of the floor becomes public", walk > 80, `${walk}`);
 }
 
+// ── Generating inside a prepared template ────────────────────────────────
+//
+// The intended workflow is to draw a shell with a fixed core (stairs, a
+// bathroom) and a walkway, then let the generator fill what is left. That only
+// works if it leaves the drawn structure alone and treats the walkway as floor
+// to route around rather than floor to build on.
+{
+  // A 10 × 14 shell with a 1 m walkway down the left side and a small
+  // already-walled room in the bottom-left corner.
+  const room = P.freshRoom("Template", 10, 14, 2.6);
+  P.centerRoom(room);
+  const o = P.roomOrigin(room);
+  const mkWall = (ax, az, bx, bz) => ({
+    id: P.uid(), start: { x: o.x + ax, z: o.z + az }, end: { x: o.x + bx, z: o.z + bz },
+  });
+  const coreTop = mkWall(0, 11, 3, 11);
+  const coreRight = mkWall(3, 11, 3, 14);
+  room.walls = room.walls.concat([coreTop, coreRight]);
+  const coreDoor = { id: P.uid(), wallID: coreTop.id, offset: 1.0, width: 0.9, open: true, swingInside: true };
+  room.doors = [coreDoor];
+  const outerTop = room.walls[0];
+  const keptWindow = { id: P.uid(), wallID: outerTop.id, offset: 1.0, width: 1.2, open: true, swingInside: true };
+  room.windows = [keptWindow];
+  // Two strips meeting at a corner — the shape a real walkway actually takes.
+  const walkway = { id: P.uid(), x: o.x + 3, z: o.z, w: 1, l: 11 };
+  const walkwayArm = { id: P.uid(), x: o.x + 4, z: o.z + 10, w: 4, l: 1 };
+  room.publicAreas = [walkway, walkwayArm];
+
+  const before = room.walls.map(w => w.id);
+  const r = P.autoLayoutRooms(room, { count: 3, area: 12, windows: true, seed: 5 });
+  check("a template with a core and a walkway still lays out", !!r);
+
+  const ids = new Set(r.walls.map(w => w.id));
+  check("every wall the user drew survives generation",
+    before.every(id => ids.has(id)), `${before.filter(id => !ids.has(id)).length} lost`);
+  check("the door in the drawn core survives",
+    r.doors.some(d => d.id === coreDoor.id));
+  check("the window the user placed survives",
+    r.windows.some(w => w.id === keptWindow.id));
+  check("every opening points at a wall that exists",
+    r.doors.concat(r.windows).every(x => ids.has(x.wallID)));
+
+  // The walkway is floor, not a plot.
+  const hits = r.rooms.filter(rm => rectsOverlap(rm, walkway));
+  check("no generated room is built on the walkway", hits.length === 0, `${hits.length}`);
+
+  // Tracing each strip's outline as walls seals every strip into a box of its
+  // own, so the two arms of one walkway end up separated by a wall. Where a
+  // walkway meets a room the room's own wall already stands; where two strips
+  // meet there must be nothing.
+  const seamX = walkwayArm.x;
+  const seam = r.walls.filter(w =>
+    Math.abs(w.start.x - seamX) < 1e-6 && Math.abs(w.end.x - seamX) < 1e-6
+    && Math.min(w.start.z, w.end.z) < walkwayArm.z + walkwayArm.l - 1e-6
+    && Math.max(w.start.z, w.end.z) > walkwayArm.z + 1e-6);
+  check("the two arms of the walkway are not walled apart",
+    seam.length === 0, `${seam.length} walls across the join`);
+
+  const walkFloor = [walkway, walkwayArm];
+  const doorOnWalk = r.doors.some(d => {
+    const w = r.walls.find(x => x.id === d.wallID);
+    if (!w) return false;
+    const t = (d.offset + d.width / 2) / (P.wallLength(w) || 1);
+    const mx = w.start.x + (w.end.x - w.start.x) * t;
+    const mz = w.start.z + (w.end.z - w.start.z) * t;
+    // Just to either side of the door, is there walkway floor?
+    return walkFloor.some(a =>
+      mx > a.x - 0.2 && mx < a.x + a.w + 0.2 && mz > a.z - 0.2 && mz < a.z + a.l + 0.2);
+  });
+  check("at least one room opens onto the walkway", doorOnWalk);
+
+  // The already-walled corner is a room, not a plot to subdivide.
+  const inCore = r.rooms.filter(rm =>
+    rm.x < o.x + 3 - 1e-6 && rm.z > o.z + 11 + 1e-6);
+  check("the room already walled off is not re-partitioned", inCore.length === 0, `${inCore.length}`);
+
+  // Two walls a centimetre apart read as a clash in the editor.
+  const applied = P.parseRoom(JSON.stringify({
+    format: "com.maria.roomcad-v2.room", version: 1,
+    room: { ...room, walls: r.walls, doors: r.doors, windows: r.windows },
+  }));
+  check("generation leaves no overlapping walls",
+    P.overlappingWallAreas(applied).length === 0,
+    `${P.overlappingWallAreas(applied).length}`);
+
+  // A strip too narrow to walk down is dead floor, not circulation.
+  const narrow = r.corridors.filter(c => Math.min(c.w, c.l) < P.CORRIDOR_MIN_WIDTH - 1e-6);
+  check("no walk path is narrower than a person can use",
+    narrow.length === 0, `${narrow.map(c => Math.min(c.w, c.l)).join(", ")}`);
+}
+
+// Free space has to survive being cut up by scattered obstacles. Subtracting
+// them one after another slices full-width strips off every time, which turns
+// an open floor into slivers that only exist because of the order of the cuts.
+{
+  const layout = { x: 0, z: 0, w: 10, l: 10 };
+  const strips = [
+    { x: 0, z: 0, w: 1, l: 10 },   // a spine down one side
+    { x: 4, z: 8, w: 1, l: 2 },    // and two short stubs elsewhere
+    { x: 7, z: 8, w: 1, l: 2 },
+  ];
+  const free = P.freeRectangles(layout, strips);
+  const covered = free.reduce((s, f) => s + f.w * f.l, 0);
+  const blocked = 10 + 2 + 2;
+  check("free rectangles account for exactly the unblocked floor",
+    Math.abs(covered - (100 - blocked)) < 1e-6, `${covered}`);
+  for (let i = 0; i < free.length; i++) {
+    for (let j = i + 1; j < free.length; j++) {
+      check("free rectangles do not overlap each other", !rectsOverlap(free[i], free[j]));
+    }
+  }
+  for (const f of free) {
+    for (const s of strips) {
+      check("free rectangles never cover an obstacle", !rectsOverlap(f, s));
+    }
+  }
+  const biggest = Math.max(...free.map(f => f.w * f.l));
+  check("the open floor stays one big rectangle instead of shredding into slivers",
+    biggest >= 63, `biggest piece was ${biggest} m²`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

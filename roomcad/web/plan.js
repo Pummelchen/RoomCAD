@@ -1515,6 +1515,92 @@ export function sanitize(room) {
 
 // MARK: - Auto room layout
 
+function rectInRect(p, r) {
+  return p.x >= r.x - 0.01 && p.x <= r.x + r.w + 0.01
+    && p.z >= r.z - 0.01 && p.z <= r.z + r.l + 0.01;
+}
+
+/// The narrowest a walk path may be. Anything less is not circulation but a
+/// strip of dead floor, so it is given to the room beside it instead.
+export const CORRIDOR_MIN_WIDTH = 1.00;
+/// The shortest side a generated room may have.
+export const MIN_ROOM_DIM = 1.60;
+
+/// The free space inside `layout` as a handful of LARGE rectangles.
+///
+/// Subtracting each obstacle from the previous result in turn — which is what
+/// this used to do — cuts full-width and full-height slices every time, so a
+/// plan with a few narrow walkway strips gets shredded into slivers that are
+/// artefacts of the subtraction order rather than real geometry. On the saved
+/// template that turned 80 m² of floor into nineteen pieces, none wider than
+/// 145 cm, and the generator concluded there was nowhere to put a room.
+///
+/// Instead the layout is cut into the grid implied by every obstacle edge,
+/// free cells are marked, and neighbouring free cells are merged back into the
+/// biggest rectangles they will form.
+export function freeRectangles(layout, obstacles) {
+  const xs = new Set([clean(layout.x), clean(layout.x + layout.w)]);
+  const zs = new Set([clean(layout.z), clean(layout.z + layout.l)]);
+  for (const o of obstacles) {
+    for (const v of [o.x, o.x + o.w]) if (v > layout.x + 1e-9 && v < layout.x + layout.w - 1e-9) xs.add(clean(v));
+    for (const v of [o.z, o.z + o.l]) if (v > layout.z + 1e-9 && v < layout.z + layout.l - 1e-9) zs.add(clean(v));
+  }
+  const X = [...xs].sort((a, b) => a - b);
+  const Z = [...zs].sort((a, b) => a - b);
+  const nx = X.length - 1;
+  const nz = Z.length - 1;
+  if (nx < 1 || nz < 1) return [];
+
+  const free = [];
+  for (let i = 0; i < nx; i++) {
+    free.push([]);
+    for (let j = 0; j < nz; j++) {
+      const cx = (X[i] + X[i + 1]) / 2;
+      const cz = (Z[j] + Z[j + 1]) / 2;
+      free[i].push(!obstacles.some(o =>
+        cx > o.x && cx < o.x + o.w && cz > o.z && cz < o.z + o.l));
+    }
+  }
+
+  const used = free.map(col => col.map(() => false));
+  const spans = (i, j, zFirst) => {
+    // How far a rectangle rooted at this cell can grow, one axis then the other.
+    let i2 = i, j2 = j;
+    if (zFirst) {
+      while (j2 + 1 < nz && free[i][j2 + 1] && !used[i][j2 + 1]) j2++;
+      grow: while (i2 + 1 < nx) {
+        for (let k = j; k <= j2; k++) if (!free[i2 + 1][k] || used[i2 + 1][k]) break grow;
+        i2++;
+      }
+    } else {
+      while (i2 + 1 < nx && free[i2 + 1][j] && !used[i2 + 1][j]) i2++;
+      grow: while (j2 + 1 < nz) {
+        for (let k = i; k <= i2; k++) if (!free[k][j2 + 1] || used[k][j2 + 1]) break grow;
+        j2++;
+      }
+    }
+    return { i2, j2, area: (X[i2 + 1] - X[i]) * (Z[j2 + 1] - Z[j]) };
+  };
+
+  const out = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      if (!free[i][j] || used[i][j]) continue;
+      // Try growing each way round and keep the bigger rectangle.
+      const a = spans(i, j, true);
+      const b = spans(i, j, false);
+      const best = a.area >= b.area ? a : b;
+      for (let p = i; p <= best.i2; p++) for (let q = j; q <= best.j2; q++) used[p][q] = true;
+      out.push({
+        x: X[i], z: Z[j],
+        w: clean(X[best.i2 + 1] - X[i]),
+        l: clean(Z[best.j2 + 1] - Z[j]),
+      });
+    }
+  }
+  return out;
+}
+
 /// Deterministic PRNG so a seed always gives the same design, and a different
 /// seed gives a different (but still balanced) one for "redesign".
 function layoutRandom(seed) {
@@ -1526,33 +1612,6 @@ function layoutRandom(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-/// `a − b`: the up-to-four rectangles of `a` remaining after removing `b`.
-function rectSubtract(a, b) {
-  const ax2 = a.x + a.w, az2 = a.z + a.l;
-  const bx2 = b.x + b.w, bz2 = b.z + b.l;
-  const ox = Math.min(ax2, bx2) - Math.max(a.x, b.x);
-  const oz = Math.min(az2, bz2) - Math.max(a.z, b.z);
-  if (ox <= 0 || oz <= 0) return [a];
-  const out = [];
-  if (b.x > a.x) out.push({ x: a.x, z: a.z, w: b.x - a.x, l: a.l });
-  if (bx2 < ax2) out.push({ x: bx2, z: a.z, w: ax2 - bx2, l: a.l });
-  const x1 = Math.max(a.x, b.x), x2 = Math.min(ax2, bx2);
-  if (b.z > a.z) out.push({ x: x1, z: a.z, w: x2 - x1, l: b.z - a.z });
-  if (bz2 < az2) out.push({ x: x1, z: bz2, w: x2 - x1, l: az2 - bz2 });
-  return out.filter(r => r.w > 0.01 && r.l > 0.01);
-}
-
-function rectInRect(p, r) {
-  return p.x >= r.x - 0.01 && p.x <= r.x + r.w + 0.01
-    && p.z >= r.z - 0.01 && p.z <= r.z + r.l + 0.01;
-}
-
-// Circulation. A corridor narrower than this is not a usable walk path; wider
-// than the maximum it stops reading as a corridor and starts wasting floor.
-export const CORRIDOR_MIN_WIDTH = 1.00;
-/// The shortest side a generated room may have.
-export const MIN_ROOM_DIM = 1.60;
 
 /// Splits `total` into whole shares proportional to `weights`, summing exactly
 /// to `total` (largest-remainder). Plain rounding does not sum correctly, which
@@ -1592,12 +1651,22 @@ function splitBand(band, k, alongX, targetArea) {
   }
   const usedSpan = step * k;
   const spare = span - usedSpan;
-  const leftover = spare > 0.3
-    ? (alongX
+  if (spare <= 0) return { rooms, leftover: null };
+  if (spare < CORRIDOR_MIN_WIDTH) {
+    // Too narrow to walk down, so it is not circulation — it is a strip of dead
+    // floor walled off from everything. The last room takes it, which also puts
+    // that room nearer the area that was asked for.
+    const last = rooms[rooms.length - 1];
+    if (alongX) last.w = clean(last.w + spare);
+    else last.l = clean(last.l + spare);
+    return { rooms, leftover: null };
+  }
+  return {
+    rooms,
+    leftover: alongX
       ? { x: band.x + usedSpan, z: band.z, w: spare, l: band.l }
-      : { x: band.x, z: band.z + usedSpan, w: band.w, l: spare })
-    : null;
-  return { rooms, leftover };
+      : { x: band.x, z: band.z + usedSpan, w: band.w, l: spare },
+  };
 }
 
 /// Arranges `n` rooms inside one free rectangle, carving the circulation the
@@ -1768,13 +1837,48 @@ export function autoLayoutRooms(room, opts = {}) {
     }))
     .filter(a => a.w > 0.3 && a.l > 0.3);
 
-  let freeRects = [layout];
-  for (const p of publics) {
-    const next = [];
-    for (const r of freeRects) next.push(...rectSubtract(r, p));
-    freeRects = next;
-  }
-  freeRects = freeRects.filter(r => r.w >= MIN_ROOM_DIM && r.l >= MIN_ROOM_DIM);
+  // Walls the user drew stay. Only partitions a previous run of this generator
+  // added are torn down, so running Generate inside a prepared template keeps
+  // its stairwell, bathroom and windows instead of replacing the lot.
+  const keptWalls = (room.walls || []).filter(w => !w.generated);
+  const keptIDs = new Set(keptWalls.map(w => w.id));
+  const keptDoors = (room.doors || []).filter(d => !d.generated && keptIDs.has(d.wallID));
+  const keptWindows = (room.windows || []).filter(w => !w.generated && keptIDs.has(w.wallID));
+
+  // Anything already walled off small enough to be a room in its own right is
+  // treated as occupied — the generator fills what is left over, it does not
+  // re-partition rooms that already exist.
+  const subdivideFloor = (Number(opts.area) > 0 ? Number(opts.area) : 8) * 2;
+  let built = [];
+  try {
+    built = detectRooms({ ...room, walls: keptWalls, publicAreas: [] })
+      .filter(r => r.area > 0 && r.area < subdivideFloor)
+      .map(r => ({
+        x: r.bounds.minX, z: r.bounds.minZ,
+        w: clean(r.bounds.maxX - r.bounds.minX),
+        l: clean(r.bounds.maxZ - r.bounds.minZ),
+      }));
+  } catch { built = []; }
+
+  // A walkway drawn flush against the shell sits a centimetre or two off the
+  // wall's centre line — inside the wall, not beside it. Left alone that gap
+  // becomes a sliver of "free" floor, and the room that borders it gets a wall
+  // a centimetre from the shell wall. Growing the obstacle onto the boundary
+  // removes the sliver; it can only ever shrink the free space, never widen it
+  // into floor something else is using.
+  const toEdge = r => {
+    let { x, z, w, l } = r;
+    const x2 = x + w, z2 = z + l;
+    const lx = layout.x, lz = layout.z, lx2 = layout.x + layout.w, lz2 = layout.z + layout.l;
+    if (x > lx && x - lx <= WALL_THICKNESS) { w += x - lx; x = lx; }
+    if (z > lz && z - lz <= WALL_THICKNESS) { l += z - lz; z = lz; }
+    if (x2 < lx2 && lx2 - x2 <= WALL_THICKNESS) w += lx2 - x2;
+    if (z2 < lz2 && lz2 - z2 <= WALL_THICKNESS) l += lz2 - z2;
+    return { x, z, w: clean(w), l: clean(l) };
+  };
+  const blocked = [...publics, ...built].map(toEdge);
+  const freeRects = freeRectangles(layout, blocked)
+    .filter(r => r.w >= MIN_ROOM_DIM && r.l >= MIN_ROOM_DIM);
   if (freeRects.length === 0) return null;
 
   const freeArea = freeRects.reduce((s, r) => s + r.w * r.l, 0);
@@ -1806,8 +1910,10 @@ export function autoLayoutRooms(room, opts = {}) {
       if (share[i] <= 0) continue;
       const got = arrangeRect(freeRects[i], share[i], targetArea, rng);
       if (!got) continue;
-      rooms.push(...got.rooms);
-      corridors.push(...got.corridors);
+      // Remember which free rectangle each piece came out of, so snapping can
+      // be held inside it.
+      for (const r of got.rooms) rooms.push({ ...r, src: i });
+      for (const c of got.corridors) corridors.push({ ...c, src: i });
     }
     if (rooms.length === 0) continue;
     const score = scoreArrangement(rooms, corridors, targetArea, freeArea);
@@ -1833,17 +1939,28 @@ export function autoLayoutRooms(room, opts = {}) {
   // independently lets two neighbours disagree about the boundary they share —
   // one ends at 6.70 while the next starts at 6.65 — which produces rooms that
   // overlap by a few centimetres (and elsewhere, hairline gaps).
-  const snapV = v => clean(Math.round(v / 0.05) * 0.05);
+  //
+  // Snapping also has to stay INSIDE the free rectangle the piece came from.
+  // Rounding outwards by half a grid step is enough to push a room across the
+  // edge of a walkway the user drew, which then reads as a wall standing in the
+  // middle of the corridor.
+  const step = (GRID_STEPS[room.grid] || GRID_STEPS.fiveCentimeters).meters;
+  const snapV = v => clean(Math.round(v / step) * step);
   const snap = r => {
-    const x0 = snapV(r.x);
-    const z0 = snapV(r.z);
-    const x1 = snapV(r.x + r.w);
-    const z1 = snapV(r.z + r.l);
+    const box = freeRects[r.src] || layout;
+    const lo = (v, min, max) => clamp(snapV(v), min, max);
+    const x0 = lo(r.x, box.x, box.x + box.w);
+    const z0 = lo(r.z, box.z, box.z + box.l);
+    const x1 = lo(r.x + r.w, box.x, box.x + box.w);
+    const z1 = lo(r.z + r.l, box.z, box.z + box.l);
     return { x: x0, z: z0, w: clean(x1 - x0), l: clean(z1 - z0) };
   };
   const rooms = best.rooms.map(snap).filter(r => r.w > 0.05 && r.l > 0.05);
   const corridors = best.corridors.map(snap).filter(r => r.w > 0.05 && r.l > 0.05);
-  const snapPublics = publics.map(snap);
+  const snapPublics = publics.map(a => {
+    const x0 = snapV(a.x), z0 = snapV(a.z);
+    return { x: x0, z: z0, w: clean(snapV(a.x + a.w) - x0), l: clean(snapV(a.z + a.l) - z0) };
+  });
   // Circulation the doors may open onto: what the user marked, plus what this
   // run carved.
   const circulation = [...snapPublics, ...corridors];
@@ -1853,10 +1970,16 @@ export function autoLayoutRooms(room, opts = {}) {
     return p1 < p2 ? `${p1}|${p2}` : `${p2}|${p1}`;
   };
   const wallByKey = new Map();
+  // Seed with the surviving walls so an edge the layout shares with one of them
+  // resolves to that wall — its doors and windows stay attached.
+  for (const w of keptWalls) {
+    const k = key(w.start.x, w.start.z, w.end.x, w.end.z);
+    if (!wallByKey.has(k)) wallByKey.set(k, w);
+  }
   const addEdge = (ax, az, bx, bz) => {
     const k = key(ax, az, bx, bz);
     if (wallByKey.has(k)) return wallByKey.get(k);
-    const wall = { id: uid(), start: point(clean(ax), clean(az)), end: point(clean(bx), clean(bz)) };
+    const wall = { id: uid(), start: point(clean(ax), clean(az)), end: point(clean(bx), clean(bz)), generated: true };
     wallByKey.set(k, wall);
     return wall;
   };
@@ -1871,7 +1994,12 @@ export function autoLayoutRooms(room, opts = {}) {
   addEdge(layout.x + layout.w, layout.z, layout.x + layout.w, layout.z + layout.l);
   addEdge(layout.x + layout.w, layout.z + layout.l, layout.x, layout.z + layout.l);
   addEdge(layout.x, layout.z + layout.l, layout.x, layout.z);
-  for (const p of snapPublics) for (const e of edgeOf(p)) addEdge(e.a.x, e.a.z, e.b.x, e.b.z);
+  // Walkways are NOT traced with walls of their own. Where a walkway meets a
+  // room, that room's wall already stands between them (with the room's door in
+  // it); where it meets the outside, the shell wall is there. Tracing the
+  // outline as well seals each strip into a box of its own — on a plan whose
+  // walkway is a connected route, that chops the route into separate cells and
+  // leaves stray walls a centimetre inside the shell.
   for (const r of rooms) for (const e of edgeOf(r)) addEdge(e.a.x, e.a.z, e.b.x, e.b.z);
 
   const neighbor = (r, e) => {
@@ -1891,7 +2019,7 @@ export function autoLayoutRooms(room, opts = {}) {
     if (len < width + 0.2) return null;
     const mid = { x: (e.a.x + e.b.x) / 2, z: (e.a.z + e.b.z) / 2 };
     const offset = clamp(clean(wallProjection(wall, mid).offset - width / 2), 0.10, len - width - 0.10);
-    return { id: uid(), wallID: wall.id, offset, width, open: true, swingInside: true };
+    return { id: uid(), wallID: wall.id, offset, width, open: true, swingInside: true, generated: true };
   };
 
   const doors = [];
@@ -1921,11 +2049,59 @@ export function autoLayoutRooms(room, opts = {}) {
     }
   }
 
+  // A generated partition that lies on top of a wall the user already drew is
+  // redundant — and would show as an overlap clash in the editor.
+  const covers = (host, w) => {
+    const hv = Math.abs(host.start.x - host.end.x) < 1e-6;
+    const wv = Math.abs(w.start.x - w.end.x) < 1e-6;
+    if (hv !== wv) return false;
+    const axis = hv ? "x" : "z";
+    const along = hv ? "z" : "x";
+    if (Math.abs(host.start[axis] - w.start[axis]) > 1e-6) return false;
+    const lo = Math.min(host.start[along], host.end[along]) - 1e-6;
+    const hi = Math.max(host.start[along], host.end[along]) + 1e-6;
+    return Math.min(w.start[along], w.end[along]) >= lo
+      && Math.max(w.start[along], w.end[along]) <= hi;
+  };
+  // Rooms along an outer wall each emit their own slice of it. Those slices sit
+  // on top of the wall the user drew, so they are folded into it and anything
+  // hung on them moves across — otherwise the plan carries doubled walls (which
+  // the editor rightly flags as clashes) and openings pointing at walls that
+  // are gone.
+  const sourceByID = new Map([...wallByKey.values()].map(w => [w.id, w]));
+  const host = new Map();
+  const walls = [];
+  for (const w of wallByKey.values()) {
+    const over = w.generated ? keptWalls.find(k => covers(k, w)) : null;
+    if (over) host.set(w.id, over);
+    else walls.push(w);
+  }
+  const rehome = o => {
+    const target = host.get(o.wallID);
+    if (!target) return o;
+    const src = sourceByID.get(o.wallID);
+    if (!src) return null;
+    const len = wallLength(src) || 1;
+    const t = (o.offset + o.width / 2) / len;
+    const mid = {
+      x: src.start.x + (src.end.x - src.start.x) * t,
+      z: src.start.z + (src.end.z - src.start.z) * t,
+    };
+    const hostLen = wallLength(target);
+    const lo = 0.10;
+    const hi = hostLen - o.width - 0.10;
+    if (hi < lo) return null;
+    return { ...o, wallID: target.id, offset: clamp(clean(wallProjection(target, mid).offset - o.width / 2), lo, hi) };
+  };
+
+  const keptWallIDs = new Set(walls.map(w => w.id));
   const areas = rooms.map(r => r.w * r.l);
   return {
-    walls: [...wallByKey.values()],
-    doors,
-    windows: winList,
+    walls,
+    doors: [...keptDoors, ...doors.map(rehome).filter(Boolean)]
+      .filter(d => keptWallIDs.has(d.wallID)),
+    windows: [...keptWindows, ...winList.map(rehome).filter(Boolean)]
+      .filter(w => keptWallIDs.has(w.wallID)),
     rooms,
     corridors,
     areaPerRoom: clean(areas.reduce((a, b) => a + b, 0) / areas.length),
