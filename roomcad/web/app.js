@@ -4,6 +4,7 @@ import * as P from "./plan.js";
 import { store, TOOL_HELP } from "./store.js";
 import { Editor2D } from "./editor2d.js";
 import { Walk3D } from "./walk3d.js";
+import { APP_VERSION } from "./version.js";
 
 // A per-tab identity so a client can ignore its own live-update echo.
 const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
@@ -20,12 +21,15 @@ const fileInput = document.getElementById("file-input");
 const undoButton = document.getElementById("undo");
 const redoButton = document.getElementById("redo");
 const liveButton = document.getElementById("live-room");
+const appVersion = document.getElementById("app-version");
 const main = document.getElementById("main");
 const leftSidebarResizer = document.getElementById("left-sidebar-resizer");
 const rightSidebarResizer = document.getElementById("right-sidebar-resizer");
 
 const editor = new Editor2D(planCanvas);
 let walk3d = null;
+
+appVersion.textContent = "v" + APP_VERSION;
 
 // MARK: - Helpers
 
@@ -1021,10 +1025,8 @@ function toggleLive() {
 
 // MARK: - Server status (presence + latency), polled every 10 s
 
-const versionBadge = document.getElementById("app-version");
-
 function updateVersionBadge() {
-  let html = "v2.0";
+  let html = "v" + APP_VERSION;
   if (store.serverLatency != null) {
     const ms = store.serverLatency;
     const cls = ms < 150 ? "lat-green" : ms < 400 ? "lat-orange" : "lat-red";
@@ -1032,7 +1034,7 @@ function updateVersionBadge() {
   } else if (store.serverOffline) {
     html += ` · <span class="latency-dot lat-red"></span> offline`;
   }
-  versionBadge.innerHTML = html;
+  appVersion.innerHTML = html;
 }
 
 async function pollStatus() {

@@ -52,6 +52,10 @@ The 3D view uses Three.js **WebGPU (`REVISION = "186dev"`)**, vendored under
 Physics is Rapier (WASM). There is no build step — the app is plain ES modules
 loaded via an import map.
 
+The current visible release is defined once in
+[`roomcad/web/version.js`](roomcad/web/version.js). Increment it for every
+deployed user-facing fix so the footer always identifies the running release.
+
 ## Documentation
 
 Everything else lives in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
