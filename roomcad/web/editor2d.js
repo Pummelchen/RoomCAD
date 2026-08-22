@@ -15,6 +15,9 @@ const DIM_TICK_PX = 4;
 // Room area captions.
 const CAPTION_PX = 12;
 const CAPTION_COLOR = "rgba(226, 236, 248, 0.78)";
+// Where two walls sit on top of each other.
+const CLASH_FILL = "rgba(255, 214, 0, 0.42)";
+const CLASH_EDGE = "#ffd600";
 
 export class Editor2D {
   constructor(canvas) {
@@ -39,9 +42,28 @@ export class Editor2D {
     this.zoomEditing = false;
     if (this.zoomEl) this.zoomEl.addEventListener("dblclick", () => this.beginZoomEdit());
 
+    this.lastTool = store.tool;
+
     this.attachEvents();
     this.observeSize();
-    store.onChange(() => this.requestDraw());
+    store.onChange(() => {
+      // A measurement is about the question you just asked. Switching tool is
+      // asking a different one, so the line goes rather than lingering over
+      // whatever you do next.
+      if (store.tool !== this.lastTool) {
+        this.lastTool = store.tool;
+        if (store.tool !== "measure") this.clearMeasurement();
+      }
+      this.requestDraw();
+    });
+  }
+
+  /// Drops the measurement line and its readout.
+  clearMeasurement() {
+    if (!this.measureDrag && !this.measureResult) return;
+    this.measureDrag = null;
+    this.measureResult = null;
+    this.requestDraw();
   }
 
   // MARK: Coordinate helpers
@@ -408,11 +430,21 @@ export class Editor2D {
     }
 
     const p = this.plan(c);
+    // Clicking anything at all — selecting, drawing, erasing — answers a new
+    // question, so the previous measurement stops being relevant.
+    if (store.tool !== "measure") this.clearMeasurement();
     switch (store.tool) {
       case "select":
         this.drag = this.beginSelectDrag(p);
         break;
       case "wall": {
+        if (!P.canStartWallAt(store.room, p)) {
+          // Out in the empty grid a new wall would stand alone, joined to
+          // nothing. Hold and drag to pan the view instead; a plain click
+          // falls back to Select, which is what was almost certainly meant.
+          this.drag = { type: "wallOutside" };
+          break;
+        }
         const anchor = P.snapPoint(store.room, p);
         this.drag = { type: "drawWall", anchor, current: anchor };
         break;
@@ -560,7 +592,8 @@ export class Editor2D {
 
     // Left-click-and-hold on empty space pans the view: once the pointer has
     // actually moved, a pending "click" becomes a pan (Wall keeps drawing).
-    if (this.drag && this.drag.type === "click" && this.pointerMoved) {
+    if (this.drag && (this.drag.type === "click" || this.drag.type === "wallOutside")
+      && this.pointerMoved) {
       this.drag = { type: "pan" };
     }
 
@@ -656,6 +689,11 @@ export class Editor2D {
             store.select(p);
             break;
         }
+        break;
+      case "wallOutside":
+        store.chooseTool("select");
+        store.status = "Start walls on the building — drag out here to move the view";
+        store.emit();
         break;
       case "drawWall":
         if (P.distance(drag.anchor, drag.current) >= P.MIN_WALL_LENGTH) {
@@ -853,7 +891,7 @@ export class Editor2D {
       this.drawFurnitureGhost(store.pendingFurnitureKind, this.hover);
     }
 
-    if (store.tool === "wall" && this.hover) {
+    if (store.tool === "wall" && this.hover && P.canStartWallAt(room, this.hover)) {
       this.drawSnapDot(P.snapPoint(room, this.hover));
     }
 
@@ -866,6 +904,7 @@ export class Editor2D {
         size: P.LABEL_DEFAULT_SIZE }, false);
     }
 
+    this.drawWallClashes(room);
     this.drawRoomCaptions(room);
 
     // Permanent CAD dimensions, then the grab handles on top of everything.
@@ -1169,6 +1208,27 @@ export class Editor2D {
       .map(l => `${l.center.x},${l.center.z},${l.size},${(l.text || "").length}`).join(";");
     const publics = (room.publicAreas || []).map(a => `${a.x},${a.z},${a.w},${a.l}`).join(";");
     return `${walls}|${doors}|${furniture}|${labels}|${publics}`;
+  }
+
+  /// Paints the stretch where two walls lie on top of each other. Nothing is
+  /// blocked or moved — the point is only to make a mistake that is otherwise
+  /// invisible (one wall hidden exactly under another) obvious enough to fix.
+  drawWallClashes(room) {
+    const clashes = P.overlappingWallAreas(room);
+    if (clashes.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    for (const c of clashes) {
+      const r = this.rect({ minX: c.x, maxX: c.x + c.w, minZ: c.z, maxZ: c.z + c.l });
+      ctx.fillStyle = CLASH_FILL;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = CLASH_EDGE;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, Math.max(r.w - 1, 0), Math.max(r.h - 1, 0));
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
   }
 
   drawGrid(room) {

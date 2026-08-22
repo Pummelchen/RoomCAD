@@ -351,5 +351,85 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     new Set(room.publicAreas.map(a => a.id)).size === 5);
 }
 
+// ── A wall may not be started out in the empty grid ────────────────────
+// A wall begun far from the building joins nothing and encloses nothing; it is
+// a misclick, not a plan.
+{
+  const room = P.freshRoom("T", 6, 4, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  P.sanitize(room);
+
+  check("a wall can start inside the building", P.canStartWallAt(room, { x: 3, z: 2 }));
+  check("a wall can start on a corner", P.canStartWallAt(room, { x: 0, z: 0 }));
+  check("a wall can start just outside a wall, to extend it",
+    P.canStartWallAt(room, { x: 6.3, z: 2 }));
+  check("a wall cannot start out in the empty grid",
+    !P.canStartWallAt(room, { x: 15, z: 15 }));
+  check("nor just beyond the reach of the building",
+    !P.canStartWallAt(room, { x: 6.9, z: 2 }));
+
+  // The very first wall has nothing to join, so it may start anywhere.
+  const empty = P.freshRoom("E", 6, 4, 2.6);
+  empty.walls = [];
+  check("the first wall of an empty plan can start anywhere",
+    P.canStartWallAt(empty, { x: 15, z: 15 }));
+
+  const bounds = P.wallsBounds(room);
+  check("wall bounds cover the drawn walls",
+    bounds && bounds.minX === 0 && Math.abs(bounds.maxX - 6) < 0.001);
+  check("an empty plan has no wall bounds", P.wallsBounds(empty) === null);
+}
+
+// ── Overlapping walls are reported ─────────────────────────────────────
+{
+  const room = P.freshRoom("O", 6, 4, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  P.sanitize(room);
+
+  // The corners of an ordinary room are shared by design. Reporting them would
+  // paint every corner of every plan as a fault.
+  check("a plain rectangle of walls reports no overlap",
+    P.overlappingWallAreas(room).length === 0);
+
+  room.walls.push({ id: "dup", start: P.point(1, 0), end: P.point(4, 0) });
+  const doubled = P.overlappingWallAreas(room);
+  check("a wall drawn on top of another is reported", doubled.length === 1, `${doubled.length}`);
+  check("the reported area is the stretch they share",
+    Math.abs(doubled[0].w - 3) < 0.001 && Math.abs(doubled[0].l - P.WALL_THICKNESS) < 0.001,
+    JSON.stringify(doubled[0]));
+  check("the report names both walls involved",
+    doubled[0].walls.length === 2 && doubled[0].walls.includes("dup"));
+
+  // A wall crossing another at a right angle is a junction, not a fault.
+  room.walls.push({ id: "cross", start: P.point(3, 0), end: P.point(3, 4) });
+  check("a wall crossing at 90° is still not reported",
+    P.overlappingWallAreas(room).length === 1,
+    String(P.overlappingWallAreas(room).length));
+
+  // Near-parallel counts too: a wall a few centimetres off still doubles up.
+  const near = P.freshRoom("N", 6, 4, 2.6);
+  near.origin = { x: 0, z: 0 };
+  near.canvas = { width: 25, length: 25 };
+  near.walls = [
+    { id: "a", start: P.point(0, 0), end: P.point(6, 0) },
+    { id: "b", start: P.point(0, 0.03), end: P.point(6, 0.03) },
+  ];
+  check("a parallel wall a few centimetres off is reported",
+    P.overlappingWallAreas(near).length === 1);
+
+  // Walls that merely meet end to end are a continuation, not an overlap.
+  const chain = P.freshRoom("C", 6, 4, 2.6);
+  chain.origin = { x: 0, z: 0 };
+  chain.canvas = { width: 25, length: 25 };
+  chain.walls = [
+    { id: "a", start: P.point(0, 0), end: P.point(3, 0) },
+    { id: "b", start: P.point(3, 0), end: P.point(6, 0) },
+  ];
+  check("walls meeting end to end are not an overlap",
+    P.overlappingWallAreas(chain).length === 0);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

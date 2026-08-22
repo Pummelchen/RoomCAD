@@ -11,7 +11,9 @@ architectural or building-code tool.
 ## What it can do
 
 - **Draw walls** on a 1 / 2 / 5 cm grid (90° only). Ends lock onto any wall
-  they meet, so rooms close cleanly instead of overshooting or stopping short.
+  they meet, so rooms close cleanly instead of overshooting or stopping short,
+  walls can only start on the building, and any stretch where two walls double
+  up is marked yellow.
 - **Read every size at a glance** — walls, doors and windows carry permanent
   CAD-style dimension lines, every enclosed room shows its m² in the emptiest
   part of its floor, and there is a measure tool for anything else.

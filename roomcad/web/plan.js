@@ -351,6 +351,93 @@ export function translateWall(w, dx, dz, width, length) {
   };
 }
 
+/// The rectangle the drawn walls occupy, or null when nothing is drawn yet.
+export function wallsBounds(room) {
+  const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
+  if (walls.length === 0) return null;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const w of walls) {
+    minX = Math.min(minX, w.start.x, w.end.x);
+    maxX = Math.max(maxX, w.start.x, w.end.x);
+    minZ = Math.min(minZ, w.start.z, w.end.z);
+    maxZ = Math.max(maxZ, w.start.z, w.end.z);
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+/// Whether a new wall may START at `p`.
+///
+/// A wall begun out in the empty grid stands alone: it belongs to no room, it
+/// encloses nothing, and it is almost always a misclick rather than an
+/// intention. So a wall may only start where it will be part of the building —
+/// on or beside an existing wall, or inside the footprint the walls already
+/// enclose — with the obvious exception of the very first wall, when there is
+/// nothing to be part of yet.
+export function canStartWallAt(room, p, margin = 0.6) {
+  const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
+  if (walls.length === 0) return true;
+  if (wallAttachPoint(room, p, Math.max(WALL_ATTACH_TOLERANCE, margin))) return true;
+  const b = wallsBounds(room);
+  if (!b) return true;
+  return p.x >= b.minX - margin && p.x <= b.maxX + margin
+    && p.z >= b.minZ - margin && p.z <= b.maxZ + margin;
+}
+
+/// Where two walls lie on top of each other.
+///
+/// Only walls running the SAME way are reported. Two walls meeting at a right
+/// angle share a corner by design — that is how a room is built, and flagging
+/// it would make every corner in the plan look like a fault. Two parallel walls
+/// whose bodies overlap along their length are the accident: a wall drawn twice,
+/// or dragged onto its neighbour.
+export function overlappingWallAreas(room) {
+  const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
+  const half = WALL_THICKNESS / 2;
+  const minOverlap = 0.02;
+  const out = [];
+  const axisOf = w => {
+    if (Math.abs(w.start.z - w.end.z) < 0.001) return "x";
+    if (Math.abs(w.start.x - w.end.x) < 0.001) return "z";
+    return null;
+  };
+  for (let i = 0; i < walls.length; i++) {
+    for (let j = i + 1; j < walls.length; j++) {
+      const a = walls[i];
+      const b = walls[j];
+      const axis = axisOf(a);
+      if (!axis || axisOf(b) !== axis) continue;
+
+      if (axis === "x") {
+        // Bodies have to overlap across the wall as well as along it.
+        const across = Math.min(a.start.z + half, b.start.z + half)
+          - Math.max(a.start.z - half, b.start.z - half);
+        if (across <= 0.0001) continue;
+        const from = Math.max(Math.min(a.start.x, a.end.x), Math.min(b.start.x, b.end.x));
+        const to = Math.min(Math.max(a.start.x, a.end.x), Math.max(b.start.x, b.end.x));
+        if (to - from < minOverlap) continue;
+        out.push({
+          x: clean(from), w: clean(to - from),
+          z: clean(Math.max(a.start.z - half, b.start.z - half)), l: clean(across),
+          walls: [a.id, b.id],
+        });
+      } else {
+        const across = Math.min(a.start.x + half, b.start.x + half)
+          - Math.max(a.start.x - half, b.start.x - half);
+        if (across <= 0.0001) continue;
+        const from = Math.max(Math.min(a.start.z, a.end.z), Math.min(b.start.z, b.end.z));
+        const to = Math.min(Math.max(a.start.z, a.end.z), Math.max(b.start.z, b.end.z));
+        if (to - from < minOverlap) continue;
+        out.push({
+          x: clean(Math.max(a.start.x - half, b.start.x - half)), w: clean(across),
+          z: clean(from), l: clean(to - from),
+          walls: [a.id, b.id],
+        });
+      }
+    }
+  }
+  return out;
+}
+
 // MARK: - Hit testing
 
 export function wallNear(room, p, tolerance = 0.18) {
