@@ -122,10 +122,10 @@ logins are disabled (fail-closed).
 
 ## Deploying
 
-Run `./deploy.sh` from this directory (uses your SSH key). It packages the web
-app + API, uploads them to the VPS, installs the service/Caddy/nginx config,
-and restarts the services. It never touches `rooms.db` or `roomcad.env`, so live
-data and the password are preserved.
+Run `./deploy.sh` from this directory (uses your SSH key). It synchronizes the
+web app with deletion enabled, uploads the API, installs the
+service/Caddy/nginx config, and restarts the services. It never touches
+`rooms.db` or `roomcad.env`, so live data and the password are preserved.
 
 ## HTTP/3 (QUIC)
 

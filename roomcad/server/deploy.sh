@@ -11,21 +11,17 @@ SERVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOMCAD_DIR="$(cd "$SERVER_DIR/.." && pwd)"
 WEB_DIR="$ROOMCAD_DIR/web"
 REMOTE_ROOT="/var/roomcad"
-TMP_TAR="/tmp/roomcad-deploy.tar.gz"
+echo "Synchronizing web/ and server.py to $HOST …"
+# --delete makes source removals real on the VPS too. The excluded development
+# helpers are deliberately preserved if a host has them.
+rsync -az --delete --exclude='bin' --exclude='photos' "$WEB_DIR/" "$HOST:$REMOTE_ROOT/web/"
+scp "$SERVER_DIR/server.py" "$HOST:$REMOTE_ROOT/server.py"
 
-echo "Packaging web/ and server.py …"
-tar czf "$TMP_TAR" --exclude='web/bin' --exclude='web/photos' -C "$ROOMCAD_DIR" web -C "$SERVER_DIR" server.py
-
-echo "Uploading to $HOST …"
-scp "$TMP_TAR" "$HOST:$TMP_TAR"
-
-echo "Extracting into $REMOTE_ROOT …"
-ssh "$HOST" "tar xzf '$TMP_TAR' -C '$REMOTE_ROOT' && \
-  chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
+echo "Setting deployed file permissions …"
+ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
   chmod -R u+rwX,go+rX '$REMOTE_ROOT/web' && \
   chmod 755 '$REMOTE_ROOT/server.py' && \
-  find '$REMOTE_ROOT/web' -name '._*' -delete && \
-  rm -f '$TMP_TAR'"
+  find '$REMOTE_ROOT/web' -name '._*' -delete"
 
 echo "Installing systemd unit, Caddyfile and nginx site …"
 scp "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
@@ -48,5 +44,4 @@ if ! ssh "$HOST" "test -f /var/roomcad/roomcad.env"; then
   echo "WARNING: /var/roomcad/roomcad.env is missing — logins are disabled until you create it with ROOMCAD_PASSWORD=… (see README)."
 fi
 
-rm -f "$TMP_TAR"
 echo "Deployed. roomcad, caddy and nginx are restarted."
