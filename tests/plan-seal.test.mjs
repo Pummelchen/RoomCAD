@@ -157,6 +157,7 @@ function check(name, cond, detail = "") {
   const doorSeal = constant("CLOSED_DOOR_SEAL");
   const mapSize = constant("POINT_SHADOW_MAP_SIZE");
   const bias = constant("POINT_SHADOW_BIAS");
+  const sunNormalBias = constant("SUN_SHADOW_NORMAL_BIAS");
 
   check("renderer: wall bands overlap by at least 4 cm", verticalSeal >= 0.04);
   check("renderer: wall ends overlap", endSeal > 0 && endSeal < WALL_THICKNESS);
@@ -169,6 +170,7 @@ function check(name, cond, detail = "") {
   check("renderer: point shadows use a 2048 map", mapSize >= 2048);
   check("renderer: point shadow has a small negative depth bias", bias < 0 && Math.abs(bias) <= 0.002);
   check("renderer: point shadow normal bias is disabled", walkSrc.includes("pl.shadow.normalBias = 0;"));
+  check("renderer: sunlight does not detach from wall edges", sunNormalBias >= 0 && sunNormalBias <= 0.002);
 }
 
 function coverLength(spans, length) {

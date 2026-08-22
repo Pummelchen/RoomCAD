@@ -51,6 +51,7 @@ const WALL_END_SEAL = 0.025;
 const CLOSED_DOOR_SEAL = 0.02;
 const POINT_SHADOW_MAP_SIZE = 2048;
 const POINT_SHADOW_BIAS = -0.0015;
+const SUN_SHADOW_NORMAL_BIAS = 0.002;
 
 // Singapore solar position. In the 2D editor the top of the plan is North (0°),
 // so azimuth is measured clockwise from North: 0=N, 90=E, 180=S, 270=W.
@@ -303,7 +304,10 @@ export class Walk3D {
     sun.shadow.camera.top = extent;
     sun.shadow.camera.bottom = -extent;
     sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.03;
+    // Keep the sunlight shadow receiver essentially on the surface. A large
+    // normal bias makes daylight visibly detach from wall, floor and ceiling
+    // edges, which reads as light leaking through a closed room.
+    sun.shadow.normalBias = SUN_SHADOW_NORMAL_BIAS;
     const sunTarget = new THREE.Object3D();
     sunTarget.position.set(canvas.width / 2, 0, canvas.length / 2);
     scene.add(sunTarget);
