@@ -837,6 +837,24 @@ export function sanitize(room) {
   room.origin.x = clamp(room.origin.x, 0, canvas.width);
   room.origin.z = clamp(room.origin.z, 0, canvas.length);
 
+  // Identity first. Everything downstream — an opening finding its wall, a
+  // dimension line finding its opening, a grab handle finding what it drags —
+  // looks objects up by id. A document that reaches us without them (an older
+  // export, a hand-edited file) would otherwise have every id-less object
+  // resolve to the *first* one, so two doors would draw one dimension on top
+  // of each other and the second would get none.
+  room.walls = room.walls.map(w => (w.id ? w : { ...w, id: uid() }));
+  const firstWallID = room.walls.length ? room.walls[0].id : null;
+  const withOpeningID = o => {
+    const next = o.id ? o : { ...o, id: uid() };
+    // Preserve what a document without wallIDs used to resolve to, rather than
+    // silently dropping its openings now that wall ids are always distinct.
+    return next.wallID === undefined ? { ...next, wallID: firstWallID } : next;
+  };
+  room.doors = room.doors.map(withOpeningID);
+  room.windows = room.windows.map(withOpeningID);
+  room.furniture = room.furniture.map(f => (f.id ? f : { ...f, id: uid() }));
+
   room.walls = room.walls
     .filter(w => wallLength(w) >= 0.15)
     .map(w => ({

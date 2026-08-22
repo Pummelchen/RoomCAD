@@ -146,5 +146,68 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
       .publicAreas.every(a => !!a.id));
 }
 
+// ── Existing designs pick up the new indicators on load ────────────────
+// Dimensions and handles are derived from the model at render time, never
+// stored, so any saved design gets them the moment it opens. What has to hold
+// is that every element RESOLVES — an id-less object used to resolve to the
+// first one of its kind, which drew two dimensions on top of each other and
+// left the second element with none.
+{
+  const legacy = {
+    format: P.ROOM_FILE_FORMAT,
+    version: 1,
+    room: {
+      name: "Legacy", width: 6, length: 4, height: 2.6, grid: "fiveCentimeters",
+      // No canvas, no origin, no publicAreas, no labels — and no ids anywhere.
+      walls: [
+        { start: { x: 0, z: 0 }, end: { x: 6, z: 0 } },
+        { start: { x: 6, z: 0 }, end: { x: 6, z: 4 } },
+        { start: { x: 6, z: 4 }, end: { x: 0, z: 4 } },
+        { start: { x: 0, z: 4 }, end: { x: 0, z: 0 } },
+      ],
+      doors: [], windows: [], furniture: [],
+    },
+  };
+  const room = P.parseRoom(JSON.stringify(legacy));
+  check("a document with no ids still loads", room.walls.length === 4);
+  check("walls are given distinct ids on load",
+    new Set(room.walls.map(w => w.id)).size === 4);
+  check("a document with no canvas or origin gets both",
+    !!room.canvas && !!room.origin);
+  check("a document with no public areas or labels gets empty lists",
+    Array.isArray(room.publicAreas) && Array.isArray(room.labels));
+
+  // Two openings on the same wall, neither carrying an id.
+  const wall = room.walls[0];
+  room.doors = [
+    { wallID: wall.id, offset: 0.5, width: 0.9, open: true, swingInside: true },
+    { wallID: wall.id, offset: 3.0, width: 0.8, open: true, swingInside: true },
+  ];
+  room.windows = [{ wallID: room.walls[1].id, offset: 1.0, width: 1.2 }];
+  P.sanitize(room);
+
+  check("openings are given distinct ids on load",
+    new Set(room.doors.map(d => d.id)).size === 2 && !!room.windows[0].id);
+
+  // Each opening must resolve to ITS OWN position, not the first one's.
+  const offsets = room.doors.map(d => {
+    const ends = P.openingEndpoints(room, "door", d.id);
+    return ends ? Number(P.wallProjection(wall, ends.start).offset.toFixed(2)) : null;
+  });
+  check("each opening's dimension is drawn at its own position",
+    near(offsets[0], 0.5) && near(offsets[1], 3.0), JSON.stringify(offsets));
+
+  // And every element resolves, which is what makes the indicators appear.
+  let unresolved = 0;
+  for (const kind of ["door", "window"]) {
+    for (const o of (kind === "door" ? room.doors : room.windows)) {
+      if (!P.openingEndpoints(room, kind, o.id)) unresolved++;
+    }
+  }
+  check("every opening in a legacy document resolves", unresolved === 0, String(unresolved));
+  check("every wall in a legacy document has a drawable length",
+    room.walls.every(w => P.wallLength(w) >= 0.01));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
