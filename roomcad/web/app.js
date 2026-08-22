@@ -20,6 +20,9 @@ const fileInput = document.getElementById("file-input");
 const undoButton = document.getElementById("undo");
 const redoButton = document.getElementById("redo");
 const liveButton = document.getElementById("live-room");
+const main = document.getElementById("main");
+const leftSidebarResizer = document.getElementById("left-sidebar-resizer");
+const rightSidebarResizer = document.getElementById("right-sidebar-resizer");
 
 const editor = new Editor2D(planCanvas);
 let walk3d = null;
@@ -51,6 +54,129 @@ function confirmDiscard() {
     "Save changes to " + (store.documentName || store.room.name) + "?\n\nYour latest changes are not saved yet."
   );
 }
+
+// MARK: - Remembered sidebar widths
+
+const SIDEBAR_LAYOUT_KEY = "roomcad.sidebar-layout.v1";
+const LEFT_SIDEBAR_DEFAULT = 200;
+const RIGHT_SIDEBAR_DEFAULT = 260;
+const SIDEBAR_MIN_WIDTH = 140;
+const CANVAS_MIN_WIDTH = 320;
+const RESIZER_TOTAL_WIDTH = 16;
+
+let sidebarWidths = loadSidebarWidths();
+
+function validWidth(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function loadSidebarWidths() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIDEBAR_LAYOUT_KEY) || "{}");
+    return {
+      left: validWidth(saved.left, LEFT_SIDEBAR_DEFAULT),
+      right: validWidth(saved.right, RIGHT_SIDEBAR_DEFAULT),
+    };
+  } catch {
+    return { left: LEFT_SIDEBAR_DEFAULT, right: RIGHT_SIDEBAR_DEFAULT };
+  }
+}
+
+function saveSidebarWidths() {
+  try {
+    localStorage.setItem(SIDEBAR_LAYOUT_KEY, JSON.stringify(sidebarWidths));
+  } catch {
+    // Private browsing can reject storage; resizing should still work now.
+  }
+}
+
+function widthLimit(side) {
+  const other = side === "left" ? sidebarWidths.right : sidebarWidths.left;
+  return Math.max(SIDEBAR_MIN_WIDTH, main.clientWidth - other - CANVAS_MIN_WIDTH - RESIZER_TOTAL_WIDTH);
+}
+
+function clampSidebarWidth(side, width) {
+  return Math.round(Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), widthLimit(side)));
+}
+
+function applySidebarWidths({ persist = false } = {}) {
+  sidebarWidths.left = clampSidebarWidth("left", sidebarWidths.left);
+  sidebarWidths.right = clampSidebarWidth("right", sidebarWidths.right);
+
+  // If the app is made very narrow, preserve a usable drawing area before
+  // honoring a saved wide-panel layout.
+  const available = main.clientWidth - CANVAS_MIN_WIDTH - RESIZER_TOTAL_WIDTH;
+  if (available >= SIDEBAR_MIN_WIDTH * 2 && sidebarWidths.left + sidebarWidths.right > available) {
+    sidebarWidths.right = Math.max(SIDEBAR_MIN_WIDTH, available - sidebarWidths.left);
+    sidebarWidths.left = Math.max(SIDEBAR_MIN_WIDTH, available - sidebarWidths.right);
+  }
+
+  document.documentElement.style.setProperty("--sidebar-width", sidebarWidths.left + "px");
+  document.documentElement.style.setProperty("--inspector-width", sidebarWidths.right + "px");
+  leftSidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN_WIDTH));
+  leftSidebarResizer.setAttribute("aria-valuemax", String(widthLimit("left")));
+  leftSidebarResizer.setAttribute("aria-valuenow", String(sidebarWidths.left));
+  rightSidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN_WIDTH));
+  rightSidebarResizer.setAttribute("aria-valuemax", String(widthLimit("right")));
+  rightSidebarResizer.setAttribute("aria-valuenow", String(sidebarWidths.right));
+  if (persist) saveSidebarWidths();
+}
+
+function installSidebarResizer(handle, side, defaultWidth) {
+  let drag = null;
+
+  handle.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    drag = { pointerID: e.pointerId, startX: e.clientX, startWidth: sidebarWidths[side] };
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing-sidebars");
+    e.preventDefault();
+  });
+
+  handle.addEventListener("pointermove", e => {
+    if (!drag || e.pointerId !== drag.pointerID) return;
+    const delta = e.clientX - drag.startX;
+    sidebarWidths[side] = clampSidebarWidth(side, drag.startWidth + (side === "left" ? delta : -delta));
+    applySidebarWidths();
+  });
+
+  const finish = e => {
+    if (!drag || e.pointerId !== drag.pointerID) return;
+    drag = null;
+    document.body.classList.remove("resizing-sidebars");
+    applySidebarWidths({ persist: true });
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+
+  handle.addEventListener("dblclick", () => {
+    sidebarWidths[side] = defaultWidth;
+    applySidebarWidths({ persist: true });
+  });
+
+  handle.addEventListener("keydown", e => {
+    const amount = e.shiftKey ? 40 : 10;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const signed = e.key === "ArrowRight" ? amount : -amount;
+      sidebarWidths[side] = clampSidebarWidth(side, sidebarWidths[side] + (side === "left" ? signed : -signed));
+      applySidebarWidths({ persist: true });
+      e.preventDefault();
+    } else if (e.key === "Home") {
+      sidebarWidths[side] = SIDEBAR_MIN_WIDTH;
+      applySidebarWidths({ persist: true });
+      e.preventDefault();
+    } else if (e.key === "End") {
+      sidebarWidths[side] = widthLimit(side);
+      applySidebarWidths({ persist: true });
+      e.preventDefault();
+    }
+  });
+}
+
+installSidebarResizer(leftSidebarResizer, "left", LEFT_SIDEBAR_DEFAULT);
+installSidebarResizer(rightSidebarResizer, "right", RIGHT_SIDEBAR_DEFAULT);
+applySidebarWidths();
+window.addEventListener("resize", () => applySidebarWidths({ persist: true }));
 
 // MARK: - Mode switching
 
@@ -992,4 +1118,3 @@ document.title = (store.documentName || store.room.name) + " — RoomCAD";
 updateVersionBadge();
 pollStatus();
 setInterval(pollStatus, 10000);
-

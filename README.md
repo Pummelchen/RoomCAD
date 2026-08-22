@@ -42,6 +42,9 @@ cd roomcad/web
 | Walk / look | `WASD` / mouse |
 | Jump (×2) / crouch | `Space` / `C` |
 
+Drag either divider beside the plan to resize the left tool panel or right
+inspector. RoomCAD remembers those widths in your browser for your next visit.
+
 ## Development
 
 The 3D view uses Three.js **WebGPU (`REVISION = "186dev"`)**, vendored under

@@ -18,6 +18,8 @@
   --accent: #3d8bfd;
   --accent-soft: rgba(61, 139, 253, 0.16);
   --danger: #ff6b5e;
+  --sidebar-width: 200px;
+  --inspector-width: 260px;
 }
 
 html, body {
@@ -180,8 +182,9 @@ body {
 }
 
 #sidebar {
-  width: 200px;
-  min-width: 200px;
+  width: var(--sidebar-width);
+  min-width: 0;
+  flex: 0 0 var(--sidebar-width);
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
@@ -325,6 +328,41 @@ body {
   position: relative;
   min-width: 0;
   background: var(--bg);
+}
+
+/* Drag either inner edge to make its sidebar fit the way you work. */
+.sidebar-resizer {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 8px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--panel);
+  outline: none;
+}
+
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+body.resizing-sidebars .sidebar-resizer::after {
+  background: var(--accent);
+}
+
+body.resizing-sidebars,
+body.resizing-sidebars * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 #plan-canvas {
@@ -552,8 +590,9 @@ body {
 /* ── Inspector ───────────────────────────────────────── */
 
 #inspector {
-  width: 260px;
-  min-width: 260px;
+  width: var(--inspector-width);
+  min-width: 0;
+  flex: 0 0 var(--inspector-width);
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: flex;
