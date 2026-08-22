@@ -5,3 +5,4 @@ dist/
 pix/
 *.xcuserstate
 *.bc
+.wiki/

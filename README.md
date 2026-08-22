@@ -1,23 +1,36 @@
 # RoomCAD
 
 RoomCAD is a kid-friendly room planner that runs entirely in the browser. Draw
-walls, drop in doors, windows, furniture and ceiling lights on a
-centimetre-accurate 2D plan, then walk through the result in a real-time 3D
-view — with physics and real daylight.
+walls on a centimetre-accurate 2D plan, drop in doors, windows, furniture and
+ceiling lights, then walk through the result in real-time 3D — with physics and
+real daylight.
 
-No installation, no native build. It is a quick, simple planning tool — not a
-structural, architectural or building-code tool.
+No installation, no build step. It is a quick planning tool — not a structural,
+architectural or building-code tool.
 
 ## What it can do
 
-- **Draw walls** on a 1 / 2 / 5 cm grid (90° only) with a live length readout in centimetres.
-- **Place doors and windows** in walls and slide them with exact spacing to the wall ends and neighbours.
-- **Arrange furniture** (bed, table, chair, wardrobe) and a ceiling-mounted light.
-- **Walk the room in 3D** — real physics (jump onto furniture, crouch, double-jump), soft shadows, and a day/night sky you set with a 24 h time-of-day control driven by a real Singapore sun position.
-- **Build solid rooms** — snapped walls are rendered as sealed solids, overlapping the floor, ceiling and one another; only doors and windows cut an opening. The 3D scene renders the real building envelope, never the hidden editing canvas.
-- **Save rooms to the server** (SQLite, versioned). New project sessions open the latest saved design; returning browsers resume their exact last-used version.
-- **Edit together live** — when another project member is present, **Join Live** pulses neon green; **Live Active** syncs edits both ways, and **Leave Live Mode** saves once for everyone before detaching your editor.
-- **One shared password** (checked server-side) protects the site.
+- **Draw walls** on a 1 / 2 / 5 cm grid (90° only) with a live length readout,
+  a measure tool, and a marker for shared (public) floor space.
+- **Place doors and windows** in walls and slide them with exact spacing to the
+  wall ends and neighbours. Doors open, close and swing to either side.
+- **Furnish** with ten pieces — bed, table, chair, wardrobe, desk, sofa,
+  bookshelf, nightstand, dresser, armchair — plus two ceiling lights
+  (60 W bulb, 200 W office panel).
+- **Auto-lay-out a floor**: choose how many rooms and the target m², and
+  RoomCAD partitions the space into rooms with doors and optional windows.
+  *Redesign* reshuffles it; marked public areas are left alone.
+- **Walk the room in 3D** — real physics (jump onto furniture, double-jump,
+  crouch), soft shadows, and a day/night sky you set with a 24 h time-of-day
+  control driven by a real Singapore sun position.
+- **Build solid rooms** — walls render as sealed solids that bite into the
+  floor, the ceiling and each other. Only doors and windows let light through.
+- **Save rooms to the server** (SQLite, versioned). New sessions open the
+  latest saved design; returning browsers resume their exact last version.
+- **Edit together live** — when another member is present, **Join Live** pulses
+  green; **Live Active** syncs edits both ways, and **Leave Live Mode** saves
+  once for everyone before detaching.
+- **One shared password**, checked server-side.
 
 ## Quick start
 
@@ -27,52 +40,60 @@ backend, then the static server:
 ```bash
 ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
   python3 roomcad/server/server.py &   # API on 127.0.0.1:8078
-cd roomcad/web
-./serve.sh                             # static + /api proxy on http://localhost:8080
+cd roomcad/web && ./serve.sh           # app on http://localhost:8080
 ```
 
 ## Essential controls
 
 | Action | Key |
 | --- | --- |
-| Select / Wall / Door / Window / Erase | `V` / `W` / `D` / `G` / `E` |
-| Furniture / Light | sidebar, or `F` |
-| Rotate furniture | `R` |
+| Select / Wall / Door / Window | `V` / `W` / `D` / `G` |
+| Erase / Measure / Furniture | `E` / `M` / `F` |
+| Rotate furniture / delete | `R` / `⌫` |
+| Nudge selection | arrow keys |
 | 2D plan / 3D walk | `⌘1` / `⌘2` |
+| Turn the plan | `⌘[` / `⌘]` |
 | Undo / Redo | `⌘Z` / `⇧⌘Z` |
+| Save / Open | `⌘S` / `⌘O` |
 | Walk / look | `WASD` / mouse |
 | Jump (×2) / crouch | `Space` / `C` |
+| Lights on–off (3D) | `L` |
 
-Drag either divider beside the plan to resize the left tool panel or right
-inspector. RoomCAD remembers those widths in your browser for your next visit.
-The shared password identifies a RoomCAD project. A first-time browser opens its
-latest saved design/version; after that, its saved or opened design is remembered
-in the server's SQLite database. Unsaved edits still require **Save**.
+Drag either divider beside the plan to resize the tool panel or the inspector;
+RoomCAD remembers the widths for your next visit. The shared password
+identifies a RoomCAD project — a first-time browser opens its latest saved
+version, and after that its own saved or opened design is remembered
+server-side. Unsaved edits still need **Save**.
 
 ## Development
 
-The 3D view uses Three.js **WebGPU (`REVISION = "186dev"`)**, vendored under
-`roomcad/web/lib/`.
-Physics is Rapier (WASM). There is no build step — the app is plain ES modules
-loaded via an import map.
+The 3D view uses Three.js **WebGPU** (`REVISION = "186dev"`) and Rapier (WASM),
+both vendored under `roomcad/web/lib/`. There is no build step — the app is
+plain ES modules loaded through an import map.
 
-The current visible release is defined once in
-[`roomcad/web/version.js`](roomcad/web/version.js). Increment it for every
-deployed user-facing fix so the footer always identifies the running release.
+```bash
+for t in tests/*.mjs; do node "$t"; done   # geometry, layout, UI contracts
+python3 tests/server-live.test.py          # API integration (spawns a server)
+```
+
+The visible release is defined once in
+[`roomcad/web/version.js`](roomcad/web/version.js) — increment it for every
+deployed user-facing fix. Deploy with
+[`roomcad/server/deploy.sh`](roomcad/server/deploy.sh); it never touches the
+live database or the password file.
 
 ## Documentation
 
-Everything else lives in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
-
-- [Getting Started](https://github.com/Pummelchen/RoomCAD/wiki/Getting-Started)
-- [2D Editor Guide](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide)
-- [3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough)
-- [Hosting and Deployment](https://github.com/Pummelchen/RoomCAD/wiki/Hosting-and-Deployment)
-- [Server API and Storage](https://github.com/Pummelchen/RoomCAD/wiki/Server-API-and-Storage)
-- [Live Collaboration](https://github.com/Pummelchen/RoomCAD/wiki/Live-Collaboration)
-- [File Format](https://github.com/Pummelchen/RoomCAD/wiki/File-Format)
-- [Architecture and Development](https://github.com/Pummelchen/RoomCAD/wiki/Architecture-and-Development)
-- [Troubleshooting](https://github.com/Pummelchen/RoomCAD/wiki/Troubleshooting)
+Guides live in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
+[Getting Started](https://github.com/Pummelchen/RoomCAD/wiki/Getting-Started) ·
+[2D Editor](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide) ·
+[3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough) ·
+[Live Collaboration](https://github.com/Pummelchen/RoomCAD/wiki/Live-Collaboration) ·
+[Server API and Storage](https://github.com/Pummelchen/RoomCAD/wiki/Server-API-and-Storage) ·
+[File Format](https://github.com/Pummelchen/RoomCAD/wiki/File-Format) ·
+[Hosting and Deployment](https://github.com/Pummelchen/RoomCAD/wiki/Hosting-and-Deployment) ·
+[Architecture](https://github.com/Pummelchen/RoomCAD/wiki/Architecture-and-Development) ·
+[Troubleshooting](https://github.com/Pummelchen/RoomCAD/wiki/Troubleshooting)
 
 ## License
 

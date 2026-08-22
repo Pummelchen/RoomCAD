@@ -1,44 +1,49 @@
 # RoomCAD — web app
 
-This directory is the web edition of [RoomCAD](../../README.md): a
-browser-based room planner (vanilla JavaScript ES modules + Three.js +
-Rapier), served by Caddy. See the root README for what the app does and the
-[wiki](https://github.com/Pummelchen/RoomCAD/wiki) for guides and hosting
-details.
+This directory is the web edition of [RoomCAD](../README.md): a browser-based
+room planner (vanilla JavaScript ES modules + Three.js + Rapier), served by
+Caddy. See the root README for what it does, and the
+[wiki](https://github.com/Pummelchen/RoomCAD/wiki) for guides and hosting.
 
 ## Run locally
 
 ```bash
-cd roomcad/web
-./serve.sh          # starts Caddy on http://localhost:8080
+# 1. the API (save, versions, live collaboration)
+ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=letmein \
+  python3 server/server.py &          # 127.0.0.1:8078
+
+# 2. the app
+cd web && ./serve.sh                  # http://localhost:8080
 ```
 
-The first run downloads the Caddy binary into `web/bin/` (git-ignored).
-Three.js, Rapier and the post-processing modules are vendored in `web/lib/`,
-so the page works offline.
+`web/Caddyfile` proxies `/api/*` to the API, so save, version history and live
+collaboration all work locally. Start only `serve.sh` and the app still loads,
+but reports "server not reachable" for anything server-side.
 
-> The local server has no backend, so **Save** and the room list report
-> "server not reachable" there. Use a deployment with the Python API for the
-> full save / versioning / live-collaboration experience.
+The first `serve.sh` run downloads Caddy into `web/bin/` (git-ignored).
+Three.js and Rapier are vendored in `web/lib/`, so the page works offline.
+The 3D view needs a **WebGPU**-capable browser.
 
-## Project layout
+## Layout
 
-- `web/plan.js` — room model, grid, snapping, geometry, opening spacing, `.rcad` file format
-- `web/store.js` — editing state, tools, undo/redo, save/open, remote-apply
-- `web/editor2d.js` — 2D plan canvas
-- `web/walk3d.js` — Three.js 3D walkthrough (Rapier physics, real sun, lighting, bloom)
-- `web/app.js` — UI glue: toolbar, inspector, keyboard, files, live collaboration
-- `web/audio.js` — procedural sound effects (paintball, door)
-- `web/login.js` — password gate + cookie
-- `web/lib/` — vendored Three.js, Rapier, RoomEnvironment, and post-processing modules
+| Path | Contains |
+| --- | --- |
+| `web/plan.js` | room model, grid, snapping, wall geometry, joins, auto-layout, `.rcad` format |
+| `web/store.js` | editing state, tools, undo/redo, save/open, remote-apply |
+| `web/editor2d.js` | 2D plan canvas |
+| `web/walk3d.js` | Three.js 3D walkthrough (Rapier physics, real sun, lighting, bloom) |
+| `web/app.js` | UI glue: toolbar, inspector, keyboard, files, live collaboration |
+| `web/audio.js` | procedural sound effects |
+| `web/login.js` | password gate + cookie |
+| `web/version.js` | the single visible release number |
+| `web/lib/` | vendored Three.js, Rapier and post-processing modules |
+| `server/` | the Python API, systemd unit, Caddy/nginx configs, DB dump, `deploy.sh` |
 
-The backend (Python API + SQLite) lives on the server and is documented in
-[Server API and Storage](https://github.com/Pummelchen/RoomCAD/wiki/Server-API-and-Storage).
-The server code, systemd unit, production Caddyfile and a database dump are
-mirrored in [`server/`](server/) so the VPS can be rebuilt from git.
+`server/` mirrors the production VPS so it can be rebuilt from git — see
+[Hosting and Deployment](https://github.com/Pummelchen/RoomCAD/wiki/Hosting-and-Deployment).
 
 ## Controls
 
-See the [2D Editor Guide](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide)
-and [3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough)
-wiki pages for the full key map.
+Full key map in the
+[2D Editor Guide](https://github.com/Pummelchen/RoomCAD/wiki/2D-Editor-Guide)
+and [3D Walkthrough](https://github.com/Pummelchen/RoomCAD/wiki/3D-Walkthrough).
