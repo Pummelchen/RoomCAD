@@ -25,9 +25,11 @@ architectural or building-code tool.
 - **Furnish** with ten pieces — bed, table, chair, wardrobe, desk, sofa,
   bookshelf, nightstand, dresser, armchair — plus two ceiling lights
   (60 W bulb, 200 W office panel).
-- **Auto-lay-out a floor**: choose how many rooms and the target m², and
-  RoomCAD partitions the space into rooms with doors and optional windows.
-  *Redesign* reshuffles it; marked public areas are left alone.
+- **Auto-lay-out a floor**: choose how many rooms and the target m² each, and
+  RoomCAD searches hundreds of arrangements for the one that lands closest,
+  carving the corridors the rooms need to be reachable. Floor the rooms don't
+  need becomes walk path rather than oversized rooms. *Redesign* picks a
+  different near-optimal plan; floor you marked public is never built over.
 - **Walk the room in 3D** — real physics (jump onto furniture, double-jump,
   crouch), soft shadows, and a day/night sky you set with a 24 h time-of-day
   control driven by a real Singapore sun position, under a drifting cloud deck.

@@ -864,11 +864,12 @@ export const store = {
   generateLayout(config) {
     const result = P.autoLayoutRooms(this.room, {
       count: config.count,
+      area: config.area,
       windows: config.windows,
       seed: this.layoutSeed,
     });
     if (!result) {
-      this.status = "Not enough private space for that many rooms";
+      this.status = "Not enough free space to lay rooms out there";
       this.emit();
       return false;
     }
@@ -876,10 +877,32 @@ export const store = {
       room.walls = result.walls;
       room.doors = result.doors;
       room.windows = result.windows;
+      // The corridors the generator carved become public floor, so they show
+      // on the plan and are excluded from the next run's partition. Only this
+      // generator's own corridors are replaced; floor the user marked stays.
+      const kept = (room.publicAreas || []).filter(a => !a.generated);
+      room.publicAreas = kept.concat(result.corridors.map(c => ({
+        id: P.uid(), x: c.x, z: c.z, w: c.w, l: c.l, generated: true,
+      })));
     });
-    this.status = "Generated " + result.rooms.length + " rooms · ~" + result.areaPerRoom.toFixed(1) + " m² each";
+    this.status = this.describeLayout(result);
     this.emit();
     return true;
+  },
+
+  /// An honest summary: what was asked for, what the space actually allowed,
+  /// and how much floor went to circulation.
+  describeLayout(result) {
+    const target = result.targetArea;
+    const actual = result.areaPerRoom;
+    const off = target > 0 ? Math.abs(actual - target) / target : 0;
+    const walk = result.corridors.reduce((s, c) => s + c.w * c.l, 0);
+    let text = result.rooms.length + " rooms · " + actual.toFixed(1) + " m² each";
+    if (off > 0.02) {
+      text += " (asked " + target.toFixed(1) + " — that is the closest the space allows)";
+    }
+    if (walk > 0.5) text += " · " + walk.toFixed(1) + " m² walk paths";
+    return text;
   },
 
   /// Generates a different (but still balanced) design by using the next seed.
