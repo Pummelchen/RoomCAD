@@ -39,13 +39,26 @@ const FLOOR_HEIGHT = 3; // metres per building floor
 
 // Room construction uses closed, overlapping solids. The values below are
 // deliberate physical construction tolerances (centimetres), not a shadow-map
-// trick: walls bite into the slab and ceiling, and snapped wall ends overlap.
-// That leaves no route for either light or the player capsule through a join.
+// trick: walls bite into the slab and ceiling, and wall ends cross their
+// neighbours at a join (P.WALL_JOIN_SEAL). That leaves no route for either
+// light or the player capsule through a join.
 const WALL_VERTICAL_SEAL = 0.04;
-const WALL_END_SEAL = 0.025;
 const CLOSED_DOOR_SEAL = 0.02;
 const POINT_SHADOW_MAP_SIZE = 1024;
-const POINT_SHADOW_BIAS = -0.0015;
+
+// Shadow depth bias must stay at zero. Three.js renders shadow maps from back
+// faces (material.shadowSide defaults to BackSide), so the depth recorded for
+// a caster is its *far* surface — a whole wall thickness of natural margin
+// against acne. A negative bias on top of that is pure light leak: the point
+// shadow compares in a non-linear perspective buffer, so a constant -0.0015
+// let light through occluders up to 27 cm away at 3 m and 1.9 m away at 8 m,
+// which at grazing incidence painted the metre-wide bright bands along every
+// floor, ceiling and wall join. Fixing that is what closed the leak; do not
+// reintroduce a bias to chase acne.
+const POINT_SHADOW_BIAS = 0;
+const SUN_SHADOW_BIAS = 0;
+// Sunlight uses one huge orthographic map, so it keeps a millimetre of normal
+// offset against grazing acne. That is small enough never to read as a gap.
 const SUN_SHADOW_NORMAL_BIAS = 0.002;
 
 // Singapore solar position. In the 2D editor the top of the plan is North (0°),
@@ -309,7 +322,7 @@ export class Walk3D {
     sun.shadow.camera.right = extent;
     sun.shadow.camera.top = extent;
     sun.shadow.camera.bottom = -extent;
-    sun.shadow.bias = -0.0004;
+    sun.shadow.bias = SUN_SHADOW_BIAS;
     // Keep the sunlight shadow receiver essentially on the surface. A large
     // normal bias makes daylight visibly detach from wall, floor and ceiling
     // edges, which reads as light leaking through a closed room.
@@ -358,7 +371,7 @@ export class Walk3D {
     // Walls are single sealed solids with real cut-outs (windows remain
     // transparent so a future exterior integration can show through).
     for (const wall of room.walls) {
-      this.addWallPlan(wall, room.doors, room.windows, room.height);
+      this.addWallPlan(room, wall, room.doors, room.windows, room.height);
     }
 
     // Furniture and ceiling fixtures.
@@ -459,12 +472,12 @@ export class Walk3D {
     this.gun = group;
   }
 
-  addWallPlan(wall, doors, windows, height) {
+  addWallPlan(room, wall, doors, windows, height) {
     const plan = P.wallBuildPlan(wall, doors, windows, height);
     const sill = Math.min(P.SILL_HEIGHT, height);
     const glassTop = Math.min(sill + P.GLASS_HEIGHT, height);
     const doorTop = Math.min(P.DOOR_HEIGHT, height);
-    this.addSealedWall(wall, plan, sill, glassTop, doorTop, height);
+    this.addSealedWall(wall, plan, sill, glassTop, doorTop, height, P.wallEndSeals(room, wall));
     for (const span of plan.glassSpans) {
       this.addGlass(wall, span, sill, glassTop, P.WALL_THICKNESS * 0.55);
     }
@@ -478,16 +491,21 @@ export class Walk3D {
   /// though the boxes overlapped, point-light cube maps could still rasterize
   /// their shared faces as separate shadow edges. A single extruded solid has
   /// no internal faces, so snapped rooms stay dark outside their openings.
-  addSealedWall(wall, plan, sill, glassTop, doorTop, height) {
+  addSealedWall(wall, plan, sill, glassTop, doorTop, height, seals) {
     const length = P.wallLength(wall);
     if (length <= 0.001) return;
     const bottom = -WALL_VERTICAL_SEAL;
     const top = height + WALL_VERTICAL_SEAL;
+    // Each end reaches across its neighbour only where it actually joins one,
+    // so corners and T-junctions close while free-standing ends keep the
+    // length the user drew.
+    const back = -seals.start;
+    const front = length + seals.end;
     const shape = new THREE.Shape();
-    shape.moveTo(-WALL_END_SEAL, bottom);
-    shape.lineTo(length + WALL_END_SEAL, bottom);
-    shape.lineTo(length + WALL_END_SEAL, top);
-    shape.lineTo(-WALL_END_SEAL, top);
+    shape.moveTo(back, bottom);
+    shape.lineTo(front, bottom);
+    shape.lineTo(front, top);
+    shape.lineTo(back, top);
     shape.closePath();
 
     const addOpening = (span, y0, y1) => {
@@ -832,10 +850,10 @@ export class Walk3D {
       // neighbouring rooms through open doorways, instead of leaking through.
       pl.castShadow = true;
       pl.shadow.mapSize.set(POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE);
-      // A normal bias shifts the receiver away from the wall exactly where
-      // walls, floor and ceiling meet, producing the bright outlines reported
-      // in dark rooms. More resolution plus a small depth bias prevents acne
-      // without creating that artificial gap.
+      // Both biases stay at zero: either one displaces the shadow off the
+      // surface exactly where walls, floor and ceiling meet, which is what
+      // produced the bright outlines in dark rooms. Back-face shadow
+      // rendering already supplies the margin that a bias would buy.
       pl.shadow.bias = POINT_SHADOW_BIAS;
       pl.shadow.normalBias = 0;
       pl.shadow.camera.near = 0.05;
@@ -1049,7 +1067,7 @@ export class Walk3D {
     // inside the configured plan area while no exterior integration is active.
     // They use the same slab-to-ceiling seal as drawn walls, rather than
     // merely touching the floor and ceiling faces.
-    const halfT = P.WALL_THICKNESS / 2 + WALL_END_SEAL;
+    const halfT = P.WALL_THICKNESS / 2 + P.WALL_JOIN_SEAL;
     const wallHalfHeight = room.height / 2 + WALL_VERTICAL_SEAL;
     const pW = canvas.width;
     const pL = canvas.length;
@@ -1075,8 +1093,8 @@ export class Walk3D {
       // Extend only true wall ends, never the edge of a doorway. This makes
       // snapped wall colliders interpenetrate at corners without narrowing a
       // usable doorway.
-      const before = seg.atWallStart ? WALL_END_SEAL : 0;
-      const after = seg.atWallEnd ? WALL_END_SEAL : 0;
+      const before = seg.startSeal;
+      const after = seg.endSeal;
       const ux = dx / rawLength;
       const uz = dz / rawLength;
       const startX = seg.start.x - ux * before;

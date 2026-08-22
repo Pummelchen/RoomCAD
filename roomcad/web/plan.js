@@ -24,6 +24,10 @@ export const FURNITURE_KINDS = {
 };
 
 export const WALL_THICKNESS = 0.10;
+/// How far a wall end has to reach past a join to close it. A corner is only
+/// solid once each wall crosses its neighbour's *half* thickness — anything
+/// less leaves a notch of open air at the join, for the wall's full height.
+export const WALL_JOIN_SEAL = 0.055; // WALL_THICKNESS / 2 + 5 mm overlap
 export const SILL_HEIGHT = 0.90;
 export const GLASS_HEIGHT = 1.00;
 export const DOOR_HEIGHT = 2.10;
@@ -269,6 +273,18 @@ export function wallProjection(w, p) {
   const t = clamp(((p.x - w.start.x) * dx + (p.z - w.start.z) * dz) / lenSq, 0, 1);
   const proj = { x: w.start.x + dx * t, z: w.start.z + dz * t };
   return { point: proj, offset: wallLength(w) * t, distance: distance(proj, p) };
+}
+
+/// How far each end of `wall` must be extended so its joins are closed solids.
+/// An end that meets another wall reaches across that wall's half thickness;
+/// a free-standing end is never extended, so a drawn wall keeps its length.
+export function wallEndSeals(room, wall) {
+  const joined = p => room.walls.some(o =>
+    o.id !== wall.id && wallProjection(o, p).distance <= WALL_THICKNESS);
+  return {
+    start: joined(wall.start) ? WALL_JOIN_SEAL : 0,
+    end: joined(wall.end) ? WALL_JOIN_SEAL : 0,
+  };
 }
 
 export function translateWall(w, dx, dz, width, length) {
@@ -603,15 +619,22 @@ export function wallCollisionSegments(room) {
   const segments = [];
   for (const wall of room.walls) {
     const length = wallLength(wall);
+    const seals = wallEndSeals(room, wall);
     const doorCuts = room.doors
       .filter(d => d.wallID === wall.id)
       .map(d => ({ from: d.offset, to: d.offset + d.width }));
     for (const span of solidSpans(length, doorCuts)) {
+      const atWallStart = span.from <= 0.001;
+      const atWallEnd = span.to >= length - 0.001;
       segments.push({
         start: wallPointAt(wall, span.from),
         end: wallPointAt(wall, span.to),
-        atWallStart: span.from <= 0.001,
-        atWallEnd: span.to >= length - 0.001,
+        atWallStart,
+        atWallEnd,
+        // Only a true wall end that meets another wall is extended, so a
+        // doorway never narrows and a free end never grows.
+        startSeal: atWallStart ? seals.start : 0,
+        endSeal: atWallEnd ? seals.end : 0,
       });
     }
   }
