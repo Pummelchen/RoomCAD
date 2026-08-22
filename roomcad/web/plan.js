@@ -1946,6 +1946,25 @@ export function demoRoom() {
 
 // MARK: - Room files (same format as the native app)
 
+/// The server file name for a room name. The Room Name IS the file: renaming a
+/// design and saving it starts a new one rather than adding a version to the
+/// old.
+///
+/// Server names are limited to [A-Za-z0-9_-], so accents are folded to their
+/// base letter (Küche -> Kuche) rather than dropped, and every other run of
+/// characters becomes a single dash. An empty result means "no name yet", and
+/// the server allocates the next ternak_roomN.
+export function roomSlug(name) {
+  return String(name == null ? "" : name)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 48);
+}
+
 export function serializeRoom(room) {
   return JSON.stringify(
     { format: ROOM_FILE_FORMAT, version: ROOM_FILE_VERSION, room },

@@ -253,7 +253,7 @@ function renderToolbar() {
 
 function renderStatus() {
   let extra = store.live ? " · Live" : (store.serverRoomName ? " · Shared" : "");
-  if (store.serverRoomName && store.serverRoomVersion) extra += " · v" + store.serverRoomVersion;
+  if (store.serverRoomName && store.serverRoomVersion != null) extra += " · v" + store.serverRoomVersion;
   statusMessage.textContent = store.status + extra;
   statusHint.textContent = store.mode === "2d"
     ? TOOL_HELP[store.tool] + " · Drag empty space to pan"
@@ -764,10 +764,15 @@ async function saveRoom({ watch = !liveDetached } = {}) {
   btn.classList.remove("saved");
   btn.classList.add("saving");
   try {
-    // Update the existing server slot when the room was opened from the
-    // server, otherwise create a new ternak_roomN (no duplicate copies).
+    // The Room Name is the file name. Saving under a name that already exists
+    // adds a version to it; saving under a new one starts a new file at v0.
+    // That makes renaming a design and saving it a fork, which is what renaming
+    // a file means everywhere else.
     const json = P.serializeRoom(store.room);
-    const result = await apiSaveRoom(json, store.serverRoomName, CLIENT_ID);
+    const slug = P.roomSlug(store.room.name);
+    const target = slug || store.serverRoomName || "";
+    const forking = !!slug && !!store.serverRoomName && slug !== store.serverRoomName;
+    const result = await apiSaveRoom(json, target, CLIENT_ID);
 
     // Verify the saved data is not corrupted by loading the new version back
     // and parsing it (also confirm the stored JSON round-trips unchanged).
@@ -782,9 +787,13 @@ async function saveRoom({ watch = !liveDetached } = {}) {
 
     store.serverRoomName = result.name;
     store.serverRoomVersion = result.version;
-    store.status = verified
-      ? "Saved as " + result.name + " · v" + result.version
-      : "Saved, but the data could not be verified";
+    // The version is not repeated here: renderStatus already appends it, so
+    // spelling it out again read as "Saved as Attic-Flat · v0 · Shared · v0".
+    store.status = !verified
+      ? "Saved, but the data could not be verified"
+      : forking
+        ? "Started " + result.name + " — the previous design is untouched"
+        : "Saved as " + result.name;
     store.edited = false;
     store.emit();
     renderRooms();

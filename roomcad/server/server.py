@@ -150,7 +150,7 @@ def room_list():
             FROM rooms r
             JOIN (SELECT name, MAX(version) AS mv FROM rooms GROUP BY name) m
               ON r.name = m.name AND r.version = m.mv
-            ORDER BY r.name
+            ORDER BY r.saved_at DESC, r.name
         """).fetchall()
     return [{"name": r["name"], "version": r["version"], "savedAt": r["saved_at"]} for r in rows]
 
@@ -301,7 +301,11 @@ def save_room(name, room_json, client_id):
                 if m:
                     nums.append(int(m.group(1)))
             name = f"{PREFIX}{(max(nums) if nums else 0) + 1}"
-        row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM rooms WHERE name=?", (name,)).fetchone()
+        # -1 so a file's first save lands on v0: the original, with later saves
+        # counting up from it.
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), -1) AS v FROM rooms WHERE name=?", (name,)
+        ).fetchone()
         version = row["v"] + 1
         conn.execute(
             "INSERT INTO rooms (name, version, json, saved_at, client_id) VALUES (?, ?, ?, ?, ?)",
@@ -625,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 name = sanitize(data.get("name") or "")
                 version = data.get("version")
-                if not name or not isinstance(version, int) or version < 1:
+                if not name or not isinstance(version, int) or version < 0:
                     raise ValueError("bad room")
             except Exception:
                 self._send({"error": "bad request"}, 400)

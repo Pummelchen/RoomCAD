@@ -163,45 +163,48 @@ def main():
     # 3. A real save clears the pending draft and bumps the version.
     status, resp, _ = request(port, "POST", "/api/save",
                               {"name": "room1", "json": '{"room":{"width":6}}', "clientId": "B"}, cookie)
-    check("save returns version 1", status == 200 and resp.get("version") == 1, f"{status} {resp}")
+    # A file's first save is v0 — the original, before anything was saved on top.
+    check("a file's first save is version 0", status == 200 and resp.get("version") == 0, f"{status} {resp}")
     check("save clears the live draft", "room1" not in server.LIVE)
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check("save marks exact room/version for resume",
-          status == 200 and resp.get("name") == "room1" and resp.get("version") == 1
+          status == 200 and resp.get("name") == "room1" and resp.get("version") == 0
           and resp.get("json") == '{"room":{"width":6}}', f"{status} {resp}")
 
     # 3a. Opening an earlier version explicitly is also remembered, and the
     # session data remains available after its in-memory state is discarded.
     status, resp, _ = request(port, "POST", "/api/save",
                               {"name": "room1", "json": '{"room":{"width":7}}', "clientId": "B"}, cookie)
-    check("second save returns version 2", status == 200 and resp.get("version") == 2, f"{status} {resp}")
+    check("the next save counts up from it", status == 200 and resp.get("version") == 1, f"{status} {resp}")
     status, resp, _ = request(port, "POST", "/api/session/last",
-                              {"name": "room1", "version": 1}, cookie)
+                              {"name": "room1", "version": 0}, cookie)
     check("choosing a version updates session resume target", status == 200 and resp.get("ok") is True, f"{status} {resp}")
+    # v0 is a real version, so the resume handler must not reject it as falsy.
+    check("version 0 is accepted as a resume target", resp.get("ok") is True, f"{resp}")
     first_time_cookie = login(port)
     status, resp, _ = request(port, "GET", "/api/status", cookie=first_time_cookie)
     check("second project session is visible to live collaboration", status == 200 and resp.get("count") == 2, f"{status} {resp}")
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=first_time_cookie)
     check("first project session opens the latest saved file/version",
-          status == 200 and resp.get("name") == "room1" and resp.get("version") == 2
+          status == 200 and resp.get("name") == "room1" and resp.get("version") == 1
           and resp.get("projectLatest") is True and resp.get("json") == '{"room":{"width":7}}',
           f"{status} {resp}")
     server._conn.close()
     server._conn = None
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check("resume target survives a database reconnect",
-          status == 200 and resp.get("version") == 1 and not resp.get("projectLatest")
+          status == 200 and resp.get("version") == 0 and not resp.get("projectLatest")
           and resp.get("json") == '{"room":{"width":6}}',
           f"{status} {resp}")
 
     status, resp, _ = request(port, "POST", "/api/save",
                               {"json": '{"room":{"width":8}}', "clientId": "B"}, cookie)
     check("unnamed save returns its generated room name",
-          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 1,
+          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 0,
           f"{status} {resp}")
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check("generated room is also the latest resume target",
-          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 1,
+          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 0,
           f"{status} {resp}")
 
     # 4. Real-time broadcast: a connected watcher receives a NEW draft pushed
@@ -218,6 +221,36 @@ def main():
     if len(reader2.events) > initial_count:
         ev = reader2.events[initial_count]
         check("follow-up event is live", ev.get("live") is True and ev.get("json") == draft2["json"])
+
+    # ---- 4b. Naming: the Room Name is the file name ------------------------
+    # Saving under a new name starts a new file at v0 rather than versioning the
+    # old one, and My Rooms lists the most recently saved first so a fresh save
+    # is at the top.
+    request(port, "POST", "/api/save",
+            {"name": "Attic-Flat", "json": '{"room":{"width":9}}', "clientId": "B"}, cookie)
+    status, resp, _ = request(port, "GET", "/api/rooms", cookie=cookie)
+    names = [r["name"] for r in resp]
+    check("a newly named save appears in the room list", "Attic-Flat" in names, str(names))
+    check("the newest save is first in the list", names[0] == "Attic-Flat", str(names))
+    attic = next(r for r in resp if r["name"] == "Attic-Flat")
+    check("a brand new file starts at v0", attic["version"] == 0, str(attic))
+
+    # Saving the same name again versions it rather than forking.
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "Attic-Flat", "json": '{"room":{"width":10}}', "clientId": "B"}, cookie)
+    check("saving the same name again adds a version", resp.get("version") == 1, str(resp))
+    # A different name forks, and leaves the original where it was.
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "Attic-Flat-Copy", "json": '{"room":{"width":10}}', "clientId": "B"}, cookie)
+    check("a different name starts a separate file at v0",
+          resp.get("name") == "Attic-Flat-Copy" and resp.get("version") == 0, str(resp))
+    status, resp, _ = request(port, "GET", "/api/versions/Attic-Flat", cookie=cookie)
+    check("the original keeps its own versions", [r["version"] for r in resp] == [1, 0], str(resp))
+
+    # v0 can be loaded back like any other version.
+    status, resp, _ = request(port, "GET", "/api/load/Attic-Flat?version=0", cookie=cookie)
+    check("version 0 can be loaded back",
+          status == 200 and resp.get("json") == '{"room":{"width":9}}', f"{status} {resp}")
 
     # ---- 5. Hardening ------------------------------------------------------
     # A body is read into memory, so an oversized Content-Length must be

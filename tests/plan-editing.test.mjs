@@ -431,5 +431,23 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     P.overlappingWallAreas(chain).length === 0);
 }
 
+// ── The Room Name is the file name ─────────────────────────────────────
+{
+  check("a plain name becomes a usable file name", P.roomSlug("My Bedroom") === "My-Bedroom");
+  check("accents fold to their base letter rather than being dropped",
+    P.roomSlug("Küche") === "Kuche", P.roomSlug("Küche"));
+  check("punctuation collapses to single dashes",
+    P.roomSlug("Flat #3 / attic") === "Flat-3-attic", P.roomSlug("Flat #3 / attic"));
+  check("surrounding space and dashes are trimmed",
+    P.roomSlug("  spaced  out  ") === "spaced-out", P.roomSlug("  spaced  out  "));
+  check("an empty or punctuation-only name yields nothing, so the server names it",
+    P.roomSlug("") === "" && P.roomSlug("---") === "");
+  check("the result is always a legal server name",
+    /^[A-Za-z0-9_-]*$/.test(P.roomSlug("Ünïcödé Rööm ✳ 2/3")), P.roomSlug("Ünïcödé Rööm ✳ 2/3"));
+  check("very long names are capped", P.roomSlug("a".repeat(200)).length === 48);
+  check("renaming changes the file it saves to",
+    P.roomSlug("Attic") !== P.roomSlug("Attic Copy"));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

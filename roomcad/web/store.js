@@ -1067,7 +1067,7 @@ export const store = {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.clearSelection();
-    if (version) this.serverRoomVersion = version;
+    if (version != null) this.serverRoomVersion = version;   // v0 is a real version
     this.edited = false;
     this.status = "Room updated by teammate";
     this.emit();

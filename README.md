@@ -44,8 +44,11 @@ architectural or building-code tool.
   something real. Windows and street lamps come on after dark.
 - **Build solid rooms** — walls render as sealed solids that bite into the
   floor, the ceiling and each other. Only doors and windows let light through.
-- **Save rooms to the server** (SQLite, versioned). New sessions open the
-  latest saved design; returning browsers resume their exact last version.
+- **Save rooms to the server** (SQLite, versioned). The Room Name is the file
+  name: saving under a new name starts a new design at v0 and leaves the old
+  one untouched, saving under the same name adds a version. My Rooms lists the
+  most recently saved first. New sessions open the latest saved design;
+  returning browsers resume their exact last version.
 - **Edit together live** — when another member is present, **Join Live** pulses
   green; **Live Active** syncs edits both ways, and **Leave Live Mode** saves
   once for everyone before detaching.
