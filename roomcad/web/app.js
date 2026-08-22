@@ -668,8 +668,7 @@ function watchRoom(name) {
           // The watcher sends the current version immediately on connect. If
           // that is the design we just opened or resumed, it is a no-op rather
           // than a teammate update (and should not overwrite the status).
-          if (data.version === store.serverRoomVersion
-              && data.json === P.serializeRoom(store.room)) return;
+          if (data.version === store.serverRoomVersion) return;
           const room = P.parseRoom(data.json);
           store.applyRemoteRoom(room, data.version);
         }
@@ -932,7 +931,8 @@ async function resumeLastRoom() {
     const room = P.parseRoom(data.json);
     store.loadRoom(room, data.name, true);
     store.serverRoomVersion = data.version;
-    store.status = "Resumed " + data.name + " · v" + data.version;
+    store.status = (data.projectLatest ? "Opened latest project design " : "Resumed ")
+      + data.name + " · v" + data.version;
     watchRoom(data.name);
     store.emit();
   } catch (err) {

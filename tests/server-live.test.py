@@ -126,7 +126,7 @@ def main():
     status, resp, _ = request(port, "GET", "/api/status", cookie=cookie)
     check("status reports one active session", status == 200 and resp.get("count") == 1, f"{status} {resp}")
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
-    check("new session has no room to resume", status == 200 and resp is None, f"{status} {resp}")
+    check("new project session has no room to resume", status == 200 and resp is None, f"{status} {resp}")
 
     # 1. A live draft is stored and broadcast, but NOT saved to the DB.
     draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1}
@@ -164,11 +164,18 @@ def main():
     status, resp, _ = request(port, "POST", "/api/session/last",
                               {"name": "room1", "version": 1}, cookie)
     check("choosing a version updates session resume target", status == 200 and resp.get("ok") is True, f"{status} {resp}")
+    first_time_cookie = login(port)
+    status, resp, _ = request(port, "GET", "/api/session/last", cookie=first_time_cookie)
+    check("first project session opens the latest saved file/version",
+          status == 200 and resp.get("name") == "room1" and resp.get("version") == 2
+          and resp.get("projectLatest") is True and resp.get("json") == '{"room":{"width":7}}',
+          f"{status} {resp}")
     server._conn.close()
     server._conn = None
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check("resume target survives a database reconnect",
-          status == 200 and resp.get("version") == 1 and resp.get("json") == '{"room":{"width":6}}',
+          status == 200 and resp.get("version") == 1 and not resp.get("projectLatest")
+          and resp.get("json") == '{"room":{"width":6}}',
           f"{status} {resp}")
 
     status, resp, _ = request(port, "POST", "/api/save",

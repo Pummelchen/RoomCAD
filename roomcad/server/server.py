@@ -184,27 +184,44 @@ def remember_last_room(token, name, version):
 
 
 def last_room_for_session(token):
-    """Return the exact saved room/version selected by this browser, if any."""
+    """Return this browser's room, or the project's latest saved room on first use."""
     conn = get_conn()
     with DB_LOCK:
         row = conn.execute(
             "SELECT last_room_name, last_room_version FROM browser_sessions WHERE token_hash=?",
             (session_hash(token),),
         ).fetchone()
-        if not row or not row["last_room_name"] or row["last_room_version"] is None:
-            return None
-        room = conn.execute(
-            "SELECT name, version, json FROM rooms WHERE name=? AND version=?",
-            (row["last_room_name"], row["last_room_version"]),
-        ).fetchone()
+        room = None
+        if row and row["last_room_name"] and row["last_room_version"] is not None:
+            room = conn.execute(
+                "SELECT name, version, json FROM rooms WHERE name=? AND version=?",
+                (row["last_room_name"], row["last_room_version"]),
+            ).fetchone()
+        if room is not None:
+            return {"name": room["name"], "version": room["version"], "json": room["json"]}
+
+        # A password identifies one shared RoomCAD project. A new browser has
+        # no personal selection yet, so start it at the newest saved project
+        # file/version instead of an empty demo. `id` breaks rare equal-ms ties.
+        room = conn.execute("""
+            SELECT name, version, json
+            FROM rooms
+            ORDER BY saved_at DESC, id DESC
+            LIMIT 1
+        """).fetchone()
         if room is None:
-            conn.execute(
-                "UPDATE browser_sessions SET last_room_name=NULL, last_room_version=NULL WHERE token_hash=?",
-                (session_hash(token),),
-            )
-            conn.commit()
             return None
-    return {"name": room["name"], "version": room["version"], "json": room["json"]}
+        conn.execute(
+            "UPDATE browser_sessions SET last_room_name=?, last_room_version=? WHERE token_hash=?",
+            (room["name"], room["version"], session_hash(token)),
+        )
+        conn.commit()
+    return {
+        "name": room["name"],
+        "version": room["version"],
+        "json": room["json"],
+        "projectLatest": True,
+    }
 
 
 def save_room(name, room_json, client_id):

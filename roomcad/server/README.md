@@ -68,11 +68,13 @@ ROOMCAD_PASSWORD=your-password
 
 `roomcad.service` loads it via `EnvironmentFile`. `POST /api/login` checks the
 password and sets an `HttpOnly` session cookie; a hash of that token and the
-last saved/opened room version are stored in SQLite. That lets RoomCAD resume
-the same design after an API restart without adding local-storage or a second
-cookie. Every other `/api/*` handler returns 401 without a valid session. The
-frontend `login.js` just drives the form and calls `/api/login`. If the env file
-is missing, the service starts but logins are disabled (fail-closed).
+last saved/opened room version are stored in SQLite. A new session without a
+prior selection opens the project's most recently saved room/version, while a
+returning session resumes its own exact version. This survives an API restart
+without adding local-storage or a second cookie. Every other `/api/*` handler
+returns 401 without a valid session. The frontend `login.js` just drives the
+form and calls `/api/login`. If the env file is missing, the service starts but
+logins are disabled (fail-closed).
 
 ## Restoring from a lost VPS
 
