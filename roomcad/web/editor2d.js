@@ -444,7 +444,7 @@ export class Editor2D {
         this.scale = newScale;
         this.origin = { x: mid.x - plan.x * this.scale, y: mid.y - plan.z * this.scale };
       }
-      this.draw();
+      this.requestDraw();
       return;
     }
     if (this.pinch && this.pointers.size < 2) {
@@ -491,7 +491,7 @@ export class Editor2D {
       }
     }
     this.lastPlan = p;
-    this.draw();
+    this.requestDraw();
   }
 
   onPointerUp(e) {
@@ -581,8 +581,16 @@ export class Editor2D {
 
   // MARK: Drawing
 
+  /// Coalesces redraws onto the next animation frame. Pointer moves arrive far
+  /// faster than the display refreshes, and drawing synchronously on each one
+  /// re-rendered the whole plan several times per frame for no visible gain.
   requestDraw() {
-    this.draw();
+    if (this._drawPending) return;
+    this._drawPending = true;
+    requestAnimationFrame(() => {
+      this._drawPending = false;
+      this.draw();
+    });
   }
 
   draw() {

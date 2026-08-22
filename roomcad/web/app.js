@@ -1170,7 +1170,9 @@ store.onChange(() => {
   renderInspector();
   renderStatus();
   renderToolbar();
-  renderRooms();
+  // Deliberately NOT renderRooms(): the sidebar only changes when a room is
+  // saved, deleted or opened, and those call it directly. Refreshing here fired
+  // an /api/rooms request for every selection, tool change and undo.
   document.title = (store.documentName || store.room.name)
     + (store.edited ? " · Edited" : "") + " — RoomCAD";
   // Live: push edits to teammates as drafts (no save, no version bump).

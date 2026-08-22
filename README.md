@@ -23,6 +23,9 @@ architectural or building-code tool.
 - **Walk the room in 3D** — real physics (jump onto furniture, double-jump,
   crouch), soft shadows, and a day/night sky you set with a 24 h time-of-day
   control driven by a real Singapore sun position.
+- **See it in a city** — the room stands in a stylised neighbourhood of
+  streets, blocks, traffic and trees, so you can judge the space against
+  something real. Windows and street lamps come on after dark.
 - **Build solid rooms** — walls render as sealed solids that bite into the
   floor, the ceiling and each other. Only doors and windows let light through.
 - **Save rooms to the server** (SQLite, versioned). New sessions open the

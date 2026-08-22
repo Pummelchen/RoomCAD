@@ -13,6 +13,7 @@ import queue
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 import urllib.parse
@@ -32,6 +33,28 @@ PORT = 8078
 PASSWORD = os.environ.get("ROOMCAD_PASSWORD")
 SESSION_COOKIE = "roomcad_auth"
 SESSION_TTL_SECONDS = 31536000
+
+# A request body is read into memory, so it has to be bounded: without this a
+# client could announce a huge Content-Length and exhaust the process. Rooms
+# are JSON documents of a few hundred kB at most.
+MAX_BODY_BYTES = 8 * 1024 * 1024
+
+# Failed-login throttle. One shared password is brute-forceable otherwise.
+LOGIN_MAX_FAILURES = 10
+LOGIN_WINDOW_SECONDS = 300
+LOGIN_FAILURES = {}          # client key -> [failures, window_started_at]
+LOGIN_LOCK = threading.Lock()
+
+# A watcher that stops reading must not be able to grow its queue without
+# bound. Payloads are whole-room snapshots and the newest one supersedes the
+# rest, so dropping the oldest is the correct overflow behaviour.
+WATCH_QUEUE_LIMIT = 16
+# How long a watcher waits before sending a keep-alive comment. This is also
+# what lets the server notice a client that vanished: the write fails and the
+# thread exits instead of parking on an empty queue forever.
+SSE_HEARTBEAT_SECONDS = 20
+# An unsaved draft nobody has touched for this long is forgotten.
+LIVE_DRAFT_TTL_SECONDS = 3600
 # Active browser sessions: session token -> last-seen time. Any authenticated
 # request refreshes it, so /api/status can report how many people are around.
 PRESENCE = {}
@@ -135,6 +158,37 @@ def active_count(ttl=30):
         for t in stale:
             del PRESENCE[t]
         return len(PRESENCE)
+
+
+def login_blocked(key):
+    """True once a client has burned through its failed-login budget."""
+    now = time.time()
+    with LOGIN_LOCK:
+        entry = LOGIN_FAILURES.get(key)
+        if not entry:
+            return False
+        failures, started = entry
+        if now - started > LOGIN_WINDOW_SECONDS:
+            del LOGIN_FAILURES[key]
+            return False
+        return failures >= LOGIN_MAX_FAILURES
+
+
+def note_login_failure(key):
+    now = time.time()
+    with LOGIN_LOCK:
+        # Opportunistically forget windows that have aged out, so a long-lived
+        # process does not accumulate an entry per address seen.
+        for k in [k for k, (_, started) in LOGIN_FAILURES.items()
+                  if now - started > LOGIN_WINDOW_SECONDS]:
+            del LOGIN_FAILURES[k]
+        failures, started = LOGIN_FAILURES.get(key, (0, now))
+        LOGIN_FAILURES[key] = (failures + 1, started)
+
+
+def note_login_success(key):
+    with LOGIN_LOCK:
+        LOGIN_FAILURES.pop(key, None)
 
 
 def session_hash(token):
@@ -288,12 +342,29 @@ def versions(name):
     return [{"version": r["version"], "savedAt": r["saved_at"]} for r in rows]
 
 
+def publish(q, payload):
+    """Queue a payload, discarding the oldest if the watcher has fallen behind."""
+    try:
+        q.put_nowait(payload)
+        return
+    except queue.Full:
+        pass
+    try:
+        q.get_nowait()
+    except queue.Empty:
+        pass
+    try:
+        q.put_nowait(payload)
+    except queue.Full:
+        pass
+
+
 def notify(name, room_json, client_id, version):
     payload = json.dumps({"name": name, "json": room_json, "clientId": client_id, "version": version})
     with WATCH_LOCK:
         queues = list(WATCHERS.get(name, set()))
     for q in queues:
-        q.put(payload)
+        publish(q, payload)
 
 
 def notify_live(name, draft):
@@ -308,7 +379,15 @@ def notify_live(name, draft):
     with WATCH_LOCK:
         queues = list(WATCHERS.get(name, set()))
     for q in queues:
-        q.put(payload)
+        publish(q, payload)
+
+
+def expire_live_drafts():
+    """Drop unsaved drafts nobody has updated for a while."""
+    cutoff = time.time() - LIVE_DRAFT_TTL_SECONDS
+    with LIVE_LOCK:
+        for key in [k for k, v in LIVE.items() if v.get("at", 0) < cutoff]:
+            del LIVE[key]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -337,6 +416,38 @@ class Handler(BaseHTTPRequestHandler):
                 return part[len(name) + 1:]
         return None
 
+    def _client_key(self):
+        """Best available client identity for throttling. Behind the reference
+        deployment nginx appends the real address to X-Forwarded-For, so the
+        last entry is the closest-to-us trusted value; direct connections fall
+        back to the socket address."""
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+        return self.client_address[0]
+
+    def _read_json(self):
+        """Reads a bounded JSON body. Sends the error response and returns None
+        if the body is missing, oversized or malformed."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._send({"error": "bad request"}, 400)
+            return None
+        if length <= 0:
+            self._send({"error": "bad request"}, 400)
+            return None
+        if length > MAX_BODY_BYTES:
+            self._send({"error": "payload too large"}, 413)
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            self._send({"error": "bad request"}, 400)
+            return None
+
     def _require_auth(self):
         token = self._cookie(SESSION_COOKIE)
         if not session_is_valid(token):
@@ -357,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
-        q = queue.Queue()
+        q = queue.Queue(maxsize=WATCH_QUEUE_LIMIT)
         with WATCH_LOCK:
             WATCHERS.setdefault(name, set()).add(q)
         try:
@@ -376,14 +487,30 @@ class Handler(BaseHTTPRequestHandler):
                     "live": True,
                 }))
             while True:
-                payload = q.get()
+                # Waiting with a timeout is what keeps this thread mortal. A
+                # blocking get() never returns for a client that disconnected
+                # while idle, so the thread and its socket would leak for the
+                # life of the process. The periodic comment doubles as the
+                # keep-alive that stops proxies dropping a quiet stream.
                 try:
-                    self._sse_write(payload)
+                    payload = q.get(timeout=SSE_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    payload = None
+                try:
+                    if payload is None:
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                    else:
+                        self._sse_write(payload)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     break
         finally:
             with WATCH_LOCK:
-                WATCHERS.get(name, set()).discard(q)
+                watchers = WATCHERS.get(name)
+                if watchers is not None:
+                    watchers.discard(q)
+                    if not watchers:
+                        del WATCHERS[name]   # do not keep an empty set per room
 
     def do_GET(self):
         if not self._require_auth():
@@ -428,25 +555,34 @@ class Handler(BaseHTTPRequestHandler):
             if not PASSWORD:
                 self._send({"error": "auth not configured"}, 500)
                 return
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-                password = str(data.get("password", ""))
-            except Exception:
-                self._send({"error": "bad request"}, 400)
+            client = self._client_key()
+            if login_blocked(client):
+                self._send({"error": "too many attempts"}, 429)
                 return
+            data = self._read_json()
+            if data is None:
+                return
+            password = str(data.get("password", "")) if isinstance(data, dict) else ""
             if not secrets.compare_digest(password, PASSWORD):
+                note_login_failure(client)
                 self._send({"error": "wrong password"}, 401)
                 return
+            note_login_success(client)
             token = secrets.token_urlsafe(32)
             create_session(token)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "11")  # {"ok": true}
             self.send_header("Cache-Control", "no-store")
+            # Mark the cookie Secure whenever the request actually arrived over
+            # HTTPS. Hard-coding it would silently break plain-HTTP local
+            # development, and omitting it would expose the session in
+            # production, so follow the proxy's X-Forwarded-Proto.
+            https = (self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https")
             self.send_header(
                 "Set-Cookie",
-                "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000" % (SESSION_COOKIE, token),
+                "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=%d%s"
+                % (SESSION_COOKIE, token, SESSION_TTL_SECONDS, "; Secure" if https else ""),
             )
             self.end_headers()
             self.wfile.write(b'{"ok": true}')
@@ -454,9 +590,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_auth():
             return
         if path == "/api/session/last":
+            data = self._read_json()
+            if data is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
                 name = sanitize(data.get("name") or "")
                 version = data.get("version")
                 if not name or not isinstance(version, int) or version < 1:
@@ -474,16 +611,18 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send({"error": "bad name"}, 400)
                 return
+            data = self._read_json()
+            if data is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
                 room_json = str(data.get("json", ""))
                 client_id = str(data.get("clientId", ""))
                 version = data.get("version")
             except Exception:
                 self._send({"error": "bad request"}, 400)
                 return
-            draft = {"json": room_json, "clientId": client_id, "version": version}
+            expire_live_drafts()
+            draft = {"json": room_json, "clientId": client_id, "version": version, "at": time.time()}
             with LIVE_LOCK:
                 LIVE[name] = draft
             notify_live(name, draft)
@@ -492,9 +631,10 @@ class Handler(BaseHTTPRequestHandler):
         if path != "/api/save":
             self._send({"error": "not found"}, 404)
             return
+        data = self._read_json()
+        if data is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
             room_json = data.get("json", "")
             client_id = str(data.get("clientId", ""))
             name = sanitize(data.get("name") or "")
@@ -523,8 +663,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found"}, 404)
 
 
+class RoomCADServer(ThreadingHTTPServer):
+    """Threading server that stays quiet about clients going away.
+
+    A browser closing a tab aborts its event stream, which surfaces as a reset
+    or broken pipe. That is entirely normal here — logging a traceback for each
+    one would bury real errors in the journal.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 if __name__ == "__main__":
     if not PASSWORD:
         print("WARNING: ROOMCAD_PASSWORD is not set — logins are disabled.", flush=True)
     get_conn()  # create DB + migrate on boot
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    RoomCADServer((HOST, PORT), Handler).serve_forever()

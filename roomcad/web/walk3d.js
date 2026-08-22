@@ -5,6 +5,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import * as RAPIER from "./lib/rapier.mjs";
 import * as P from "./plan.js";
 import { store } from "./store.js";
+import { City, seedFromString } from "./city.js";
 import { playPlop } from "./audio.js";
 
 // WebGPU post-processing (TSL nodes).
@@ -181,6 +182,10 @@ export class Walk3D {
     this.gun = null;
     this.gunRecoil = 0;
 
+    // The surrounding city. It lives directly in the scene (never in
+    // roomGroup, which lifts with the floor) and survives room rebuilds.
+    this.city = new City();
+
     this.roomGroup = null;   // all room meshes; lifted together per floor
     this.lastFloorY = null;  // last applied floor lift, so we only rebuild physics on change
 
@@ -200,6 +205,7 @@ export class Walk3D {
         this.lastFloorY = baseY;
         this.roomGroup.position.y = baseY;
         if (this.skyMesh) this.skyMesh.position.y = baseY;
+        this.syncCity(store.room);
         if (this.physicsReady) this.buildPhysics(store.room, false);
       }
     });
@@ -389,6 +395,7 @@ export class Walk3D {
     }
 
     this.buildGun();
+    this.syncCity(room);
     this.roomGroup.position.y = this.floorY();
     this.lastFloorY = this.floorY();
     this.applyTimeOfDay();
@@ -864,6 +871,10 @@ export class Walk3D {
   }
 
   disposeScene() {
+    // Persistent subtrees (the city) own their own resources and are far too
+    // expensive to rebuild every time a wall moves, so lift them out first.
+    const persistent = this.scene.children.filter(c => c.userData && c.userData.persistent);
+    for (const node of persistent) this.scene.remove(node);
     this.scene.traverse(node => {
       if (node.isMesh) {
         node.geometry.dispose();
@@ -872,7 +883,19 @@ export class Walk3D {
       }
     });
     this.scene.clear();
+    for (const node of persistent) this.scene.add(node);
     this.floorMaterial = null;
+  }
+
+  /// Builds or reuses the surrounding city for this room and floor. The city
+  /// only depends on the building envelope, so ordinary editing never
+  /// regenerates it.
+  syncCity(room) {
+    const bounds = this.currentBuildingBounds || this.buildingBounds(room);
+    const seed = seedFromString(String(room.id || room.name || "roomcad"));
+    const lift = this.floorY();
+    if (!this.city.matches(bounds, seed, lift)) this.city.build(bounds, seed, lift);
+    if (this.city.group.parent !== this.scene) this.scene.add(this.city.group);
   }
 
   disposeMaterial(material) {
@@ -984,6 +1007,10 @@ export class Walk3D {
 
     // Image-based lighting only while the sun is actually up.
     this.scene.environment = (day && dayAmount > 0.05) ? this.environment : null;
+
+    // The city follows the same effective daylight as the sun, so the L
+    // toggle darkens the whole world rather than just the room.
+    this.city.applyTimeOfDay(dayAmount * (day ? 1 : 0));
 
     // Room fixtures only light in placed-lights mode (the L toggle).
     for (const l of this.pointLights) l.visible = !day;
@@ -1307,6 +1334,14 @@ export class Walk3D {
   // MARK: Input
 
   attachInput() {
+    // Every listener is recorded so dispose() can detach it. Without this a
+    // disposed Walk3D stays reachable from document and keeps handling keys.
+    this._listeners = [];
+    const on = (target, type, handler, options) => {
+      target.addEventListener(type, handler, options);
+      this._listeners.push([target, type, handler, options]);
+    };
+
     const canvas = this.renderer.domElement;
     canvas.style.cursor = "crosshair";
     this.toggleWasLocked = false;
@@ -1314,8 +1349,8 @@ export class Walk3D {
     // Left click toggles free-look — unless paintball mode is on, in which
     // case it fires the gun. Track whether the pointer was already locked on
     // mouse-down, so the click that *starts* looking doesn't also end it.
-    canvas.addEventListener("contextmenu", e => e.preventDefault());
-    canvas.addEventListener("mousedown", e => {
+    on(canvas, "contextmenu", e => e.preventDefault());
+    on(canvas, "mousedown", e => {
       // Right click opens/closes the door you're aiming at.
       if (e.button === 2) {
         this.toggleDoorAtCrosshair();
@@ -1324,7 +1359,7 @@ export class Walk3D {
       }
       this.toggleWasLocked = this.locked;
     });
-    canvas.addEventListener("click", () => {
+    on(canvas, "click", () => {
       if (this.paintballMode) {
         if (this.locked) this.shoot();
         else canvas.requestPointerLock();
@@ -1334,7 +1369,7 @@ export class Walk3D {
         canvas.requestPointerLock();
       }
     });
-    document.addEventListener("pointerlockchange", () => {
+    on(document, "pointerlockchange", () => {
       this.locked = document.pointerLockElement === canvas;
       if (!this.locked && this.paintballMode) {
         this.paintballMode = false;
@@ -1342,13 +1377,13 @@ export class Walk3D {
       }
       this.updatePaintballUI();
     });
-    document.addEventListener("mousemove", e => {
+    on(document, "mousemove", e => {
       if (!this.locked) return;
       this.yaw -= e.movementX * 0.0025;
       this.pitch = P.clamp(this.pitch - e.movementY * 0.0025, -1.4, 1.4);
     });
 
-    document.addEventListener("keydown", e => {
+    on(document, "keydown", e => {
       if (store.mode !== "3d") return;
       if (this.isTyping()) return;
       if (e.code === "KeyP") {
@@ -1386,10 +1421,10 @@ export class Walk3D {
         e.preventDefault();
       }
     });
-    document.addEventListener("keyup", e => {
+    on(document, "keyup", e => {
       this.keys.delete(e.code);
     });
-    window.addEventListener("blur", () => this.keys.clear());
+    on(window, "blur", () => this.keys.clear());
   }
 
   // MARK: Paintball
@@ -1577,6 +1612,11 @@ export class Walk3D {
 
   dispose() {
     cancelAnimationFrame(this.raf);
+    for (const [target, type, handler, options] of this._listeners || []) {
+      target.removeEventListener(type, handler, options);
+    }
+    this._listeners = [];
+    this.city.dispose();
     this.disposeScene();
     if (this.world) this.world.free();
     if (this.renderPipeline && this.renderPipeline.dispose) this.renderPipeline.dispose();
@@ -1592,6 +1632,7 @@ export class Walk3D {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.tick(dt);
     this.updatePaintballs(dt);
+    this.city.update(dt);
 
     const now = performance.now();
     if (this.renderPipeline) this.renderPipeline.render();

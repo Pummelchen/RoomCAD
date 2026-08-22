@@ -106,11 +106,6 @@ export const store = {
 
   // MARK: Selection
 
-  hasSelection() {
-    return this.selectedWallID !== null || this.selectedDoorID !== null
-      || this.selectedWindowID !== null || this.selectedFurnitureID !== null;
-  },
-
   selectedWall() {
     return this.selectedWallID
       ? this.room.walls.find(w => w.id === this.selectedWallID) || null
@@ -428,21 +423,6 @@ export const store = {
       const index = this.room.windows.findIndex(w => w.id === this.selectedWindowID);
       if (index >= 0) this.room.windows[index].width = clamped;
     }
-  },
-
-  setOpeningWidth(kind, width) {
-    const id = kind === "door" ? this.selectedDoorID : this.selectedWindowID;
-    if (!id) return;
-    const clamped = P.clamp(width, kind === "door" ? 0.6 : 0.4, kind === "door" ? 1.4 : 2.0);
-    this.commit("Set " + (kind === "door" ? "door" : "window") + " width to " + P.cm(clamped), room => {
-      if (kind === "door") {
-        const index = room.doors.findIndex(d => d.id === id);
-        if (index >= 0) room.doors[index].width = clamped;
-      } else {
-        const index = room.windows.findIndex(w => w.id === id);
-        if (index >= 0) room.windows[index].width = clamped;
-      }
-    });
   },
 
   snappedOpeningOffset(rawOffset, width, wall) {
@@ -866,8 +846,4 @@ export const store = {
     this.emit();
   },
 
-  markSaved() {
-    this.edited = false;
-    this.emit();
-  },
 };

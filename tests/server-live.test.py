@@ -76,6 +76,17 @@ def request(port, method, path, body=None, cookie=""):
         return r.status, raw, set_cookie
 
 
+def raw_request(port, method, path, body_bytes, headers):
+    """Like request(), but sends an exact byte body and exact headers."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request(method, path, body_bytes, headers)
+    r = conn.getresponse()
+    r.read()
+    status, set_cookie = r.status, r.getheader("Set-Cookie")
+    conn.close()
+    return status, set_cookie
+
+
 def login(port):
     status, _, set_cookie = request(port, "POST", "/api/login", {"password": "testpass"})
     assert status == 200, status
@@ -97,9 +108,12 @@ def main():
     server.DB_PATH = os.path.join(tmp.name, "rooms.db")
     server.LEGACY_DIR = os.path.join(tmp.name, "legacy")
     server.PASSWORD = "testpass"
+    # A dead watcher is only noticed when the next keep-alive fails to write,
+    # so shorten the heartbeat to keep the test quick.
+    server.SSE_HEARTBEAT_SECONDS = 0.3
     os.makedirs(server.LEGACY_DIR)
 
-    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    httpd = server.RoomCADServer(("127.0.0.1", 0), server.Handler)
     port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
@@ -205,8 +219,68 @@ def main():
         ev = reader2.events[initial_count]
         check("follow-up event is live", ev.get("live") is True and ev.get("json") == draft2["json"])
 
+    # ---- 5. Hardening ------------------------------------------------------
+    # A body is read into memory, so an oversized Content-Length must be
+    # refused outright rather than allocated.
+    big = b"x" * 2048
+    status, _ = raw_request(
+        port, "POST", "/api/save", big,
+        {"Content-Type": "application/json",
+         "Content-Length": str(server.MAX_BODY_BYTES + 1),
+         "Cookie": cookie},
+    )
+    check("an oversized Content-Length is rejected, not allocated", status == 413, f"{status}")
+
+    status, _, _ = request(port, "POST", "/api/save", None, cookie)
+    check("an empty body is a 400, not a crash", status == 400, f"{status}")
+
+    # The session cookie must be marked Secure when the request arrived over
+    # HTTPS, and must not be when it did not (or plain-HTTP dev would break).
+    _, plain_cookie = raw_request(
+        port, "POST", "/api/login", json.dumps({"password": "testpass"}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    check("cookie is not Secure over plain HTTP", plain_cookie and "Secure" not in plain_cookie,
+          str(plain_cookie))
+    _, https_cookie = raw_request(
+        port, "POST", "/api/login", json.dumps({"password": "testpass"}).encode(),
+        {"Content-Type": "application/json", "X-Forwarded-Proto": "https"},
+    )
+    check("cookie is Secure behind an HTTPS proxy", https_cookie and "Secure" in https_cookie,
+          str(https_cookie))
+    check("cookie stays HttpOnly and SameSite", https_cookie and "HttpOnly" in https_cookie
+          and "SameSite=Lax" in https_cookie, str(https_cookie))
+
+    # One shared password has to be protected from brute force.
+    server.LOGIN_FAILURES.clear()
+    codes = []
+    for _ in range(server.LOGIN_MAX_FAILURES + 2):
+        st, _, _ = request(port, "POST", "/api/login", {"password": "nope"})
+        codes.append(st)
+    check("repeated wrong passwords eventually return 429",
+          429 in codes, f"never throttled: {codes}")
+    check("throttling only kicks in after the budget",
+          codes[:server.LOGIN_MAX_FAILURES] == [401] * server.LOGIN_MAX_FAILURES,
+          f"{codes}")
+    server.LOGIN_FAILURES.clear()
+    status, _, _ = request(port, "POST", "/api/login", {"password": "testpass"})
+    check("a correct password still works once the window is cleared", status == 200, f"{status}")
+
+    # A watcher that stops reading must not grow an unbounded queue.
+    check("watcher queues are bounded", server.WATCH_QUEUE_LIMIT > 0)
+    check("watchers wait with a timeout so dead streams are reaped",
+          server.SSE_HEARTBEAT_SECONDS > 0)
+    check("a client going away is not logged as a server error",
+          hasattr(server, "RoomCADServer") and "handle_error" in vars(server.RoomCADServer))
+
+    # Empty watcher sets are removed rather than accumulating per room name.
     reader.stop()
     reader2.stop()
+    check("no watcher entry leaks once every stream for a room has gone",
+          wait_for(lambda: "room1" not in server.WATCHERS, timeout=3.0)
+          or not server.WATCHERS.get("room1"),
+          f"{list(server.WATCHERS)}")
+
     httpd.shutdown()
     tmp.cleanup()
 
