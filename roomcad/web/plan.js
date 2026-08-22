@@ -32,6 +32,11 @@ export const SILL_HEIGHT = 0.90;
 export const GLASS_HEIGHT = 1.00;
 export const DOOR_HEIGHT = 2.10;
 export const MIN_WALL_LENGTH = 0.30;
+export const MIN_OPENING_WIDTH = { door: 0.6, window: 0.4 };
+export const MAX_OPENING_WIDTH = { door: 1.4, window: 2.0 };
+/// How close a wall end has to come to another wall before it locks onto it.
+export const WALL_ATTACH_TOLERANCE = 0.35;
+export const LABEL_DEFAULT_SIZE = 0.22;   // cap height in metres
 export const ROOM_FILE_FORMAT = "com.maria.roomcad-v2.room";
 export const ROOM_FILE_VERSION = 1;
 
@@ -85,6 +90,7 @@ export function freshRoom(name = "My Room", width = 6, length = 4, height = 2.6)
     windows: [],
     furniture: [],
     publicAreas: [], // shared floor rectangles (living room, corridor…) excluded from auto-layout
+    labels: [],      // free text placed on the plan
   };
 }
 
@@ -158,7 +164,11 @@ export function snapPoint(room, raw, excludeWallID = null) {
     consider(wall.end);
     consider(wallMidpoint(wall));
   }
-  return best ? best.p : gridSnap(room, p);
+  if (best) return best.p;
+  // Starting a wall against an existing one begins it exactly on that wall.
+  const attach = wallAttachPoint(room, p, WALL_ATTACH_TOLERANCE, excludeWallID);
+  if (attach) return { x: clean(attach.x), z: clean(attach.z) };
+  return gridSnap(room, p);
 }
 
 // MARK: - Axis-locked walls (90° only)
@@ -194,6 +204,10 @@ export function snapWallEnd(room, rawEnd, start) {
     consider(wallMidpoint(wall));
   }
   if (best) return best.p;
+  // A new wall drawn up to an existing one locks onto it too, so rooms close
+  // themselves instead of leaving a hairline gap at the join.
+  const attached = attachAlongAxis(room, end, start, null);
+  if (attached) return attached;
   const snapped = gridSnap(room, end);
   // Keep the shared axis coordinate exact so the wall stays connected to its
   // starting point, even when that point is off the plain grid.
@@ -205,7 +219,7 @@ export function snapWallEnd(room, rawEnd, start) {
 /// Snaps a dragged wall endpoint. Unlike `snapWallEnd`, the free end is not
 /// locked to the wall's current axis: it can snap to the perpendicular axis
 /// through the fixed end, so grabbing an endpoint can reorient the wall 90°.
-export function snapWallEndpoint(room, raw, fixed) {
+export function snapWallEndpoint(room, raw, fixed, excludeWallID = null) {
   const canvas = canvasOf(room);
   const end = axisAligned(
     { x: clamp(raw.x, 0, canvas.width), z: clamp(raw.z, 0, canvas.length) },
@@ -222,11 +236,16 @@ export function snapWallEndpoint(room, raw, fixed) {
   consider(point(0, canvas.length));
   consider(point(canvas.width, canvas.length));
   for (const wall of room.walls) {
+    if (excludeWallID !== null && wall.id === excludeWallID) continue;
     consider(wall.start);
     consider(wall.end);
     consider(wallMidpoint(wall));
   }
   if (best) return best.p;
+  // Nothing exact to land on, but the end may still be crossing or stopping
+  // short of a wall — pull it onto that wall's centreline.
+  const attached = attachAlongAxis(room, end, fixed, excludeWallID);
+  if (attached) return attached;
   const snapped = gridSnap(room, end);
   // Keep the shared axis coordinate exact so the wall stays connected to its
   // fixed endpoint.
@@ -285,6 +304,43 @@ export function wallEndSeals(room, wall) {
     start: joined(wall.start) ? WALL_JOIN_SEAL : 0,
     end: joined(wall.end) ? WALL_JOIN_SEAL : 0,
   };
+}
+
+/// The point on another wall that `raw` should lock onto, or null if nothing is
+/// near enough. Corners win over a point part-way along a wall, so an end that
+/// is close to a corner joins the corner rather than landing beside it.
+///
+/// This is what stops a wall end from overshooting through the wall it meets,
+/// or stopping just short of it — both of which leave a gap in 3D.
+export function wallAttachPoint(room, raw, tolerance = WALL_ATTACH_TOLERANCE, excludeWallID = null) {
+  let best = null;
+  const consider = (candidate, d, bonus) => {
+    if (d > tolerance) return;
+    const score = d - bonus;
+    if (!best || score < best.score) best = { p: candidate, score };
+  };
+  for (const wall of room.walls) {
+    if (excludeWallID !== null && wall.id === excludeWallID) continue;
+    if (wallLength(wall) < 0.01) continue;
+    consider({ ...wall.start }, distance(wall.start, raw), tolerance * 0.4);
+    consider({ ...wall.end }, distance(wall.end, raw), tolerance * 0.4);
+    const proj = wallProjection(wall, raw);
+    consider({ ...proj.point }, proj.distance, 0);
+  }
+  return best ? best.p : null;
+}
+
+/// Locks a free wall end onto a nearby wall while keeping the wall axis-aligned
+/// to its fixed end. Returns null when nothing is close enough.
+function attachAlongAxis(room, end, fixed, excludeWallID) {
+  const attach = wallAttachPoint(room, end, WALL_ATTACH_TOLERANCE, excludeWallID);
+  if (!attach) return null;
+  const horizontal = Math.abs(end.z - fixed.z) <= 0.0001;
+  // Take only the coordinate the wall is free to move in, so the wall never
+  // goes diagonal just to reach the thing it is snapping to.
+  return horizontal
+    ? point(clean(attach.x), fixed.z)
+    : point(fixed.x, clean(attach.z));
 }
 
 export function translateWall(w, dx, dz, width, length) {
@@ -641,6 +697,125 @@ export function wallCollisionSegments(room) {
   return segments;
 }
 
+// MARK: - Openings as draggable segments
+
+/// The two plan points where an opening meets its wall. These are what the 2D
+/// editor puts grab handles on.
+export function openingEndpoints(room, kind, id) {
+  const list = kind === "door" ? room.doors : room.windows;
+  const o = list.find(x => x.id === id);
+  if (!o) return null;
+  const wall = room.walls.find(w => w.id === o.wallID);
+  if (!wall) return null;
+  return {
+    wall,
+    start: wallPointAt(wall, o.offset),
+    end: wallPointAt(wall, o.offset + o.width),
+  };
+}
+
+/// Moves one end of an opening to `raw`, keeping the other end where it is.
+/// Returns the new `{ offset, width }`, clamped to the opening's legal width
+/// and to the 10 cm of wall that has to remain at each end.
+export function resizeOpeningEnd(room, kind, id, which, raw) {
+  const list = kind === "door" ? room.doors : room.windows;
+  const o = list.find(x => x.id === id);
+  if (!o) return null;
+  const wall = room.walls.find(w => w.id === o.wallID);
+  if (!wall) return null;
+  const wallLen = wallLength(wall);
+  const minW = MIN_OPENING_WIDTH[kind];
+  const maxW = MAX_OPENING_WIDTH[kind];
+  const step = GRID_STEPS[room.grid].meters;
+  const along = clamp(clean(Math.round(wallProjection(wall, raw).offset / step) * step), 0.10, wallLen - 0.10);
+
+  if (which === "start") {
+    const fixedEnd = o.offset + o.width;
+    const width = clamp(fixedEnd - along, minW, Math.min(maxW, fixedEnd - 0.10));
+    return { offset: clean(fixedEnd - width), width: clean(width) };
+  }
+  const fixedStart = o.offset;
+  const width = clamp(along - fixedStart, minW, Math.min(maxW, wallLen - 0.10 - fixedStart));
+  return { offset: clean(fixedStart), width: clean(width) };
+}
+
+// MARK: - Public areas
+
+export function publicAreaAt(room, p) {
+  const areas = room.publicAreas || [];
+  // Topmost first, so the most recently drawn area wins an overlap.
+  for (let i = areas.length - 1; i >= 0; i--) {
+    const a = areas[i];
+    if (p.x >= a.x && p.x <= a.x + a.w && p.z >= a.z && p.z <= a.z + a.l) return a;
+  }
+  return null;
+}
+
+/// The four draggable corners of a public area, in a fixed order.
+export function publicAreaCorners(a) {
+  return [
+    { corner: "nw", x: a.x, z: a.z },
+    { corner: "ne", x: a.x + a.w, z: a.z },
+    { corner: "se", x: a.x + a.w, z: a.z + a.l },
+    { corner: "sw", x: a.x, z: a.z + a.l },
+  ];
+}
+
+export function publicAreaCornerNear(room, p, tolerance = 0.22) {
+  for (const a of (room.publicAreas || [])) {
+    for (const c of publicAreaCorners(a)) {
+      if (distance(c, p) <= tolerance) return { area: a, corner: c.corner };
+    }
+  }
+  return null;
+}
+
+/// Moves one corner of a public area, keeping the opposite corner pinned.
+export function resizePublicArea(a, corner, raw, room) {
+  const canvas = canvasOf(room);
+  const step = GRID_STEPS[room.grid].meters;
+  const snap = v => clean(Math.round(v / step) * step);
+  const x0 = corner === "nw" || corner === "sw" ? snap(raw.x) : a.x;
+  const x1 = corner === "ne" || corner === "se" ? snap(raw.x) : a.x + a.w;
+  const z0 = corner === "nw" || corner === "ne" ? snap(raw.z) : a.z;
+  const z1 = corner === "sw" || corner === "se" ? snap(raw.z) : a.z + a.l;
+  const minX = clamp(Math.min(x0, x1), 0, canvas.width);
+  const maxX = clamp(Math.max(x0, x1), 0, canvas.width);
+  const minZ = clamp(Math.min(z0, z1), 0, canvas.length);
+  const maxZ = clamp(Math.max(z0, z1), 0, canvas.length);
+  return {
+    x: minX, z: minZ,
+    w: Math.max(0.5, clean(maxX - minX)),
+    l: Math.max(0.5, clean(maxZ - minZ)),
+  };
+}
+
+// MARK: - Labels
+
+/// A label's footprint on the plan, used for hit testing and for the selection
+/// outline. Width is estimated from the text — good enough for picking.
+export function labelBounds(label) {
+  const size = label.size || LABEL_DEFAULT_SIZE;
+  const text = label.text || "";
+  const w = Math.max(size * 1.2, text.length * size * 0.58);
+  const h = size * 1.5;
+  return {
+    minX: label.center.x - w / 2, maxX: label.center.x + w / 2,
+    minZ: label.center.z - h / 2, maxZ: label.center.z + h / 2,
+    w, h,
+  };
+}
+
+export function labelNear(room, p, tolerance = 0.08) {
+  const labels = room.labels || [];
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const b = labelBounds(labels[i]);
+    if (p.x >= b.minX - tolerance && p.x <= b.maxX + tolerance
+      && p.z >= b.minZ - tolerance && p.z <= b.maxZ + tolerance) return labels[i];
+  }
+  return null;
+}
+
 // MARK: - Sanitizing
 
 export function sanitize(room) {
@@ -714,15 +889,31 @@ export function sanitize(room) {
   });
 
   room.publicAreas = (room.publicAreas || []).map(a => {
-    const w = clamp(a.w, 1, canvas.width);
-    const l = clamp(a.l, 1, canvas.length);
+    const w = clamp(a.w, 0.5, canvas.width);
+    const l = clamp(a.l, 0.5, canvas.length);
     return {
+      // Areas saved before they were selectable have no id; give them one so
+      // selection survives edits that reorder the list.
+      id: a.id || uid(),
       x: clamp(a.x, 0, canvas.width - w),
       z: clamp(a.z, 0, canvas.length - l),
       w,
       l,
     };
   });
+
+  room.labels = (room.labels || [])
+    .filter(l => l && l.center && typeof l.center.x === "number")
+    .map(l => ({
+      id: l.id || uid(),
+      text: String(l.text === undefined ? "" : l.text).slice(0, 60),
+      center: {
+        x: clamp(l.center.x, 0, canvas.width),
+        z: clamp(l.center.z, 0, canvas.length),
+      },
+      rotationDegrees: ((Math.round((l.rotationDegrees || 0) / 90) * 90) % 360 + 360) % 360,
+      size: clamp(Number(l.size) || LABEL_DEFAULT_SIZE, 0.08, 1.0),
+    }));
 }
 
 // MARK: - Auto room layout
@@ -1094,6 +1285,8 @@ export function parseRoom(text) {
   room.doors = Array.isArray(room.doors) ? room.doors : [];
   room.windows = Array.isArray(room.windows) ? room.windows : [];
   room.furniture = Array.isArray(room.furniture) ? room.furniture : [];
+  room.publicAreas = Array.isArray(room.publicAreas) ? room.publicAreas : [];
+  room.labels = Array.isArray(room.labels) ? room.labels : [];
   sanitize(room);
   return room;
 }

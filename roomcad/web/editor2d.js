@@ -3,6 +3,16 @@
 import * as P from "./plan.js";
 import { store } from "./store.js";
 
+// Grab handles are drawn at a constant on-screen size, whatever the zoom.
+const HANDLE_RADIUS_PX = 5;
+const HANDLE_COLOR = "#ff3b30";
+const HANDLE_STROKE = "#ffffff";
+// CAD-style dimension lines.
+const DIM_COLOR = "rgba(226, 232, 240, 0.62)";
+const DIM_TEXT = "rgba(240, 245, 252, 0.95)";
+const DIM_OFFSET_PX = 16;   // how far the dimension line sits off the element
+const DIM_TICK_PX = 4;
+
 export class Editor2D {
   constructor(canvas) {
     this.canvas = canvas;
@@ -243,10 +253,12 @@ export class Editor2D {
     const p = this.plan(c);
 
     // Only show a menu when there is something to act on under the cursor.
-    const furniture = P.furnitureNear(store.room, p);
-    const opening = P.openingNear(store.room, p);
-    const wall = P.wallNear(store.room, p);
-    if (!furniture && !opening && !wall) {
+    const hit = P.labelNear(store.room, p)
+      || P.furnitureNear(store.room, p)
+      || P.openingNear(store.room, p)
+      || P.wallNear(store.room, p)
+      || P.publicAreaAt(store.room, p);
+    if (!hit) {
       this.hideContextMenu();
       return;
     }
@@ -269,6 +281,13 @@ export class Editor2D {
     this.contextMenu.appendChild(head);
 
     for (const item of items) {
+      if (!item.action) {
+        const note = document.createElement("div");
+        note.className = "ctx-note";
+        note.textContent = item.label;
+        this.contextMenu.appendChild(note);
+        continue;
+      }
       const button = document.createElement("button");
       button.textContent = item.label;
       if (item.danger) button.className = "danger";
@@ -292,7 +311,16 @@ export class Editor2D {
   contextMenuEntries() {
     let title = "";
     const items = [];
-    if (store.selectedFurnitureID) {
+    if (store.selectedLabelID) {
+      title = "Label";
+      items.push({ label: "Turn 90°", action: "turn-label" });
+      items.push({ label: "Delete label", danger: true, action: "delete" });
+    } else if (store.selectedPublicID) {
+      const area = store.selectedPublicArea();
+      title = "Public area";
+      if (area) items.push({ label: P.cm(area.w) + " × " + P.cm(area.l), action: null });
+      items.push({ label: "Delete public area", danger: true, action: "delete" });
+    } else if (store.selectedFurnitureID) {
       const item = store.selectedFurniture();
       if (!item) return { title, items };
       const kind = P.FURNITURE_KINDS[item.kind];
@@ -320,6 +348,9 @@ export class Editor2D {
     switch (action) {
       case "turn":
         store.rotateSelectedFurniture();
+        break;
+      case "turn-label":
+        store.rotateSelectedLabel();
         break;
       case "toggle-open": {
         const id = store.selectedDoorID;
@@ -365,6 +396,14 @@ export class Editor2D {
       return;
     }
 
+    // Right button belongs to the context menu. Without this, right-clicking
+    // with a drawing tool active also started (and immediately committed) a
+    // zero-sized drag.
+    if (e.button !== 0) {
+      this.drag = null;
+      return;
+    }
+
     const p = this.plan(c);
     switch (store.tool) {
       case "select":
@@ -389,7 +428,65 @@ export class Editor2D {
     this.pointerMoved = false;
   }
 
+  /// Plan-space radius of a grab handle at the current zoom. Handles have to
+  /// stay the same size on screen, so the tolerance shrinks as you zoom in.
+  handleTolerance() {
+    return HANDLE_RADIUS_PX * 1.6 / this.scale;
+  }
+
+  /// The grab handle under `p`, if any. Handles belong to whatever is selected,
+  /// so they never steal a click from an unselected object underneath.
+  handleAt(p) {
+    const tol = this.handleTolerance();
+    const room = store.room;
+
+    const openingKind = store.selectedOpeningKind();
+    if (openingKind) {
+      const id = openingKind === "door" ? store.selectedDoorID : store.selectedWindowID;
+      const ends = P.openingEndpoints(room, openingKind, id);
+      if (ends) {
+        if (P.distance(ends.start, p) <= tol) return { kind: "openingEnd", openingKind, id, which: "start" };
+        if (P.distance(ends.end, p) <= tol) return { kind: "openingEnd", openingKind, id, which: "end" };
+      }
+    }
+
+    const wall = store.selectedWall();
+    if (wall) {
+      if (P.distance(wall.start, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "start" };
+      if (P.distance(wall.end, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "end" };
+    }
+
+    const area = store.selectedPublicArea();
+    if (area) {
+      for (const c of P.publicAreaCorners(area)) {
+        if (P.distance(c, p) <= tol) return { kind: "publicCorner", id: area.id, corner: c.corner };
+      }
+    }
+    return null;
+  }
+
   beginSelectDrag(p) {
+    // A handle on the current selection always wins.
+    const handle = this.handleAt(p);
+    if (handle) {
+      store.beginDrag();
+      if (handle.kind === "openingEnd") {
+        return { type: "openingEnd", kind: handle.openingKind, id: handle.id, which: handle.which };
+      }
+      if (handle.kind === "wallEnd") {
+        return { type: "wallEndpoint", id: handle.id, part: handle.part };
+      }
+      return { type: "publicCorner", id: handle.id, corner: handle.corner };
+    }
+
+    const label = P.labelNear(store.room, p);
+    if (label) {
+      store.clearSelection();
+      store.selectedLabelID = label.id;
+      store.beginDrag();
+      return { type: "moveLabel", id: label.id };
+    }
+
     const furniture = P.furnitureNear(store.room, p);
     if (furniture) {
       store.clearSelection();
@@ -415,6 +512,13 @@ export class Editor2D {
         return { type: "wallEndpoint", id: wall.id, part: startDist <= endDist ? "start" : "end" };
       }
       return { type: "moveWall", id: wall.id };
+    }
+    const area = P.publicAreaAt(store.room, p);
+    if (area) {
+      store.clearSelection();
+      store.selectedPublicID = area.id;
+      store.beginDrag();
+      return { type: "movePublic", id: area.id };
     }
     return { type: "click" };
   }
@@ -480,6 +584,20 @@ export class Editor2D {
         case "wallEndpoint":
           store.updateWallEndpoint(this.drag.id, this.drag.part, p);
           break;
+        case "openingEnd":
+          store.dragOpeningEnd(this.drag.kind, this.drag.id, this.drag.which, p);
+          break;
+        case "publicCorner":
+          store.resizePublicArea(this.drag.id, this.drag.corner, p);
+          break;
+        case "movePublic":
+          if (this.lastPlan) {
+            store.movePublicArea(this.drag.id, p.x - this.lastPlan.x, p.z - this.lastPlan.z);
+          }
+          break;
+        case "moveLabel":
+          store.moveLabel(this.drag.id, p);
+          break;
         case "moveWall":
           if (this.lastPlan) {
             store.moveWall(this.drag.id, p.x - this.lastPlan.x, p.z - this.lastPlan.z);
@@ -528,6 +646,9 @@ export class Editor2D {
           case "erase":
             store.erase(p);
             break;
+          case "label":
+            store.placeLabel(p);
+            break;
           case "select":
             store.select(p);
             break;
@@ -564,6 +685,28 @@ export class Editor2D {
       case "wallEndpoint":
         if (moved) store.endDrag("Reshaped wall");
         else store.discardDrag();
+        break;
+      case "openingEnd":
+        if (moved) store.endDrag(drag.kind === "door" ? "Resized door" : "Resized window");
+        else store.discardDrag();
+        break;
+      case "publicCorner":
+        if (moved) store.endDrag("Resized public area");
+        else store.discardDrag();
+        break;
+      case "movePublic":
+        if (moved) store.endDrag("Moved public area");
+        else {
+          store.discardDrag();
+          store.select(p);
+        }
+        break;
+      case "moveLabel":
+        if (moved) store.endDrag("Moved label");
+        else {
+          store.discardDrag();
+          store.select(p);
+        }
         break;
       case "moveWall":
         if (moved) store.endDrag("Moved wall");
@@ -635,7 +778,9 @@ export class Editor2D {
     this.drawGrid(room);
 
     // Public-space rectangles (excluded from auto-layout), drawn under walls.
-    for (const a of room.publicAreas || []) this.drawPublicArea(a);
+    for (const a of room.publicAreas || []) {
+      this.drawPublicArea(a, false, a.id === store.selectedPublicID);
+    }
     if (this.drag && this.drag.type === "publicArea") {
       this.drawPublicArea({
         x: Math.min(this.drag.anchor.x, this.drag.current.x),
@@ -703,6 +848,19 @@ export class Editor2D {
       this.drawSnapDot(P.snapPoint(room, this.hover));
     }
 
+    for (const label of room.labels || []) {
+      this.drawLabel(label, label.id === store.selectedLabelID);
+    }
+
+    if (store.tool === "label" && this.hover) {
+      this.drawLabel({ text: "Label", center: this.hover, rotationDegrees: 0,
+        size: P.LABEL_DEFAULT_SIZE }, false);
+    }
+
+    // Permanent CAD dimensions, then the grab handles on top of everything.
+    this.drawPermanentDimensions(room);
+    this.drawHandles(room);
+
     this.drawMeasure();
 
     // Cursor reflects the active tool: arrow for Select, crosshair for tools.
@@ -730,14 +888,15 @@ export class Editor2D {
   }
 
   /// Draws a public-space rectangle (semi-transparent green) or its preview.
-  drawPublicArea(area, preview = false) {
+  drawPublicArea(area, preview = false, selected = false) {
     const ctx = this.ctx;
     const r = this.rect({ minX: area.x, maxX: area.x + area.w, minZ: area.z, maxZ: area.z + area.l });
-    ctx.fillStyle = preview ? "rgba(57,255,20,0.14)" : "rgba(57,255,20,0.10)";
+    ctx.fillStyle = preview ? "rgba(57,255,20,0.14)"
+      : selected ? "rgba(57,255,20,0.18)" : "rgba(57,255,20,0.10)";
     ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.strokeStyle = preview ? "#39ff14" : "rgba(57,255,20,0.45)";
-    ctx.lineWidth = preview ? 2 : 1.5;
-    ctx.setLineDash(preview ? [6, 4] : [4, 4]);
+    ctx.strokeStyle = preview || selected ? "#39ff14" : "rgba(57,255,20,0.45)";
+    ctx.lineWidth = preview || selected ? 2 : 1.5;
+    ctx.setLineDash(preview ? [6, 4] : selected ? [] : [4, 4]);
     ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
     ctx.setLineDash([]);
     if (!preview && r.w > 34 && r.h > 16) {
@@ -747,6 +906,209 @@ export class Editor2D {
       ctx.fillStyle = "rgba(57,255,20,0.8)";
       ctx.fillText("PUBLIC", r.x + r.w / 2, r.y + r.h / 2);
     }
+    // Side lengths: live while drawing or resizing, so the size is known before
+    // letting go rather than after.
+    if (preview || selected) {
+      const nw = { x: area.x, z: area.z };
+      const ne = { x: area.x + area.w, z: area.z };
+      const sw = { x: area.x, z: area.z + area.l };
+      const opts = { color: "rgba(57,255,20,0.85)", textColor: "#c9ffbe", force: true };
+      if (area.w > 0.01) this.drawDimension(nw, ne, -14, area.w, opts);
+      if (area.l > 0.01) this.drawDimension(nw, sw, 14, area.l, opts);
+    }
+  }
+
+  /// A red grab handle. Everything the user can pull on gets the same marker,
+  /// so "red dot means you can drag this" is learned once.
+  drawHandle(planPoint) {
+    const c = this.screen(planPoint);
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, HANDLE_RADIUS_PX, 0, Math.PI * 2);
+    ctx.fillStyle = HANDLE_COLOR;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = HANDLE_STROKE;
+    ctx.stroke();
+  }
+
+  /// A dimension line between two plan points, offset perpendicular to them,
+  /// with extension lines, end ticks and a centred centimetre readout — the
+  /// same anatomy a drafting program uses, kept deliberately plain.
+  drawDimension(from, to, offsetPx, metres, options = {}) {
+    const ctx = this.ctx;
+    const a = this.screen(from);
+    const b = this.screen(to);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return;
+    // Too short on screen to letter — a cramped label is worse than none.
+    if (len < 26 && !options.force) return;
+
+    // Perpendicular, pointing to whichever side the caller asked for.
+    const nx = -dy / len;
+    const ny = dx / len;
+    const ox = nx * offsetPx;
+    const oy = ny * offsetPx;
+    const a2 = { x: a.x + ox, y: a.y + oy };
+    const b2 = { x: b.x + ox, y: b.y + oy };
+
+    ctx.save();
+    ctx.strokeStyle = options.color || DIM_COLOR;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+
+    // Extension lines, from just off the element out past the dimension line.
+    const gap = 3;
+    ctx.beginPath();
+    ctx.moveTo(a.x + nx * gap, a.y + ny * gap);
+    ctx.lineTo(a2.x + nx * 3, a2.y + ny * 3);
+    ctx.moveTo(b.x + nx * gap, b.y + ny * gap);
+    ctx.lineTo(b2.x + nx * 3, b2.y + ny * 3);
+    ctx.stroke();
+
+    // The dimension line itself.
+    ctx.beginPath();
+    ctx.moveTo(a2.x, a2.y);
+    ctx.lineTo(b2.x, b2.y);
+    ctx.stroke();
+
+    // 45° architect's ticks rather than arrowheads: cheaper to read at 1 px.
+    const ux = dx / len;
+    const uy = dy / len;
+    const tick = (pt, sign) => {
+      ctx.beginPath();
+      ctx.moveTo(pt.x - (ux + nx) * DIM_TICK_PX * sign, pt.y - (uy + ny) * DIM_TICK_PX * sign);
+      ctx.lineTo(pt.x + (ux + nx) * DIM_TICK_PX * sign, pt.y + (uy + ny) * DIM_TICK_PX * sign);
+      ctx.stroke();
+    };
+    tick(a2, 1);
+    tick(b2, 1);
+
+    // The readout, upright regardless of plan rotation, on a chip of the
+    // background so it stays legible over walls and floor alike.
+    const mid = { x: (a2.x + b2.x) / 2, y: (a2.y + b2.y) / 2 };
+    const text = P.cm(metres);
+    ctx.font = options.font || "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const tw = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(14, 14, 16, 0.82)";
+    ctx.fillRect(mid.x - tw / 2 - 3, mid.y - 7, tw + 6, 14);
+    ctx.fillStyle = options.textColor || DIM_TEXT;
+    ctx.fillText(text, mid.x, mid.y);
+    ctx.restore();
+  }
+
+  /// Which side of a wall its dimension line should sit on. Always the side
+  /// away from the room centre, so dimensions ring the plan rather than
+  /// cluttering its middle.
+  dimensionSide(from, to) {
+    const room = store.room;
+    const origin = P.roomOrigin(room);
+    const cx = origin.x + room.width / 2;
+    const cz = origin.z + room.length / 2;
+    const mid = { x: (from.x + to.x) / 2, z: (from.z + to.z) / 2 };
+    const a = this.screen(from);
+    const b = this.screen(to);
+    const m = this.screen(mid);
+    const centre = this.screen({ x: cx, z: cz });
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    // Positive offset points along (nx, ny); flip it if that heads inward.
+    const toward = (m.x + nx - centre.x) ** 2 + (m.y + ny - centre.y) ** 2;
+    const away = (m.x - nx - centre.x) ** 2 + (m.y - ny - centre.y) ** 2;
+    return toward >= away ? 1 : -1;
+  }
+
+  /// Permanent dimensions for every wall, door and window — the thing that
+  /// makes the plan readable without clicking anything.
+  drawPermanentDimensions(room) {
+    for (const wall of room.walls) {
+      const len = P.wallLength(wall);
+      if (len < 0.01) continue;
+      const side = this.dimensionSide(wall.start, wall.end);
+      this.drawDimension(wall.start, wall.end, DIM_OFFSET_PX * side, len);
+    }
+    for (const kind of ["door", "window"]) {
+      const list = kind === "door" ? room.doors : room.windows;
+      for (const o of list) {
+        const ends = P.openingEndpoints(room, kind, o.id);
+        if (!ends) continue;
+        const side = this.dimensionSide(ends.start, ends.end);
+        // Openings dimension on the same side as their wall, but closer in, so
+        // the two rows never collide.
+        this.drawDimension(ends.start, ends.end, (DIM_OFFSET_PX - 9) * side, o.width, {
+          color: kind === "door" ? "rgba(255, 196, 120, 0.75)" : "rgba(150, 220, 255, 0.8)",
+          textColor: kind === "door" ? "#ffd9a8" : "#c8ecff",
+        });
+      }
+    }
+  }
+
+  /// The red grab handles for whatever is selected.
+  drawHandles(room) {
+    const kind = store.selectedOpeningKind();
+    if (kind) {
+      const id = kind === "door" ? store.selectedDoorID : store.selectedWindowID;
+      const ends = P.openingEndpoints(room, kind, id);
+      if (ends) {
+        this.drawHandle(ends.start);
+        this.drawHandle(ends.end);
+      }
+    }
+    const wall = store.selectedWall();
+    if (wall) {
+      this.drawHandle(wall.start);
+      this.drawHandle(wall.end);
+    }
+    const area = store.selectedPublicArea();
+    if (area) {
+      for (const c of P.publicAreaCorners(area)) this.drawHandle(c);
+    }
+  }
+
+  /// A text label. Its position turns with the plan so it stays on whatever it
+  /// names, but the text itself is flipped upright when the rotation would
+  /// otherwise leave it upside down — the CAD convention.
+  drawLabel(label, selected) {
+    const ctx = this.ctx;
+    const c = this.screen(label.center);
+    const size = (label.size || P.LABEL_DEFAULT_SIZE) * this.scale;
+    if (size < 4) return;
+    let angle = ((label.rotationDegrees + store.rotation) % 360 + 360) % 360;
+    if (angle > 90 && angle < 270) angle = (angle + 180) % 360;
+
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(angle * Math.PI / 180);
+    ctx.font = `600 ${size.toFixed(1)}px -apple-system, "Segoe UI", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const text = label.text || "";
+    const tw = ctx.measureText(text).width;
+    const pad = size * 0.32;
+
+    if (selected) {
+      ctx.fillStyle = "rgba(46, 204, 64, 0.14)";
+      ctx.strokeStyle = "#2ecc40";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.rect(-tw / 2 - pad, -size * 0.78, tw + pad * 2, size * 1.56);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = selected ? "#eaffea" : "#f0e6c8";
+    ctx.fillText(text || "(empty)", 0, 0);
+    ctx.restore();
+
+    if (selected) this.drawHandle(label.center);
   }
 
   drawGrid(room) {

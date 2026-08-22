@@ -6,6 +6,7 @@ import { playDoorSound } from "./audio.js";
 
 export const TOOL_HELP = {
   select: "Drag walls, doors, windows, and furniture · click to select",
+  label: "Click the plan to place a text label",
   wall: "Drag on the plan to draw a wall",
   door: "Click a wall to add a door, then drag it to slide",
   window: "Click a wall to add a window, then drag it to slide",
@@ -27,6 +28,8 @@ export const store = {
   selectedDoorID: null,
   selectedWindowID: null,
   selectedFurnitureID: null,
+  selectedLabelID: null,
+  selectedPublicID: null,
   documentName: null,
   serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
   serverRoomVersion: null, // the current save version of that slot
@@ -155,11 +158,33 @@ export const store = {
     this.selectedDoorID = null;
     this.selectedWindowID = null;
     this.selectedFurnitureID = null;
+    this.selectedLabelID = null;
+    this.selectedPublicID = null;
     this.furnitureFeedback = null;
     this.furnitureGaps = null;
   },
 
+  selectedLabel() {
+    return this.selectedLabelID
+      ? (this.room.labels || []).find(l => l.id === this.selectedLabelID) || null
+      : null;
+  },
+
+  selectedPublicArea() {
+    return this.selectedPublicID
+      ? (this.room.publicAreas || []).find(a => a.id === this.selectedPublicID) || null
+      : null;
+  },
+
   select(p) {
+    const label = P.labelNear(this.room, p);
+    if (label) {
+      this.clearSelection();
+      this.selectedLabelID = label.id;
+      this.status = "Selected label · drag to move · R turns it";
+      this.emit();
+      return;
+    }
     const furniture = P.furnitureNear(this.room, p);
     if (furniture) {
       this.clearSelection();
@@ -191,8 +216,18 @@ export const store = {
       this.emit();
       return;
     }
+    // Public areas sit under everything else, so they are the last thing tried.
+    const area = P.publicAreaAt(this.room, p);
+    if (area) {
+      this.clearSelection();
+      this.selectedPublicID = area.id;
+      this.status = "Selected public area · " + P.cm(area.w) + " × " + P.cm(area.l)
+        + " · drag a corner to resize";
+      this.emit();
+      return;
+    }
     this.clearSelection();
-    this.status = "Click a wall, door, window, or furniture item";
+    this.status = "Click a wall, door, window, label, or furniture item";
     this.emit();
   },
 
@@ -253,7 +288,9 @@ export const store = {
     // The dragged endpoint snaps to the closer axis through the fixed one, so
     // grabbing it can resize the wall or reorient it onto a 90° side.
     const fixed = part === "start" ? wall.end : wall.start;
-    const p = P.snapWallEndpoint(this.room, raw, fixed);
+    // Exclude this wall so the end never snaps onto the wall it belongs to,
+    // and so it can lock onto whatever other wall it is being dragged into.
+    const p = P.snapWallEndpoint(this.room, raw, fixed, id);
     if (part === "start") wall.start = p;
     else wall.end = p;
     if (P.wallLength(wall) >= 0.15) {
@@ -521,9 +558,126 @@ export const store = {
     });
   },
 
+  // MARK: Labels
+
+  placeLabel(raw, text = "Label") {
+    const canvas = P.canvasOf(this.room);
+    const center = {
+      x: P.clamp(P.clean(raw.x), 0, canvas.width),
+      z: P.clamp(P.clean(raw.z), 0, canvas.length),
+    };
+    const label = {
+      id: P.uid(),
+      text,
+      center,
+      rotationDegrees: 0,
+      size: P.LABEL_DEFAULT_SIZE,
+    };
+    this.commit("Placed label", room => {
+      room.labels = room.labels || [];
+      room.labels.push(label);
+    });
+    this.selectedLabelID = label.id;
+    this.tool = "select";
+    this.emit();
+  },
+
+  moveLabel(id, raw) {
+    this.beginDrag();
+    const label = (this.room.labels || []).find(l => l.id === id);
+    if (!label) return;
+    const canvas = P.canvasOf(this.room);
+    label.center = {
+      x: P.clamp(P.clean(raw.x), 0, canvas.width),
+      z: P.clamp(P.clean(raw.z), 0, canvas.length),
+    };
+  },
+
+  renameLabel(id, text) {
+    const label = (this.room.labels || []).find(l => l.id === id);
+    if (!label || label.text === text) return;
+    this.commit("Renamed label", room => {
+      const l = (room.labels || []).find(x => x.id === id);
+      if (l) l.text = String(text).slice(0, 60);
+    });
+  },
+
+  setLabelSize(id, size) {
+    const label = (this.room.labels || []).find(l => l.id === id);
+    if (!label) return;
+    this.commit("Resized label", room => {
+      const l = (room.labels || []).find(x => x.id === id);
+      if (l) l.size = P.clamp(Number(size) || P.LABEL_DEFAULT_SIZE, 0.08, 1.0);
+    });
+  },
+
+  rotateSelectedLabel() {
+    const id = this.selectedLabelID;
+    if (!id) return false;
+    this.commit("Turned label", room => {
+      const l = (room.labels || []).find(x => x.id === id);
+      if (l) l.rotationDegrees = (l.rotationDegrees + 90) % 360;
+    });
+    return true;
+  },
+
+  // MARK: Public areas
+
+  /// Drags one corner of a public area; the opposite corner stays put.
+  resizePublicArea(id, corner, raw) {
+    this.beginDrag();
+    const areas = this.room.publicAreas || [];
+    const index = areas.findIndex(a => a.id === id);
+    if (index < 0) return;
+    const next = P.resizePublicArea(areas[index], corner, raw, this.room);
+    areas[index] = { ...areas[index], ...next };
+    this.status = P.cm(next.w) + " × " + P.cm(next.l);
+  },
+
+  movePublicArea(id, dx, dz) {
+    this.beginDrag();
+    const area = (this.room.publicAreas || []).find(a => a.id === id);
+    if (!area) return;
+    const canvas = P.canvasOf(this.room);
+    area.x = P.clamp(P.clean(area.x + dx), 0, canvas.width - area.w);
+    area.z = P.clamp(P.clean(area.z + dz), 0, canvas.length - area.l);
+  },
+
+  deletePublicArea(id) {
+    this.commit("Deleted public area", room => {
+      room.publicAreas = (room.publicAreas || []).filter(a => a.id !== id);
+    });
+    if (this.selectedPublicID === id) this.selectedPublicID = null;
+    this.emit();
+  },
+
+  // MARK: Opening ends
+
+  /// Drags one end of a door or window, keeping the other end anchored.
+  dragOpeningEnd(kind, id, which, raw) {
+    this.beginDrag();
+    const next = P.resizeOpeningEnd(this.room, kind, id, which, raw);
+    if (!next) return;
+    const list = kind === "door" ? this.room.doors : this.room.windows;
+    const o = list.find(x => x.id === id);
+    if (!o) return;
+    o.offset = next.offset;
+    o.width = next.width;
+    this.status = (kind === "door" ? "Door " : "Window ") + P.cm(next.width) + " wide";
+  },
+
   // MARK: Erase and delete
 
   erase(p) {
+    const label = P.labelNear(this.room, p);
+    if (label) {
+      this.commit("Erased label", room => {
+        room.labels = (room.labels || []).filter(l => l.id !== label.id);
+      });
+      if (this.selectedLabelID === label.id) this.selectedLabelID = null;
+      this.emit();
+      return;
+    }
     const furniture = P.furnitureNear(this.room, p);
     if (furniture) {
       this.commit("Erased " + P.FURNITURE_KINDS[furniture.kind].title.toLowerCase(), room => {
@@ -558,12 +712,33 @@ export const store = {
       this.emit();
       return;
     }
+    const area = P.publicAreaAt(this.room, p);
+    if (area) {
+      this.commit("Erased public area", room => {
+        room.publicAreas = (room.publicAreas || []).filter(a => a.id !== area.id);
+      });
+      if (this.selectedPublicID === area.id) this.selectedPublicID = null;
+      this.emit();
+      return;
+    }
     this.status = "Nothing to erase there";
     this.emit();
   },
 
   deleteSelection() {
-    if (this.selectedFurnitureID) {
+    if (this.selectedLabelID) {
+      const id = this.selectedLabelID;
+      this.commit("Deleted label", room => {
+        room.labels = (room.labels || []).filter(l => l.id !== id);
+      });
+      this.selectedLabelID = null;
+    } else if (this.selectedPublicID) {
+      const id = this.selectedPublicID;
+      this.commit("Deleted public area", room => {
+        room.publicAreas = (room.publicAreas || []).filter(a => a.id !== id);
+      });
+      this.selectedPublicID = null;
+    } else if (this.selectedFurnitureID) {
       const id = this.selectedFurnitureID;
       this.commit("Deleted furniture", room => {
         room.furniture = room.furniture.filter(f => f.id !== id);
@@ -665,6 +840,7 @@ export const store = {
   /// areas are left untouched by the auto room layout.
   markPublicArea(rect) {
     const area = {
+      id: P.uid(),
       x: P.clean(Math.min(rect.x1, rect.x2)),
       z: P.clean(Math.min(rect.z1, rect.z2)),
       w: P.clean(Math.abs(rect.x2 - rect.x1)),
@@ -675,9 +851,12 @@ export const store = {
       this.emit();
       return;
     }
-    this.commit("Marked public space", room => {
+    this.commit("Marked public space · " + P.cm(area.w) + " × " + P.cm(area.l), room => {
+      room.publicAreas = room.publicAreas || [];
       room.publicAreas.push(area);
     });
+    this.selectedPublicID = area.id;
+    this.emit();
   },
 
   /// Runs the auto room layout and replaces the walls/doors/windows with the

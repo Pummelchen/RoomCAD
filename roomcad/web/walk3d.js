@@ -151,7 +151,9 @@ export class Walk3D {
     // Reusable scene resources (never disposed between rebuilds).
     this.glassMaterial = this.makeGlassMaterial();
     this.skyTexture = this.makeSkyTexture();
-    this.reusableTextures = new Set([this.skyTexture]);
+    this.cloudTexture = this.makeCloudTexture();
+    this.cloudLayers = [];
+    this.reusableTextures = new Set([this.skyTexture, this.cloudTexture]);
     this.pointLights = [];
     this.fixtureEmissives = []; // { mat, on } for the L lighting toggle
     this.skyMesh = null;
@@ -205,6 +207,9 @@ export class Walk3D {
         this.lastFloorY = baseY;
         this.roomGroup.position.y = baseY;
         if (this.skyMesh) this.skyMesh.position.y = baseY;
+        for (const layer of this.cloudLayers || []) {
+          layer.mesh.position.y = baseY + layer.mesh.userData.altitude;
+        }
         this.syncCity(store.room);
         if (this.physicsReady) this.buildPhysics(store.room, false);
       }
@@ -937,6 +942,126 @@ export class Walk3D {
     return tex;
   }
 
+  /// A tileable soft-noise texture used as cloud density. Built once and
+  /// cloned per layer, since each layer needs its own scroll offset.
+  makeCloudTexture(size = 256) {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(size, size);
+
+    // A wrapping value-noise lattice, so the texture tiles seamlessly.
+    const lattice = (n, seed) => {
+      const g = new Float32Array(n * n);
+      let st = (seed >>> 0) || 1;
+      for (let i = 0; i < g.length; i++) {
+        st = (st + 0x6D2B79F5) | 0;
+        let t = Math.imul(st ^ (st >>> 15), 1 | st);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        g[i] = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      return g;
+    };
+    const fade = t => t * t * (3 - 2 * t);
+    const sample = (g, n, x, y) => {
+      const xi = Math.floor(x);
+      const yi = Math.floor(y);
+      const xf = fade(x - xi);
+      const yf = fade(y - yi);
+      const x0 = ((xi % n) + n) % n;
+      const y0 = ((yi % n) + n) % n;
+      const x1 = (x0 + 1) % n;
+      const y1 = (y0 + 1) % n;
+      const a = g[y0 * n + x0];
+      const b = g[y0 * n + x1];
+      const c = g[y1 * n + x0];
+      const d = g[y1 * n + x1];
+      return (a + (b - a) * xf) * (1 - yf) + (c + (d - c) * xf) * yf;
+    };
+
+    const octaves = [
+      { n: 4, w: 0.50, seed: 7 },
+      { n: 8, w: 0.28, seed: 19 },
+      { n: 16, w: 0.15, seed: 53 },
+      { n: 32, w: 0.07, seed: 91 },
+    ];
+    const grids = octaves.map(o => lattice(o.n, o.seed));
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let v = 0;
+        for (let i = 0; i < octaves.length; i++) {
+          const o = octaves[i];
+          v += sample(grids[i], o.n, (x / size) * o.n, (y / size) * o.n) * o.w;
+        }
+        // Lift the threshold so the result is distinct puffs rather than an
+        // even grey wash across the whole sky.
+        const a = clamp01((v - 0.42) / 0.34);
+        const i4 = (y * size + x) * 4;
+        img.data[i4] = 255;
+        img.data[i4 + 1] = 255;
+        img.data[i4 + 2] = 255;
+        img.data[i4 + 3] = Math.round(a * a * 255);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  /// Three cloud decks at different heights, each drifting at its own speed and
+  /// direction. Nothing morphs on its own — the shapes change because the
+  /// layers slide across each other, which is cheap and reads as weather.
+  buildClouds(room) {
+    this.cloudLayers = [];
+    const building = this.currentBuildingBounds || this.buildingBounds(room);
+    const span = 900;
+    const specs = [
+      { y: 74,  repeat: 1.8, opacity: 0.62, dx:  0.0042, dy:  0.0023, phase: [0.00, 0.00] },
+      { y: 92,  repeat: 1.2, opacity: 0.46, dx: -0.0029, dy:  0.0036, phase: [0.37, 0.61] },
+      { y: 112, repeat: 0.8, opacity: 0.30, dx:  0.0018, dy: -0.0015, phase: [0.72, 0.19] },
+    ];
+    const geo = new THREE.PlaneGeometry(span, span);
+    for (const spec of specs) {
+      const map = this.cloudTexture.clone();
+      map.needsUpdate = true;
+      map.wrapS = THREE.RepeatWrapping;
+      map.wrapT = THREE.RepeatWrapping;
+      map.repeat.set(spec.repeat, spec.repeat);
+      // Fixed, distinct phases so the decks never start stacked on top of one
+      // another (and so the sky looks the same every time you open a design).
+      map.offset.set(spec.phase[0], spec.phase[1]);
+      const mat = new THREE.MeshBasicMaterial({
+        map,
+        transparent: true,
+        opacity: spec.opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        fog: false,
+      });
+      const mesh = new THREE.Mesh(geo.clone(), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(building.centerX, this.floorY() + spec.y, building.centerZ);
+      mesh.renderOrder = -9;   // after the sky dome, before everything solid
+      mesh.frustumCulled = false;
+      this.scene.add(mesh);
+      mesh.userData.altitude = spec.y;
+      this.cloudLayers.push({ mesh, mat, map, base: spec.opacity, dx: spec.dx, dy: spec.dy });
+    }
+    geo.dispose();
+  }
+
+  /// Drifts the cloud decks. Called from the render loop.
+  updateClouds(dt) {
+    if (!this.cloudLayers) return;
+    for (const layer of this.cloudLayers) {
+      layer.map.offset.x += layer.dx * dt;
+      layer.map.offset.y += layer.dy * dt;
+    }
+  }
+
   /// A large unlit sky dome so the gradient rotates naturally with the camera.
   buildSky(room) {
     const geo = new THREE.SphereGeometry(200, 32, 16);
@@ -952,6 +1077,7 @@ export class Walk3D {
     sky.renderOrder = -10;
     this.scene.add(sky);
     this.skyMesh = sky;
+    this.buildClouds(room);
   }
 
   /// Sun direction as a unit vector (North = -Z, azimuth clockwise from North,
@@ -1004,6 +1130,16 @@ export class Walk3D {
     this.scene.background = sky;
     if (this.scene.fog) this.scene.fog.color.copy(sky);
     if (this.skyMesh) this.skyMesh.visible = dayAmount > 0.3;
+
+    // Clouds stay in the sky after dark, but as dim silhouettes rather than
+    // bright white, and they catch the twilight tint as it passes.
+    const cloudColor = new THREE.Color(0xffffff)
+      .lerp(new THREE.Color(0xffc9a6), twilight * 0.8)
+      .lerp(new THREE.Color(0x2a3346), nightAmount * (1 - twilight * 0.6));
+    for (const layer of this.cloudLayers || []) {
+      layer.mat.color.copy(cloudColor);
+      layer.mat.opacity = layer.base * (0.30 + 0.70 * dayAmount);
+    }
 
     // Image-based lighting only while the sun is actually up.
     this.scene.environment = (day && dayAmount > 0.05) ? this.environment : null;
@@ -1633,6 +1769,7 @@ export class Walk3D {
     this.tick(dt);
     this.updatePaintballs(dt);
     this.city.update(dt);
+    this.updateClouds(dt);
 
     const now = performance.now();
     if (this.renderPipeline) this.renderPipeline.render();

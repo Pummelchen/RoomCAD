@@ -242,6 +242,14 @@ function renderStatus() {
 
 function renderInspector() {
   if (inspectorFocused()) return;
+  if (store.selectedLabelID) {
+    inspectorContent.innerHTML = labelSection(store.selectedLabel());
+    return;
+  }
+  if (store.selectedPublicID) {
+    inspectorContent.innerHTML = publicSection(store.selectedPublicArea());
+    return;
+  }
   const kind = store.selectedOpeningKind();
   if (kind === "door" || kind === "window") {
     inspectorContent.innerHTML = openingSection(kind);
@@ -332,6 +340,32 @@ function furnitureSection(item) {
   return html;
 }
 
+function labelSection(label) {
+  if (!label) return roomSection();
+  let html = `<h4>Label</h4>`;
+  html += `<div class="field"><label>Text</label>` +
+    `<input type="text" data-action="label-text" value="${esc(label.text)}" maxlength="60" placeholder="Kitchen"></div>`;
+  html += `<div class="field"><label>Text size (cm)</label><div class="value-row">` +
+    `<input type="number" data-action="label-size" value="${Math.round(label.size * 100)}" min="8" max="100" step="1">` +
+    `<span class="readout">cap height</span></div></div>`;
+  html += statRow("Rotation", label.rotationDegrees + "°");
+  html += `<button class="inspector-button" data-action="turn-label">Turn 90°</button>`;
+  html += `<button class="inspector-button danger" data-action="delete">Delete Label</button>`;
+  return html;
+}
+
+function publicSection(area) {
+  if (!area) return roomSection();
+  let html = `<h4>Public area</h4>`;
+  html += statRow("Width", P.cm(area.w));
+  html += statRow("Length", P.cm(area.l));
+  html += statRow("Area", (area.w * area.l).toFixed(2) + " m²");
+  html += `<div class="inspector-note">Drag a red corner handle to resize it. ` +
+    `Public areas are left untouched by the automatic room layout.</div>`;
+  html += `<button class="inspector-button danger" data-action="delete">Delete Public Area</button>`;
+  return html;
+}
+
 function roomSection() {
   const room = store.room;
   const area = (room.width * room.length).toFixed(2);
@@ -391,6 +425,14 @@ function roomSection() {
 
 inspectorContent.addEventListener("input", e => {
   const t = e.target;
+  if (t.dataset.action === "label-text") {
+    if (store.selectedLabelID) store.renameLabel(store.selectedLabelID, t.value);
+    return;
+  }
+  if (t.dataset.action === "label-size") {
+    if (store.selectedLabelID) store.setLabelSize(store.selectedLabelID, Number(t.value) / 100);
+    return;
+  }
   if (t.dataset.action === "width") {
     const kind = store.selectedOpeningKind();
     if (!kind) return;
@@ -438,6 +480,8 @@ inspectorContent.addEventListener("click", e => {
   if (!t) return;
   if (t.dataset.action === "turn") {
     store.rotateSelectedFurniture();
+  } else if (t.dataset.action === "turn-label") {
+    store.rotateSelectedLabel();
   } else if (t.dataset.action === "delete") {
     store.deleteSelection();
   } else if (t.dataset.action === "toggle-open") {
@@ -1017,6 +1061,7 @@ document.addEventListener("keydown", e => {
     case "KeyG": store.chooseTool("window"); break;
     case "KeyE": store.chooseTool("erase"); break;
     case "KeyM": store.chooseTool("measure"); break;
+    case "KeyT": store.chooseTool("label"); break;
     case "KeyF":
       // Toggle the last used furniture kind on/off.
       if (store.tool === "furniture" && store.pendingFurnitureKind) {
@@ -1026,7 +1071,10 @@ document.addEventListener("keydown", e => {
       }
       break;
     case "KeyB":
-    case "KeyR": store.rotateSelectedFurniture(); break;
+    case "KeyR":
+      // R turns whichever kind of thing is selected.
+      if (!store.rotateSelectedLabel()) store.rotateSelectedFurniture();
+      break;
     case "Delete":
     case "Backspace": store.deleteSelection(); break;
     case "Escape":

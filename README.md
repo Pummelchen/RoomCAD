@@ -10,10 +10,18 @@ architectural or building-code tool.
 
 ## What it can do
 
-- **Draw walls** on a 1 / 2 / 5 cm grid (90° only) with a live length readout,
-  a measure tool, and a marker for shared (public) floor space.
+- **Draw walls** on a 1 / 2 / 5 cm grid (90° only). Ends lock onto any wall
+  they meet, so rooms close cleanly instead of overshooting or stopping short.
+- **Read every size at a glance** — walls, doors and windows carry permanent
+  CAD-style dimension lines, and there is a measure tool for anything else.
+- **Grab the red handles** on a selected wall, door, window or public area to
+  drag either end and resize it in place.
 - **Place doors and windows** in walls and slide them with exact spacing to the
   wall ends and neighbours. Doors open, close and swing to either side.
+- **Label the plan** — drop text anywhere; it turns with the plan and stays
+  the right way up.
+- **Mark shared (public) floor space**, with live side lengths while you drag
+  it out. Public areas are selectable, resizable and deletable.
 - **Furnish** with ten pieces — bed, table, chair, wardrobe, desk, sofa,
   bookshelf, nightstand, dresser, armchair — plus two ceiling lights
   (60 W bulb, 200 W office panel).
@@ -22,7 +30,7 @@ architectural or building-code tool.
   *Redesign* reshuffles it; marked public areas are left alone.
 - **Walk the room in 3D** — real physics (jump onto furniture, double-jump,
   crouch), soft shadows, and a day/night sky you set with a 24 h time-of-day
-  control driven by a real Singapore sun position.
+  control driven by a real Singapore sun position, under a drifting cloud deck.
 - **See it in a city** — the room stands in a stylised neighbourhood of
   streets, blocks, traffic and trees, so you can judge the space against
   something real. Windows and street lamps come on after dark.
@@ -52,7 +60,8 @@ cd roomcad/web && ./serve.sh           # app on http://localhost:8080
 | --- | --- |
 | Select / Wall / Door / Window | `V` / `W` / `D` / `G` |
 | Erase / Measure / Furniture | `E` / `M` / `F` |
-| Rotate furniture / delete | `R` / `⌫` |
+| Label | `T` |
+| Turn furniture or label / delete | `R` / `⌫` |
 | Nudge selection | arrow keys |
 | 2D plan / 3D walk | `⌘1` / `⌘2` |
 | Turn the plan | `⌘[` / `⌘]` |

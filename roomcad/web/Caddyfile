@@ -19,6 +19,10 @@
 		header {
 			-X-Frame-Options "DENY"
 			-X-Content-Type-Options "nosniff"
+			# Match production: revalidate every time. Without this the browser
+			# applies heuristic freshness and quietly keeps serving the previous
+			# build of a module after you have edited it.
+			Cache-Control "no-cache"
 		}
 	}
 }
