@@ -1,10 +1,11 @@
 // Node test for the wall-seam light-leak fix in roomcad/web/walk3d.js.
 //
 // The bug: in "placed lights only" (dark) mode a 60 W bulb leaked light through
-// every wall seam — floor, ceiling and wall-to-wall — as if each wall had a
-// ~1 cm gap. The fix was two-fold in addWallPlan():
-//   1. seal = 0.02 m overlap so solid wall segments interpenetrate, and
-//   2. smaller point-light shadow bias / normalBias + 1024 shadow map.
+// every wall seam — floor, ceiling, wall-to-wall joints and closed doors — as
+// if the room had hairline gaps. The renderer must:
+//   1. overlap wall bands vertically and at real wall ends,
+//   2. make a closed door fill the entire wall depth, and
+//   3. use a high-resolution point shadow with no normal-bias edge offset.
 //
 // This test checks the geometry half of that fix: with the `seal` overlap
 // applied, every wall's solid (shadow-casting) segments must form a watertight
@@ -20,6 +21,7 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const planSrc = readFileSync(join(here, "..", "roomcad", "web", "plan.js"), "utf8");
+const walkSrc = readFileSync(join(here, "..", "roomcad", "web", "walk3d.js"), "utf8");
 const plan = await import(
   "data:text/javascript;base64," + Buffer.from(planSrc).toString("base64")
 );
@@ -38,7 +40,7 @@ const {
   demoRoom,
 } = plan;
 
-const SEAL = 0.02; // must match walk3d.js
+const SEAL = 0.04; // must match WALL_VERTICAL_SEAL in walk3d.js
 
 let passed = 0;
 let failed = 0;
@@ -141,6 +143,32 @@ function check(name, cond, detail = "") {
     check(`demo wall ${wall.id}: base<->mid overlap`, sill - SEAL < sill);
     check(`demo wall ${wall.id}: mid<->header overlap`, doorTop - SEAL < doorTop + SEAL);
   }
+}
+
+// ── 5. Renderer shadow contract: no edge offsets or thin closed doors ───
+{
+  const constant = name => {
+    const m = walkSrc.match(new RegExp(`const ${name} = (-?[0-9.]+);`));
+    return m ? Number(m[1]) : NaN;
+  };
+
+  const verticalSeal = constant("WALL_VERTICAL_SEAL");
+  const endSeal = constant("WALL_END_SEAL");
+  const doorSeal = constant("CLOSED_DOOR_SEAL");
+  const mapSize = constant("POINT_SHADOW_MAP_SIZE");
+  const bias = constant("POINT_SHADOW_BIAS");
+
+  check("renderer: wall bands overlap by at least 4 cm", verticalSeal >= 0.04);
+  check("renderer: wall ends overlap", endSeal > 0 && endSeal < WALL_THICKNESS);
+  check("renderer: closed doors overlap wall depth", doorSeal > 0);
+  check("renderer: end seal never intrudes into openings",
+    walkSrc.includes("const before = span.from <= 0.001 ? WALL_END_SEAL : 0;") &&
+    walkSrc.includes("const after = span.to >= wallLength - 0.001 ? WALL_END_SEAL : 0;"));
+  check("renderer: closed door fills wall depth",
+    walkSrc.includes("const thickness = closed ? P.WALL_THICKNESS + CLOSED_DOOR_SEAL * 2 : 0.04;"));
+  check("renderer: point shadows use a 2048 map", mapSize >= 2048);
+  check("renderer: point shadow has a small negative depth bias", bias < 0 && Math.abs(bias) <= 0.002);
+  check("renderer: point shadow normal bias is disabled", walkSrc.includes("pl.shadow.normalBias = 0;"));
 }
 
 function coverLength(spans, length) {

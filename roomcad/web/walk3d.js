@@ -42,6 +42,16 @@ const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 16;
 const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
 
+// Shadow casters must overlap. Point-light cube maps otherwise expose a bright
+// hairline wherever two individually rendered room pieces merely touch. These
+// values are deliberately physical (centimetres), not a screen-space trick:
+// they make the room a closed volume for both open and closed doors.
+const WALL_VERTICAL_SEAL = 0.04;
+const WALL_END_SEAL = 0.025;
+const CLOSED_DOOR_SEAL = 0.02;
+const POINT_SHADOW_MAP_SIZE = 2048;
+const POINT_SHADOW_BIAS = -0.0015;
+
 // Singapore solar position. In the 2D editor the top of the plan is North (0°),
 // so azimuth is measured clockwise from North: 0=N, 90=E, 180=S, 270=W.
 const SG_LAT = 1.3521;
@@ -450,10 +460,10 @@ export class Walk3D {
     const sill = Math.min(P.SILL_HEIGHT, height);
     const glassTop = Math.min(sill + P.GLASS_HEIGHT, height);
     const doorTop = Math.min(P.DOOR_HEIGHT, height);
-    // Slight overlap so solid wall segments seal against the floor, ceiling and
-    // each other. Without it the point-light shadows bleed a ~1cm bright line
-    // through every seam in dark mode.
-    const seal = 0.02;
+    // Make every solid wall part interpenetrate with the floor, ceiling and
+    // neighbouring vertical bands. Exact face-to-face contact is not enough
+    // for point-light cube-map shadows: rounding can reveal a bright line.
+    const seal = WALL_VERTICAL_SEAL;
 
     for (const span of plan.baseSpans) {
       this.addBox(wall, span, -seal, sill, P.WALL_THICKNESS, WALL_COLOR);
@@ -478,7 +488,12 @@ export class Walk3D {
   /// The door leaf: closed (flush in the wall) or open (swung 90° to the
   /// inside or outside of the wall).
   addDoorLeaf(wall, door, doorTop) {
-    const thickness = 0.04;
+    // An open leaf stays a realistic 4 cm slab. A closed leaf has to fill the
+    // whole wall depth (and overlap it slightly), otherwise the point shadow
+    // can travel through the unused depth on either side of the thin leaf.
+    const closed = door.open === false;
+    const thickness = closed ? P.WALL_THICKNESS + CLOSED_DOOR_SEAL * 2 : 0.04;
+    const leafHeight = closed ? doorTop + CLOSED_DOOR_SEAL * 2 : doorTop;
     const width = door.width;
     const hinge = P.wallPointAt(wall, door.offset);
     const dx = wall.end.x - wall.start.x;
@@ -505,7 +520,7 @@ export class Walk3D {
       centerZ = center.z;
     }
 
-    const geometry = new THREE.BoxGeometry(thickness, doorTop, width);
+    const geometry = new THREE.BoxGeometry(thickness, leafHeight, width);
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: LEAF_COLOR, roughness: 0.7 }));
     mesh.userData.doorID = door.id;
     mesh.castShadow = true;
@@ -517,11 +532,18 @@ export class Walk3D {
   addBox(wall, span, h0, h1, thickness, color) {
     const h = h1 - h0;
     if (h <= 0.001 || span.to - span.from <= 0.001) return;
-    const geometry = new THREE.BoxGeometry(thickness, h, span.to - span.from);
+    const wallLength = P.wallLength(wall);
+    // Only extend at actual wall ends, never into a door/window opening. This
+    // gives joined walls a real overlap without reducing the clear opening.
+    const before = span.from <= 0.001 ? WALL_END_SEAL : 0;
+    const after = span.to >= wallLength - 0.001 ? WALL_END_SEAL : 0;
+    const from = span.from - before;
+    const to = span.to + after;
+    const geometry = new THREE.BoxGeometry(thickness, h, to - from);
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 0.85 }));
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    const center = P.wallPointAt(wall, (span.from + span.to) / 2);
+    const center = P.wallPointAt(wall, (from + to) / 2);
     mesh.position.set(center.x, (h0 + h1) / 2, center.z);
     const angle = Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
     mesh.rotation.y = Math.PI / 2 - angle;
@@ -786,9 +808,13 @@ export class Walk3D {
       // Cast shadows so walls actually block the light and it only reaches the
       // neighbouring rooms through open doorways, instead of leaking through.
       pl.castShadow = true;
-      pl.shadow.mapSize.set(1024, 1024);
-      pl.shadow.bias = -0.0002;
-      pl.shadow.normalBias = 0.01;
+      pl.shadow.mapSize.set(POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE);
+      // A normal bias shifts the receiver away from the wall exactly where
+      // walls, floor and ceiling meet, producing the bright outlines reported
+      // in dark rooms. More resolution plus a small depth bias prevents acne
+      // without creating that artificial gap.
+      pl.shadow.bias = POINT_SHADOW_BIAS;
+      pl.shadow.normalBias = 0;
       pl.shadow.camera.near = 0.05;
       pl.shadow.camera.far = pointDistance;
       this.roomGroup.add(pl);
