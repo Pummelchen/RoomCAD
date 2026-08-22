@@ -42,10 +42,10 @@ const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 16;
 const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
 
-// Shadow casters must overlap. Point-light cube maps otherwise expose a bright
-// hairline wherever two individually rendered room pieces merely touch. These
-// values are deliberately physical (centimetres), not a screen-space trick:
-// they make the room a closed volume for both open and closed doors.
+// Room construction uses closed, overlapping solids. The values below are
+// deliberate physical construction tolerances (centimetres), not a shadow-map
+// trick: walls bite into the slab and ceiling, and snapped wall ends overlap.
+// That leaves no route for either light or the player capsule through a join.
 const WALL_VERTICAL_SEAL = 0.04;
 const WALL_END_SEAL = 0.025;
 const CLOSED_DOOR_SEAL = 0.02;
@@ -356,7 +356,8 @@ export class Walk3D {
       this.city = null;
     }
 
-    // Walls with openings (windows are transparent so the city shows through).
+    // Walls are single sealed solids with real cut-outs (windows remain
+    // transparent so the city shows through).
     for (const wall of room.walls) {
       this.addWallPlan(wall, room.doors, room.windows, room.height);
     }
@@ -464,29 +465,69 @@ export class Walk3D {
     const sill = Math.min(P.SILL_HEIGHT, height);
     const glassTop = Math.min(sill + P.GLASS_HEIGHT, height);
     const doorTop = Math.min(P.DOOR_HEIGHT, height);
-    // Make every solid wall part interpenetrate with the floor, ceiling and
-    // neighbouring vertical bands. Exact face-to-face contact is not enough
-    // for point-light cube-map shadows: rounding can reveal a bright line.
-    const seal = WALL_VERTICAL_SEAL;
-
-    for (const span of plan.baseSpans) {
-      this.addBox(wall, span, -seal, sill, P.WALL_THICKNESS, WALL_COLOR);
-    }
-    for (const span of plan.midSpans) {
-      this.addBox(wall, span, sill - seal, doorTop + seal, P.WALL_THICKNESS, WALL_COLOR);
-    }
+    this.addSealedWall(wall, plan, sill, glassTop, doorTop, height);
     for (const span of plan.glassSpans) {
       this.addGlass(wall, span, sill, glassTop, P.WALL_THICKNESS * 0.55);
-    }
-    for (const span of plan.stripSpans) {
-      this.addBox(wall, span, glassTop, doorTop + seal, P.WALL_THICKNESS, WALL_COLOR);
-    }
-    if (doorTop < height) {
-      this.addBox(wall, plan.headerSpan, doorTop - seal, height + seal, P.WALL_THICKNESS, WALL_COLOR);
     }
     for (const door of doors.filter(d => d.wallID === wall.id)) {
       this.addDoorLeaf(wall, door, doorTop);
     }
+  }
+
+  /// Builds one watertight wall volume with actual door/window cut-outs.
+  /// Previous versions assembled a plain wall from three stacked boxes. Even
+  /// though the boxes overlapped, point-light cube maps could still rasterize
+  /// their shared faces as separate shadow edges. A single extruded solid has
+  /// no internal faces, so snapped rooms stay dark outside their openings.
+  addSealedWall(wall, plan, sill, glassTop, doorTop, height) {
+    const length = P.wallLength(wall);
+    if (length <= 0.001) return;
+    const bottom = -WALL_VERTICAL_SEAL;
+    const top = height + WALL_VERTICAL_SEAL;
+    const shape = new THREE.Shape();
+    shape.moveTo(-WALL_END_SEAL, bottom);
+    shape.lineTo(length + WALL_END_SEAL, bottom);
+    shape.lineTo(length + WALL_END_SEAL, top);
+    shape.lineTo(-WALL_END_SEAL, top);
+    shape.closePath();
+
+    const addOpening = (span, y0, y1) => {
+      const from = Math.max(0, span.from);
+      const to = Math.min(length, span.to);
+      if (to - from <= 0.001 || y1 - y0 <= 0.001) return;
+      // Reverse winding marks this rectangle as a hole in the solid wall.
+      const hole = new THREE.Path();
+      hole.moveTo(from, y0);
+      hole.lineTo(from, y1);
+      hole.lineTo(to, y1);
+      hole.lineTo(to, y0);
+      hole.closePath();
+      shape.holes.push(hole);
+    };
+
+    // Doors go to the floor; windows are only cut from sill to lintel.
+    for (const span of plan.doorSpans) addOpening(span, bottom, doorTop);
+    for (const span of plan.windowSpans) addOpening(span, sill, glassTop);
+
+    const depth = P.WALL_THICKNESS;
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth,
+      steps: 1,
+      bevelEnabled: false,
+    });
+    // Centre the thickness on the snapped wall centreline.
+    geometry.translate(-length / 2, 0, -depth / 2);
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({ color: WALL_COLOR, roughness: 0.85 })
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const center = P.wallPointAt(wall, length / 2);
+    mesh.position.set(center.x, 0, center.z);
+    const angle = Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
+    mesh.rotation.y = -angle;
+    this.roomGroup.add(mesh);
   }
 
   /// The door leaf: closed (flush in the wall) or open (swung 90° to the
@@ -530,27 +571,6 @@ export class Walk3D {
     mesh.castShadow = true;
     mesh.position.set(centerX, doorTop / 2, centerZ);
     mesh.rotation.y = Math.atan2(leafX, leafZ);
-    this.roomGroup.add(mesh);
-  }
-
-  addBox(wall, span, h0, h1, thickness, color) {
-    const h = h1 - h0;
-    if (h <= 0.001 || span.to - span.from <= 0.001) return;
-    const wallLength = P.wallLength(wall);
-    // Only extend at actual wall ends, never into a door/window opening. This
-    // gives joined walls a real overlap without reducing the clear opening.
-    const before = span.from <= 0.001 ? WALL_END_SEAL : 0;
-    const after = span.to >= wallLength - 0.001 ? WALL_END_SEAL : 0;
-    const from = span.from - before;
-    const to = span.to + after;
-    const geometry = new THREE.BoxGeometry(thickness, h, to - from);
-    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 0.85 }));
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    const center = P.wallPointAt(wall, (from + to) / 2);
-    mesh.position.set(center.x, (h0 + h1) / 2, center.z);
-    const angle = Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
-    mesh.rotation.y = Math.PI / 2 - angle;
     this.roomGroup.add(mesh);
   }
 
@@ -1236,36 +1256,54 @@ export class Walk3D {
     );
 
     // Invisible perimeter walls keep the physics simulation (and the player)
-    // inside the canvas area; the city beyond is purely visual.
-    const halfT = 0.05;
+    // inside the canvas area; the city beyond is purely visual. They use the
+    // same slab-to-ceiling seal as drawn walls, rather than merely touching
+    // the floor and ceiling faces.
+    const halfT = P.WALL_THICKNESS / 2 + WALL_END_SEAL;
+    const wallHalfHeight = room.height / 2 + WALL_VERTICAL_SEAL;
     const pW = canvas.width;
     const pL = canvas.length;
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, baseY + room.height, 0)
+      RAPIER.ColliderDesc.cuboid(pW / 2, wallHalfHeight, halfT).setTranslation(pW / 2, baseY + room.height / 2, 0)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, room.height, halfT).setTranslation(pW / 2, baseY + room.height, pL)
+      RAPIER.ColliderDesc.cuboid(pW / 2, wallHalfHeight, halfT).setTranslation(pW / 2, baseY + room.height / 2, pL)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(0, baseY + room.height, pL / 2)
+      RAPIER.ColliderDesc.cuboid(halfT, wallHalfHeight, pL / 2).setTranslation(0, baseY + room.height / 2, pL / 2)
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, room.height, pL / 2).setTranslation(pW, baseY + room.height, pL / 2)
+      RAPIER.ColliderDesc.cuboid(halfT, wallHalfHeight, pL / 2).setTranslation(pW, baseY + room.height / 2, pL / 2)
     );
 
     // Walls, split by open doorways so you can walk through them.
     for (const seg of P.wallCollisionSegments(room)) {
-      const len = Math.hypot(seg.end.x - seg.start.x, seg.end.z - seg.start.z);
+      const dx = seg.end.x - seg.start.x;
+      const dz = seg.end.z - seg.start.z;
+      const rawLength = Math.hypot(dx, dz);
+      if (rawLength < 0.01) continue;
+      // Extend only true wall ends, never the edge of a doorway. This makes
+      // snapped wall colliders interpenetrate at corners without narrowing a
+      // usable doorway.
+      const before = seg.atWallStart ? WALL_END_SEAL : 0;
+      const after = seg.atWallEnd ? WALL_END_SEAL : 0;
+      const ux = dx / rawLength;
+      const uz = dz / rawLength;
+      const startX = seg.start.x - ux * before;
+      const startZ = seg.start.z - uz * before;
+      const endX = seg.end.x + ux * after;
+      const endZ = seg.end.z + uz * after;
+      const len = rawLength + before + after;
       if (len < 0.01) continue;
-      const midX = (seg.start.x + seg.end.x) / 2;
-      const midZ = (seg.start.z + seg.end.z) / 2;
-      const h = room.height;
+      const midX = (startX + endX) / 2;
+      const midZ = (startZ + endZ) / 2;
+      const h = room.height / 2 + WALL_VERTICAL_SEAL;
       const t = P.WALL_THICKNESS;
-      const horizontal = Math.abs(seg.end.z - seg.start.z) < 0.001;
+      const horizontal = Math.abs(dz) < 0.001;
       const desc = horizontal
-        ? RAPIER.ColliderDesc.cuboid(len / 2, h / 2, t / 2)
-        : RAPIER.ColliderDesc.cuboid(t / 2, h / 2, len / 2);
-      desc.setTranslation(midX, baseY + h / 2, midZ);
+        ? RAPIER.ColliderDesc.cuboid(len / 2, h, t / 2)
+        : RAPIER.ColliderDesc.cuboid(t / 2, h, len / 2);
+      desc.setTranslation(midX, baseY + room.height / 2, midZ);
       this.world.createCollider(desc);
     }
 
@@ -1282,9 +1320,10 @@ export class Walk3D {
       const midZ = (a.z + b.z) / 2;
       const doorTop = Math.min(P.DOOR_HEIGHT, room.height);
       const horizontal = Math.abs(b.z - a.z) < 0.001;
+      const halfDoorDepth = P.WALL_THICKNESS / 2 + CLOSED_DOOR_SEAL;
       const desc = horizontal
-        ? RAPIER.ColliderDesc.cuboid(len / 2, doorTop / 2, 0.03)
-        : RAPIER.ColliderDesc.cuboid(0.03, doorTop / 2, len / 2);
+        ? RAPIER.ColliderDesc.cuboid(len / 2, doorTop / 2 + CLOSED_DOOR_SEAL, halfDoorDepth)
+        : RAPIER.ColliderDesc.cuboid(halfDoorDepth, doorTop / 2 + CLOSED_DOOR_SEAL, len / 2);
       desc.setTranslation(midX, baseY + doorTop / 2, midZ);
       this.world.createCollider(desc);
     }

@@ -596,17 +596,22 @@ export function furnitureCenter(room, raw, item) {
 // MARK: - Walkthrough collision
 
 /// Collision segments for the walls: each wall is split by its door openings,
-/// so open doorways are passable (closed doors are handled separately).
+/// so open doorways are passable (closed doors are handled separately). The
+/// real wall ends are marked so the physics layer can overlap snapped joints
+/// without enlarging a doorway.
 export function wallCollisionSegments(room) {
   const segments = [];
   for (const wall of room.walls) {
+    const length = wallLength(wall);
     const doorCuts = room.doors
       .filter(d => d.wallID === wall.id)
       .map(d => ({ from: d.offset, to: d.offset + d.width }));
-    for (const span of solidSpans(wallLength(wall), doorCuts)) {
+    for (const span of solidSpans(length, doorCuts)) {
       segments.push({
         start: wallPointAt(wall, span.from),
         end: wallPointAt(wall, span.to),
+        atWallStart: span.from <= 0.001,
+        atWallEnd: span.to >= length - 0.001,
       });
     }
   }

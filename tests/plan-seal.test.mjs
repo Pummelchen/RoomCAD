@@ -1,15 +1,9 @@
 // Node test for the wall-seam light-leak fix in roomcad/web/walk3d.js.
 //
-// The bug: in "placed lights only" (dark) mode a 60 W bulb leaked light through
-// every wall seam — floor, ceiling, wall-to-wall joints and closed doors — as
-// if the room had hairline gaps. The renderer must:
-//   1. overlap wall bands vertically and at real wall ends,
-//   2. make a closed door fill the entire wall depth, and
-//   3. use a high-resolution point shadow with no normal-bias edge offset.
-//
-// This test checks the geometry half of that fix: with the `seal` overlap
-// applied, every wall's solid (shadow-casting) segments must form a watertight
-// block from below the floor to above the ceiling, with no gaps at the seams.
+// The bug: a 60 W bulb leaked through wall/floor/ceiling joins as though a
+// snapped room had hairline cracks. The renderer must use one closed wall
+// volume (with real door/window holes), overlap that volume with the slab and
+// ceiling, and make physics colliders overlap at snapped wall ends.
 // It loads plan.js as an ES module via a data URL so the .js extension's
 // CommonJS default in Node doesn't matter.
 //
@@ -38,6 +32,8 @@ const {
   serializeRoom,
   parseRoom,
   demoRoom,
+  freshRoom,
+  wallCollisionSegments,
 } = plan;
 
 const SEAL = 0.04; // must match WALL_VERTICAL_SEAL in walk3d.js
@@ -65,7 +61,7 @@ function check(name, cond, detail = "") {
     rt.canvas && rt.canvas.width === room.canvas.width && rt.canvas.length === room.canvas.length);
 }
 
-// ── 2. A plain wall (no door/window) must be one sealed solid block ─────
+// ── 2. A plain wall plan contains no accidental openings ────────────────
 {
   const wall = { id: uid(), start: point(0, 0), end: point(6, 0) };
   const height = 2.6;
@@ -78,13 +74,9 @@ function check(name, cond, detail = "") {
   check("plain wall: no glass", bp.glassSpans.length === 0);
   check("plain wall: header spans full length", bp.headerSpan.from === 0 && bp.headerSpan.to === wallLength(wall));
 
-  // Sealed into the floor and ceiling.
-  check("plain wall: base reaches below floor", -SEAL < 0);
-  check("plain wall: header reaches above ceiling", height + SEAL > height);
-
-  // Adjacent segments overlap (no seam gap).
-  check("plain wall: base<->mid overlap", sill - SEAL < sill);
-  check("plain wall: mid<->header overlap", doorTop - SEAL < doorTop + SEAL);
+  // The renderer turns this no-opening plan into one solid from slab to roof.
+  check("plain wall: construction seal reaches below floor", -SEAL < 0);
+  check("plain wall: construction seal reaches above ceiling", height + SEAL > height);
 }
 
 // ── 3. Wall with a window: solid parts seal, glass stays in place ───────
@@ -104,11 +96,7 @@ function check(name, cond, detail = "") {
   check("window wall: glass fits inside wall", bp.glassSpans[0].from >= 0 && bp.glassSpans[0].to <= wallLength(wall));
   check("window wall: strip above glass top", bp.stripSpans.length === 1);
 
-  // Strip top overlaps the header (bottom stays at glassTop so it never pokes
-  // down into the transparent pane).
-  check("window wall: strip<->header overlap", doorTop - SEAL < doorTop + SEAL);
-
-  // Base still seals into the floor and under the window sill.
+  // The solid surrounds the transparent pane and still enters the slab.
   check("window wall: base below floor", -SEAL < 0);
 }
 
@@ -135,17 +123,22 @@ function check(name, cond, detail = "") {
     check(`demo wall ${wall.id}: header covers full length`,
       bp.headerSpan.from === 0 && Math.abs(bp.headerSpan.to - len) < 1e-9);
 
-    // Vertical sealing: base bottom below floor, header top above ceiling.
+    // The sealed extrusion runs below the floor and above the ceiling.
     check(`demo wall ${wall.id}: base sealed into floor`, -SEAL < 0);
-    if (doorTop < height) {
-      check(`demo wall ${wall.id}: header sealed into ceiling`, height + SEAL > height);
-    }
-    check(`demo wall ${wall.id}: base<->mid overlap`, sill - SEAL < sill);
-    check(`demo wall ${wall.id}: mid<->header overlap`, doorTop - SEAL < doorTop + SEAL);
+    check(`demo wall ${wall.id}: header sealed into ceiling`, height + SEAL > height);
   }
 }
 
-// ── 5. Renderer shadow contract: no edge offsets or thin closed doors ───
+// ── 5. Snapped wall colliders have true-end join seals ───────────────────
+{
+  const room = freshRoom("joined walls", 4, 4, 2.6);
+  const segments = wallCollisionSegments(room);
+  check("collision emits one segment per plain wall", segments.length === 4);
+  check("collision marks wall starts for overlap", segments.every(s => s.atWallStart === true));
+  check("collision marks wall ends for overlap", segments.every(s => s.atWallEnd === true));
+}
+
+// ── 6. Renderer + physics contract: solid wall, sealed colliders ────────
 {
   const constant = name => {
     const m = walkSrc.match(new RegExp(`const ${name} = (-?[0-9.]+);`));
@@ -159,14 +152,32 @@ function check(name, cond, detail = "") {
   const bias = constant("POINT_SHADOW_BIAS");
   const sunNormalBias = constant("SUN_SHADOW_NORMAL_BIAS");
 
-  check("renderer: wall bands overlap by at least 4 cm", verticalSeal >= 0.04);
+  check("renderer: wall enters floor and ceiling by at least 4 cm", verticalSeal >= 0.04);
   check("renderer: wall ends overlap", endSeal > 0 && endSeal < WALL_THICKNESS);
   check("renderer: closed doors overlap wall depth", doorSeal > 0);
-  check("renderer: end seal never intrudes into openings",
-    walkSrc.includes("const before = span.from <= 0.001 ? WALL_END_SEAL : 0;") &&
-    walkSrc.includes("const after = span.to >= wallLength - 0.001 ? WALL_END_SEAL : 0;"));
+  check("renderer: every wall is a single extruded solid",
+    walkSrc.includes("addSealedWall(wall, plan, sill, glassTop, doorTop, height);") &&
+    walkSrc.includes("new THREE.ExtrudeGeometry(shape, {") &&
+    !walkSrc.includes("addBox(wall, span,"));
+  check("renderer: wall spans both floor and ceiling",
+    walkSrc.includes("const bottom = -WALL_VERTICAL_SEAL;") &&
+    walkSrc.includes("const top = height + WALL_VERTICAL_SEAL;"));
+  check("renderer: only actual openings become holes",
+    walkSrc.includes("for (const span of plan.doorSpans) addOpening(span, bottom, doorTop);") &&
+    walkSrc.includes("for (const span of plan.windowSpans) addOpening(span, sill, glassTop);"));
+  check("renderer: wall end solids overlap neighbouring snapped walls",
+    walkSrc.includes("shape.moveTo(-WALL_END_SEAL, bottom);") &&
+    walkSrc.includes("length + WALL_END_SEAL"));
   check("renderer: closed door fills wall depth",
     walkSrc.includes("const thickness = closed ? P.WALL_THICKNESS + CLOSED_DOOR_SEAL * 2 : 0.04;"));
+  check("physics: wall colliders overlap floor and ceiling",
+    walkSrc.includes("const h = room.height / 2 + WALL_VERTICAL_SEAL;") &&
+    walkSrc.includes("desc.setTranslation(midX, baseY + room.height / 2, midZ);"));
+  check("physics: only true wall ends extend into snapped joins",
+    walkSrc.includes("const before = seg.atWallStart ? WALL_END_SEAL : 0;") &&
+    walkSrc.includes("const after = seg.atWallEnd ? WALL_END_SEAL : 0;"));
+  check("physics: closed door fills the complete wall depth",
+    walkSrc.includes("const halfDoorDepth = P.WALL_THICKNESS / 2 + CLOSED_DOOR_SEAL;"));
   check("renderer: point shadows use a 1024 map", mapSize >= 1024);
   check("renderer: point shadow has a small negative depth bias", bias < 0 && Math.abs(bias) <= 0.002);
   check("renderer: point shadow normal bias is disabled", walkSrc.includes("pl.shadow.normalBias = 0;"));
