@@ -883,8 +883,10 @@ const MAX_ROOM_CELLS = 60000;   // decomposition guard for pathological plans
 let _roomCache = { key: null, rooms: null };
 
 function roomSignature(room) {
-  const w = room.walls.map(x => `${x.start.x},${x.start.z},${x.end.x},${x.end.z}`).join(";");
-  const d = room.doors.map(x => `${x.wallID}`).join(";");
+  // Exported and callable on a half-built room (an import mid-parse, a caller
+  // outside the app), so neither list is assumed to exist.
+  const w = (room.walls || []).map(x => `${x.start.x},${x.start.z},${x.end.x},${x.end.z}`).join(";");
+  const d = (room.doors || []).map(x => `${x.wallID}`).join(";");
   return w + "|" + d;
 }
 
@@ -1197,8 +1199,11 @@ export function settlePublicArea(room, rect, ignoreID = null) {
   out = snapRectToGrid(room, out);
 
   // Take the biggest conflict off first, so the result does not depend on the
-  // order the areas happen to be stored in.
-  for (let pass = 0; pass < 4; pass++) {
+  // order the areas happen to be stored in. One pass clears one neighbour, so
+  // a crowded plan needs as many passes as there are areas — a fixed four left
+  // the rectangle still overlapping when it ran out.
+  const neighbours = (room.publicAreas || []).filter(a => a.id !== ignoreID).length;
+  for (let pass = 0; pass < neighbours + 2; pass++) {
     const clashes = (room.publicAreas || [])
       .filter(a => a.id !== ignoreID)
       .map(a => {
@@ -1213,6 +1218,13 @@ export function settlePublicArea(room, rect, ignoreID = null) {
     out = snapRectToGrid(room, out);
     if (out.w <= 0.0001 || out.l <= 0.0001) break;
   }
+
+  // If it still clashes there is genuinely nowhere for it to go; hand back
+  // nothing so the caller rejects it rather than laying it on a neighbour.
+  const stillClashes = (room.publicAreas || []).some(a => a.id !== ignoreID
+    && out.x < a.x + a.w - 0.0001 && a.x < out.x + out.w - 0.0001
+    && out.z < a.z + a.l - 0.0001 && a.z < out.z + out.l - 0.0001);
+  if (stillClashes) return { x: out.x, z: out.z, w: 0, l: 0 };
 
   out.x = clamp(out.x, 0, Math.max(0, canvas.width - out.w));
   out.z = clamp(out.z, 0, Math.max(0, canvas.length - out.l));
@@ -1298,6 +1310,11 @@ export function equalizeRooms(room, regions, opts = {}) {
   const snap = v => clean(Math.round(v / step) * step);
   const walls = room.walls.map(w => ({ ...w, start: { ...w.start }, end: { ...w.end } }));
   let moved = 0;
+  // A wall only moves once. Boundaries are handled in order, so a divider
+  // already slid to its new home can sit exactly where the NEXT boundary
+  // currently is — and without this it would be picked up and moved again,
+  // landing two dividers on the same line and deleting the room between them.
+  const alreadyMoved = new Set();
 
   for (let i = 1; i < n; i++) {
     const from = hi(order[i - 1]);          // where the divider is now
@@ -1305,6 +1322,7 @@ export function equalizeRooms(room, regions, opts = {}) {
     if (Math.abs(to - from) < 0.0005) continue;
     // Every wall lying on the old boundary, running across the row.
     for (const w of walls) {
+      if (alreadyMoved.has(w)) continue;
       const alongRow = axis === "x"
         ? Math.abs(w.start.x - w.end.x) < 0.001    // divider runs across X -> vertical
         : Math.abs(w.start.z - w.end.z) < 0.001;
@@ -1317,9 +1335,21 @@ export function equalizeRooms(room, regions, opts = {}) {
       if (Math.min(wHi, row.crossHi) - Math.max(wLo, row.crossLo) < 0.2) continue;
       if (axis === "x") { w.start.x = to; w.end.x = to; }
       else { w.start.z = to; w.end.z = to; }
+      alreadyMoved.add(w);
       moved++;
     }
   }
+  // Last line of defence: the row must still be divided into n pieces.
+  const boundaries = [];
+  for (const w of alreadyMoved) boundaries.push(axis === "x" ? w.start.x : w.start.z);
+  for (let a = 0; a < boundaries.length; a++) {
+    for (let b = a + 1; b < boundaries.length; b++) {
+      if (Math.abs(boundaries[a] - boundaries[b]) < MIN_ROOM_DIM / 2) {
+        return { reason: "Those walls would end up on top of each other — move them apart first" };
+      }
+    }
+  }
+
   if (moved === 0 && !opts.allowNoop) {
     // Nothing moved for one of two very different reasons, and saying "already
     // the same size" for both is misleading: on a coarse grid an even split may
@@ -1521,9 +1551,6 @@ function rectInRect(p, r) {
 // Circulation. A corridor narrower than this is not a usable walk path; wider
 // than the maximum it stops reading as a corridor and starts wasting floor.
 export const CORRIDOR_MIN_WIDTH = 1.00;
-/// Above this a walk path stops reading as a corridor and starts being a hall.
-/// It is a scoring preference, not a limit — see arrangeRect.
-export const CORRIDOR_COMFORTABLE_WIDTH = 2.60;
 /// The shortest side a generated room may have.
 export const MIN_ROOM_DIM = 1.60;
 
@@ -2077,7 +2104,8 @@ export function roomSlug(name) {
     .replace(/[^A-Za-z0-9_-]+/g, "-")
     .replace(/-{2,}/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "")
-    .slice(0, 48);
+    .slice(0, 48)
+    .replace(/[-_]+$/, "");   // the cap can land mid-word and leave a trailing dash
 }
 
 export function serializeRoom(room) {

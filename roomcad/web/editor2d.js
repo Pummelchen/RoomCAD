@@ -150,11 +150,6 @@ export class Editor2D {
     this.draw();
   }
 
-  /// Steps the zoom by a factor, anchored at the canvas centre.
-  zoomBy(factor) {
-    this.zoomTo(this.scale * factor);
-  }
-
   /// Steps the zoom by a fixed number of percentage points (e.g. ±10).
   zoomStep(delta) {
     this.zoomTo(this.scale + delta);

@@ -554,5 +554,90 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     colRes.reason || colRes.axis);
 }
 
+// ── Regressions found by the code audit ────────────────────────────────
+{
+  // A divider that has just been slid can land exactly where the NEXT boundary
+  // currently sits. Without a guard it gets picked up and moved again, putting
+  // two dividers on the same line and deleting the room between them — three
+  // rooms went in and two came out.
+  const room = P.freshRoom("T", 9, 4, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 20, length: 20 };
+  room.grid = "oneCentimeter";
+  room.walls = [
+    { id: "n", start: P.point(0, 0), end: P.point(9, 0) },
+    { id: "s", start: P.point(0, 4), end: P.point(9, 4) },
+    { id: "w", start: P.point(0, 0), end: P.point(0, 4) },
+    { id: "e", start: P.point(9, 0), end: P.point(9, 4) },
+    { id: "d0", start: P.point(1.5, 0), end: P.point(1.5, 4) },
+    { id: "d1", start: P.point(3.0, 0), end: P.point(3.0, 4) },
+  ];
+  room.doors = [
+    { id: "a", wallID: "n", offset: 0.3, width: 0.9, open: true, swingInside: true },
+    { id: "b", wallID: "d0", offset: 1.5, width: 0.9, open: true, swingInside: true },
+    { id: "c", wallID: "d1", offset: 1.5, width: 0.9, open: true, swingInside: true },
+  ];
+  P.sanitize(room);
+  const before = P.roomsInRect(room, { x: -1, z: -1, w: 11, l: 6 });
+  check("the awkward case really is three rooms", before.length === 3, `${before.length}`);
+  const res = P.equalizeRooms(room, before);
+  check("evening out this row is not refused", !res.reason, res.reason);
+  if (!res.reason) {
+    room.walls = res.walls;
+    const after = P.roomsInRect(room, { x: -1, z: -1, w: 11, l: 6 });
+    check("no room is destroyed by evening out", after.length === before.length,
+      `${before.length} in, ${after.length} out`);
+    const xs = res.walls.filter(w => w.id === "d0" || w.id === "d1").map(w => w.start.x);
+    check("two dividers never land on the same line",
+      Math.abs(xs[0] - xs[1]) > 0.5, JSON.stringify(xs));
+  }
+}
+
+{
+  // Settling used a fixed four passes, and each pass only clears one neighbour,
+  // so a crowded plan came back still overlapping.
+  const room = P.freshRoom("T", 12, 8, 2.6);
+  room.canvas = { width: 30, length: 30 };
+  room.publicAreas = [];
+  for (let i = 0; i < 8; i++) {
+    room.publicAreas.push({ id: "n" + i, x: 2 + i * 0.5, z: 2, w: 0.5, l: 4 });
+  }
+  const r = P.settlePublicArea(room, { x: 1.5, z: 2.5, w: 6, l: 2 });
+  const clashes = room.publicAreas.filter(a =>
+    r.x < a.x + a.w - 1e-6 && a.x < r.x + r.w - 1e-6 &&
+    r.z < a.z + a.l - 1e-6 && a.z < r.z + r.l - 1e-6);
+  // Both halves matter: an empty rectangle overlaps nothing trivially, so
+  // checking only for clashes would pass even when settling gave up.
+  check("a public area settled among many neighbours overlaps none of them",
+    clashes.length === 0, `${clashes.length} of ${room.publicAreas.length}`);
+  check("and it still has a usable size — it did not just give up",
+    r.w > 0.3 && r.l > 0.3, JSON.stringify(r));
+
+  // Boxed in with nowhere to go, it comes back empty so the caller rejects it
+  // rather than laying it on top of something.
+  const boxed = P.freshRoom("B", 12, 8, 2.6);
+  boxed.canvas = { width: 30, length: 30 };
+  boxed.publicAreas = [{ id: "big", x: 0, z: 0, w: 12, l: 8 }];
+  const none = P.settlePublicArea(boxed, { x: 2, z: 2, w: 3, l: 3 });
+  check("an area with nowhere to go comes back empty, not overlapping",
+    none.w === 0 || none.l === 0, JSON.stringify(none));
+}
+
+{
+  // The 48-character cap could fall mid-word and leave a dangling separator.
+  const slug = P.roomSlug("a".repeat(47) + " tail");
+  check("a name cut off at the length cap does not end in a dash",
+    !/[-_]$/.test(slug), JSON.stringify(slug));
+  check("it is still capped", slug.length <= 48, String(slug.length));
+}
+
+{
+  // detectRooms is exported and can be handed a half-built room.
+  let threw = null;
+  try { P.detectRooms({ walls: [], name: "x" }); P.detectRooms({ doors: [], name: "x" }); }
+  catch (e) { threw = e.message; }
+  check("detectRooms survives a room with no walls or no doors", threw === null, threw || "");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

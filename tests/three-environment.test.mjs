@@ -71,6 +71,23 @@ check("the slab thickness the tower avoids matches the one walk3d builds",
 check("the tower keeps a positive height even for a shallow lift",
   city.includes("Math.max(0.05, floorLift - ROOM_SLAB_THICKNESS - TOWER_REVEAL)"));
 
+// — The render loop must not churn the heap ————————————————————
+// The traffic runs every frame. Allocating a fresh matrix per car per part was
+// roughly 11,500 throwaway objects a second, which is real GC pressure in the
+// one place that has a 16 ms budget.
+{
+  const carPath = city.slice(city.indexOf("_writeCarMatrices() {"),
+    city.indexOf("/// Advances the traffic"));
+  const calls = (carPath.match(/boxMatrix\(/g) || []).length;
+  const scratch = (carPath.match(/, _m\s*\)/g) || []).length;
+  check("the per-frame car path allocates no matrices", calls > 0 && calls === scratch,
+    `${scratch} of ${calls} reuse the scratch matrix`);
+  check("boxMatrix can compose into a caller's matrix",
+    city.includes("into = null") && city.includes("(into || new THREE.Matrix4())"));
+}
+check("the 3D viewmodel reuses its offset vector rather than allocating each frame",
+  walk.includes("_gunOffset.set(") && !/updateGun[\s\S]{0,400}new THREE\.Vector3/.test(walk));
+
 // — The room's own environment is unchanged ————————————————————
 check("Singapore latitude remains", walk.includes("const SG_LAT = 1.3521;"));
 check("Singapore longitude remains", walk.includes("const SG_LON = 103.8198;"));

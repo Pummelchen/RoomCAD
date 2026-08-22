@@ -62,6 +62,9 @@ const SUN_SHADOW_BIAS = 0;
 // offset against grazing acne. That is small enough never to read as a gap.
 const SUN_SHADOW_NORMAL_BIAS = 0.002;
 
+// Scratch vector for the viewmodel, which is positioned every frame.
+const _gunOffset = new THREE.Vector3();
+
 // Singapore solar position. In the 2D editor the top of the plan is North (0°),
 // so azimuth is measured clockwise from North: 0=N, 90=E, 180=S, 270=W.
 const SG_LAT = 1.3521;
@@ -1859,7 +1862,7 @@ export class Walk3D {
     this.gun.visible = this.paintballMode;
     if (!this.paintballMode) return;
     this.gunRecoil = Math.max(0, this.gunRecoil - dt * 6);
-    const offset = new THREE.Vector3(0.22, -0.18, -0.35 + this.gunRecoil * 0.07);
+    const offset = _gunOffset.set(0.22, -0.18, -0.35 + this.gunRecoil * 0.07);
     offset.applyQuaternion(this.camera.quaternion);
     this.gun.position.copy(this.camera.position).add(offset);
     this.gun.quaternion.copy(this.camera.quaternion);

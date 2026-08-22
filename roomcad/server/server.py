@@ -155,8 +155,14 @@ def room_list():
     return [{"name": r["name"], "version": r["version"], "savedAt": r["saved_at"]} for r in rows]
 
 
+# A room name goes into the database and into every listing, so it is bounded
+# here rather than trusting the client to have done it. The web app slugs to 48;
+# this is the backstop for anything else that talks to the API.
+MAX_ROOM_NAME = 64
+
+
 def sanitize(name):
-    return re.sub(r"[^A-Za-z0-9_-]", "", name)
+    return re.sub(r"[^A-Za-z0-9_-]", "", name)[:MAX_ROOM_NAME]
 
 
 def active_count(ttl=30):

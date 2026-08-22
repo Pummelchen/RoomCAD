@@ -719,14 +719,6 @@ export const store = {
     area.z = target.z;
   },
 
-  deletePublicArea(id) {
-    this.commit("Deleted public area", room => {
-      room.publicAreas = (room.publicAreas || []).filter(a => a.id !== id);
-    });
-    if (this.selectedPublicID === id) this.selectedPublicID = null;
-    this.emit();
-  },
-
   // MARK: Opening ends
 
   /// Drags one end of a door or window, keeping the other end anchored.

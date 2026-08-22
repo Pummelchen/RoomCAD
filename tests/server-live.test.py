@@ -252,6 +252,18 @@ def main():
     check("version 0 can be loaded back",
           status == 200 and resp.get("json") == '{"room":{"width":9}}', f"{status} {resp}")
 
+    # A name is client-supplied and ends up in the database and every listing,
+    # so its length is bounded on the server rather than trusted.
+    long_name = "N" * 400
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": long_name, "json": '{"room":{"width":1}}', "clientId": "B"}, cookie)
+    check("an over-long room name is truncated, not stored whole",
+          status == 200 and len(resp.get("name", "")) <= server.MAX_ROOM_NAME,
+          f"{status} {len(resp.get('name',''))}")
+    status, resp, _ = request(port, "GET", "/api/rooms", cookie=cookie)
+    check("no listing entry exceeds the name limit",
+          all(len(r["name"]) <= server.MAX_ROOM_NAME for r in resp))
+
     # ---- 5. Hardening ------------------------------------------------------
     # A body is read into memory, so an oversized Content-Length must be
     # refused outright rather than allocated.

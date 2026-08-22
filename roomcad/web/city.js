@@ -117,11 +117,14 @@ const _pos = new THREE.Vector3();
 const _scale = new THREE.Vector3();
 const _euler = new THREE.Euler();
 
-function boxMatrix(x, y, z, w, h, d, rotY = 0) {
+/// Composes a box transform. `into` lets a caller supply its own matrix, which
+/// matters for the traffic: it runs every frame, and allocating a fresh Matrix4
+/// three times per car was roughly 11,500 throwaway objects a second.
+function boxMatrix(x, y, z, w, h, d, rotY = 0, into = null) {
   _pos.set(x, y, z);
   _scale.set(w, h, d);
   _q.setFromEuler(_euler.set(0, rotY, 0));
-  return new THREE.Matrix4().compose(_pos, _q, _scale);
+  return (into || new THREE.Matrix4()).compose(_pos, _q, _scale);
 }
 
 export class City {
@@ -560,12 +563,12 @@ export class City {
       const L = car.length;
       const W = car.width;
 
-      body.setMatrixAt(i, boxMatrix(x, ROAD_Y + 0.52, z, L, 0.72, W, rot));
+      body.setMatrixAt(i, boxMatrix(x, ROAD_Y + 0.52, z, L, 0.72, W, rot, _m));
       cabin.setMatrixAt(i, boxMatrix(
         x - (alongX ? car.dir * 0.25 : 0),
         ROAD_Y + 1.06,
         z - (alongX ? 0 : car.dir * 0.25),
-        L * 0.5, 0.56, W * 0.86, rot
+        L * 0.5, 0.56, W * 0.86, rot, _m
       ));
 
       const dx = alongX ? L * 0.32 : W * 0.42;
@@ -592,7 +595,7 @@ export class City {
           x + (alongX ? nose : side * W * 0.3),
           ROAD_Y + 0.6,
           z + (alongX ? side * W * 0.3 : nose),
-          alongX ? 0.12 : 0.3, 0.18, alongX ? 0.3 : 0.12, 0
+          alongX ? 0.12 : 0.3, 0.18, alongX ? 0.3 : 0.12, 0, _m
         ));
       }
     }
@@ -623,10 +626,6 @@ export class City {
     if (this.litWindows) this.litWindows.material.emissiveIntensity = night * 1.7;
     if (this.lampHeads) this.lampHeads.material.emissiveIntensity = night * 2.2;
     if (this.headlights) this.headlights.material.emissiveIntensity = night * 2.6;
-  }
-
-  setVisible(visible) {
-    this.group.visible = visible;
   }
 
   clear() {
