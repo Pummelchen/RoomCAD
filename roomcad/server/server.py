@@ -45,6 +45,15 @@ LOGIN_WINDOW_SECONDS = 300
 LOGIN_FAILURES = {}          # client key -> [failures, window_started_at]
 LOGIN_LOCK = threading.Lock()
 
+# How many entries at the END of X-Forwarded-For were appended by our own
+# proxies and must be skipped to reach the real client. In the reference
+# deployment the chain is client -> nginx -> Caddy -> here: nginx appends the
+# client's address and Caddy then appends nginx's, so exactly one trailing hop
+# is ours. Counting from the right is what makes this un-spoofable — a client
+# can prepend anything it likes to the header, but it cannot control what our
+# own proxies append.
+PROXY_HOPS = int(os.environ.get("ROOMCAD_PROXY_HOPS", "1"))
+
 # A watcher that stops reading must not be able to grow its queue without
 # bound. Payloads are whole-room snapshots and the newest one supersedes the
 # rest, so dropping the oldest is the correct overflow behaviour.
@@ -417,16 +426,37 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _client_key(self):
-        """Best available client identity for throttling. Behind the reference
-        deployment nginx appends the real address to X-Forwarded-For, so the
-        last entry is the closest-to-us trusted value; direct connections fall
-        back to the socket address."""
+        """Best available client identity for throttling.
+
+        Every request arrives from the proxy, so the socket address is the same
+        for everybody and cannot distinguish clients on its own. The real
+        address is in X-Forwarded-For, counted from the right past our own
+        proxy hops (see PROXY_HOPS). Falls back to whatever is available so a
+        directly-exposed server still throttles per connection."""
         xff = self.headers.get("X-Forwarded-For")
         if xff:
             parts = [p.strip() for p in xff.split(",") if p.strip()]
+            index = len(parts) - 1 - PROXY_HOPS
+            if 0 <= index < len(parts):
+                return parts[index]
             if parts:
-                return parts[-1]
+                return parts[0]
         return self.client_address[0]
+
+    def _is_https(self):
+        """Whether the request reached the user over HTTPS.
+
+        X-Forwarded-Proto is authoritative when the proxy chain forwards it.
+        The host check is a deliberate backstop: the public deployment is
+        HTTPS-only, so if a proxy misconfiguration ever swallowed the header
+        again the session cookie would still be marked Secure rather than
+        silently dropping the protection. Loopback hosts stay insecure so
+        plain-HTTP local development keeps working."""
+        proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        if proto:
+            return proto == "https"
+        host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        return host not in ("localhost", "127.0.0.1", "::1", "")
 
     def _read_json(self):
         """Reads a bounded JSON body. Sends the error response and returns None
@@ -574,11 +604,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "11")  # {"ok": true}
             self.send_header("Cache-Control", "no-store")
-            # Mark the cookie Secure whenever the request actually arrived over
-            # HTTPS. Hard-coding it would silently break plain-HTTP local
-            # development, and omitting it would expose the session in
-            # production, so follow the proxy's X-Forwarded-Proto.
-            https = (self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https")
+            # Mark the cookie Secure whenever the request actually reached the
+            # user over HTTPS. Hard-coding it would break plain-HTTP local
+            # development; omitting it would expose the session in production.
+            https = self._is_https()
             self.send_header(
                 "Set-Cookie",
                 "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=%d%s"

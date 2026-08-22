@@ -248,6 +248,45 @@ def main():
     )
     check("cookie is Secure behind an HTTPS proxy", https_cookie and "Secure" in https_cookie,
           str(https_cookie))
+    # The production chain is client -> nginx -> Caddy -> here, so the real
+    # client sits one hop from the right of X-Forwarded-For. Taking the last
+    # entry would key every user to the proxy's own loopback address, making
+    # the login throttle global instead of per-client.
+    class FakeHeaders(dict):
+        def get(self, k, d=None):
+            return dict.get(self, k, d)
+
+    def client_key_for(xff, sock="127.0.0.1"):
+        h = server.Handler.__new__(server.Handler)
+        h.headers = FakeHeaders({"X-Forwarded-For": xff} if xff else {})
+        h.client_address = (sock, 0)
+        return server.Handler._client_key(h)
+
+    check("the real client is read past our own proxy hops",
+          client_key_for("203.0.113.9, 127.0.0.1") == "203.0.113.9",
+          client_key_for("203.0.113.9, 127.0.0.1"))
+    check("a client cannot spoof its way to a fresh throttle bucket",
+          client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1") == "203.0.113.9",
+          client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1"))
+    check("a single-proxy chain still identifies the client",
+          client_key_for("203.0.113.9") == "203.0.113.9")
+    check("no proxy at all falls back to the socket address",
+          client_key_for(None, "198.51.100.7") == "198.51.100.7")
+
+    def is_https_for(headers):
+        h = server.Handler.__new__(server.Handler)
+        h.headers = FakeHeaders(headers)
+        return server.Handler._is_https(h)
+
+    check("X-Forwarded-Proto decides when it is present",
+          is_https_for({"X-Forwarded-Proto": "https"}) is True
+          and is_https_for({"X-Forwarded-Proto": "http"}) is False)
+    check("a public host is treated as HTTPS if the header is missing",
+          is_https_for({"Host": "roomcad.91.99.176.243.nip.io"}) is True)
+    check("localhost stays insecure so plain-HTTP development works",
+          is_https_for({"Host": "localhost:8080"}) is False
+          and is_https_for({"Host": "127.0.0.1:8080"}) is False)
+
     check("cookie stays HttpOnly and SameSite", https_cookie and "HttpOnly" in https_cookie
           and "SameSite=Lax" in https_cookie, str(https_cookie))
 
