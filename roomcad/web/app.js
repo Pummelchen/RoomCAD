@@ -596,6 +596,22 @@ async function apiLoadRoom(name) {
   return res.json();
 }
 
+async function apiLoadLastRoom() {
+  const res = await fetch("/api/session/last");
+  if (!res.ok) throw apiReject(res);
+  return res.json();
+}
+
+async function apiRememberLastRoom(name, version) {
+  const res = await fetch("/api/session/last", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, version }),
+  });
+  if (!res.ok) throw apiReject(res);
+  return res.json();
+}
+
 async function apiLoadRoomVersion(name, version) {
   const res = await fetch("/api/load/" + encodeURIComponent(name) + "?version=" + version);
   if (!res.ok) throw apiReject(res);
@@ -649,6 +665,11 @@ function watchRoom(name) {
           store.applyRemoteRoom(room, null);
         } else {
           // A real save (from anyone) — apply it and adopt the new version.
+          // The watcher sends the current version immediately on connect. If
+          // that is the design we just opened or resumed, it is a no-op rather
+          // than a teammate update (and should not overwrite the status).
+          if (data.version === store.serverRoomVersion
+              && data.json === P.serializeRoom(store.room)) return;
           const room = P.parseRoom(data.json);
           store.applyRemoteRoom(room, data.version);
         }
@@ -857,6 +878,9 @@ async function openStoredRoom(name, version) {
     store.loadRoom(room, data.name, true);
     store.serverRoomVersion = data.version;
     watchRoom(data.name);
+    // Persist the exact version the person selected. This is deliberately
+    // server-side: a reload resumes it without browser-local storage.
+    apiRememberLastRoom(data.name, data.version).catch(() => {});
   } catch {
     window.alert("This saved room could not be opened.");
     removeStoredRoom(name);
@@ -896,6 +920,25 @@ async function renderRooms() {
       showRoomContextMenu(e.clientX, e.clientY, r.name);
     });
     roomsList.appendChild(li);
+  }
+}
+
+// MARK: - Resume the last server design
+
+async function resumeLastRoom() {
+  try {
+    const data = await apiLoadLastRoom();
+    if (!data || !data.name || !data.json || !Number.isInteger(data.version)) return;
+    const room = P.parseRoom(data.json);
+    store.loadRoom(room, data.name, true);
+    store.serverRoomVersion = data.version;
+    store.status = "Resumed " + data.name + " · v" + data.version;
+    watchRoom(data.name);
+    store.emit();
+  } catch (err) {
+    // No prior session or an offline server leaves the normal demo intact.
+    // apiReject already reopens the sign-in screen for an expired session.
+    if (err.message !== "unauthorized") console.warn("Could not resume last room:", err);
   }
 }
 
@@ -1119,4 +1162,5 @@ renderRooms();
 document.title = (store.documentName || store.room.name) + " — RoomCAD";
 updateVersionBadge();
 pollStatus();
+resumeLastRoom();
 setInterval(pollStatus, 10000);

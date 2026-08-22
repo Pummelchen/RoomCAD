@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Integration test for RoomCAD's live-draft (unsaved collaboration) API.
+"""Integration test for RoomCAD's SQLite session + live-draft API.
 
 Spawns the server on a random local port with a temp database and verifies:
 
-  0. Auth: unauthenticated calls are 401; a correct password issues a session
-     cookie and a wrong one does not.
+  0. Auth: unauthenticated calls are 401; a correct password creates a
+     SQLite-backed session cookie and a wrong one does not.
+  0a. The current session remembers the exact saved room/version to resume.
   1. POST /api/live/<name> stores and broadcasts a draft WITHOUT saving
      (no row lands in the database).
   2. A newly connecting watcher receives the current draft on connect.
@@ -124,6 +125,8 @@ def main():
     check("login issues a session cookie", cookie.startswith("roomcad_auth="))
     status, resp, _ = request(port, "GET", "/api/status", cookie=cookie)
     check("status reports one active session", status == 200 and resp.get("count") == 1, f"{status} {resp}")
+    status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
+    check("new session has no room to resume", status == 200 and resp is None, f"{status} {resp}")
 
     # 1. A live draft is stored and broadcast, but NOT saved to the DB.
     draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1}
@@ -148,6 +151,35 @@ def main():
                               {"name": "room1", "json": '{"room":{"width":6}}', "clientId": "B"}, cookie)
     check("save returns version 1", status == 200 and resp.get("version") == 1, f"{status} {resp}")
     check("save clears the live draft", "room1" not in server.LIVE)
+    status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
+    check("save marks exact room/version for resume",
+          status == 200 and resp.get("name") == "room1" and resp.get("version") == 1
+          and resp.get("json") == '{"room":{"width":6}}', f"{status} {resp}")
+
+    # 3a. Opening an earlier version explicitly is also remembered, and the
+    # session data remains available after its in-memory state is discarded.
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "room1", "json": '{"room":{"width":7}}', "clientId": "B"}, cookie)
+    check("second save returns version 2", status == 200 and resp.get("version") == 2, f"{status} {resp}")
+    status, resp, _ = request(port, "POST", "/api/session/last",
+                              {"name": "room1", "version": 1}, cookie)
+    check("choosing a version updates session resume target", status == 200 and resp.get("ok") is True, f"{status} {resp}")
+    server._conn.close()
+    server._conn = None
+    status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
+    check("resume target survives a database reconnect",
+          status == 200 and resp.get("version") == 1 and resp.get("json") == '{"room":{"width":6}}',
+          f"{status} {resp}")
+
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"json": '{"room":{"width":8}}', "clientId": "B"}, cookie)
+    check("unnamed save returns its generated room name",
+          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 1,
+          f"{status} {resp}")
+    status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
+    check("generated room is also the latest resume target",
+          status == 200 and resp.get("name") == "ternak_room1" and resp.get("version") == 1,
+          f"{status} {resp}")
 
     # 4. Real-time broadcast: a connected watcher receives a NEW draft pushed
     #    after it connected (without a save).

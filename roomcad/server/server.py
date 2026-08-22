@@ -6,6 +6,7 @@ every save is kept as a new version. Also streams live updates to anyone
 watching a room (Server-Sent Events). Runs behind Caddy via a reverse proxy
 on /api/* (127.0.0.1:8078).
 """
+import hashlib
 import json
 import os
 import queue
@@ -25,12 +26,12 @@ PORT = 8078
 
 # Shared password + login sessions. The password is injected via the
 # ROOMCAD_PASSWORD environment variable (see roomcad.service); it is never
-# stored in this file so it stays out of the public repo. Logging in sets an
-# HttpOnly session cookie; every /api/* handler checks it.
+# stored in this file so it stays out of the public repo. Logging in sets the
+# one existing HttpOnly session cookie. Its hashed token and the last design
+# selected by that browser are kept in SQLite, so both survive an API restart.
 PASSWORD = os.environ.get("ROOMCAD_PASSWORD")
 SESSION_COOKIE = "roomcad_auth"
-SESSIONS = set()
-SESSION_LOCK = threading.Lock()
+SESSION_TTL_SECONDS = 31536000
 # Active browser sessions: session token -> last-seen time. Any authenticated
 # request refreshes it, so /api/status can report how many people are around.
 PRESENCE = {}
@@ -74,6 +75,16 @@ def init_db(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rooms_name ON rooms(name)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS browser_sessions (
+            token_hash TEXT PRIMARY KEY,
+            last_room_name TEXT,
+            last_room_version INTEGER,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_sessions_expiry ON browser_sessions(expires_at)")
     conn.commit()
     migrate(conn)
 
@@ -126,6 +137,76 @@ def active_count(ttl=30):
         return len(PRESENCE)
 
 
+def session_hash(token):
+    """Never store the browser's bearer token itself in SQLite."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_session(token):
+    now = int(time.time())
+    conn = get_conn()
+    with DB_LOCK:
+        conn.execute("DELETE FROM browser_sessions WHERE expires_at < ?", (now,))
+        conn.execute(
+            "INSERT INTO browser_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)",
+            (session_hash(token), now, now + SESSION_TTL_SECONDS),
+        )
+        conn.commit()
+
+
+def session_is_valid(token):
+    if not token:
+        return False
+    conn = get_conn()
+    with DB_LOCK:
+        row = conn.execute(
+            "SELECT 1 FROM browser_sessions WHERE token_hash=? AND expires_at >= ?",
+            (session_hash(token), int(time.time())),
+        ).fetchone()
+    return row is not None
+
+
+def remember_last_room(token, name, version):
+    """Associate one exact saved design version with the current browser."""
+    conn = get_conn()
+    with DB_LOCK:
+        exists = conn.execute(
+            "SELECT 1 FROM rooms WHERE name=? AND version=?", (name, version)
+        ).fetchone()
+        if not exists:
+            return False
+        cur = conn.execute(
+            "UPDATE browser_sessions SET last_room_name=?, last_room_version=? WHERE token_hash=?",
+            (name, version, session_hash(token)),
+        )
+        conn.commit()
+    return cur.rowcount == 1
+
+
+def last_room_for_session(token):
+    """Return the exact saved room/version selected by this browser, if any."""
+    conn = get_conn()
+    with DB_LOCK:
+        row = conn.execute(
+            "SELECT last_room_name, last_room_version FROM browser_sessions WHERE token_hash=?",
+            (session_hash(token),),
+        ).fetchone()
+        if not row or not row["last_room_name"] or row["last_room_version"] is None:
+            return None
+        room = conn.execute(
+            "SELECT name, version, json FROM rooms WHERE name=? AND version=?",
+            (row["last_room_name"], row["last_room_version"]),
+        ).fetchone()
+        if room is None:
+            conn.execute(
+                "UPDATE browser_sessions SET last_room_name=NULL, last_room_version=NULL WHERE token_hash=?",
+                (session_hash(token),),
+            )
+            conn.commit()
+            return None
+    return {"name": room["name"], "version": room["version"], "json": room["json"]}
+
+
 def save_room(name, room_json, client_id):
     """Inserts a new version. An empty `name` picks the next ternak_roomN
     atomically inside the same lock as the insert, so two simultaneous saves
@@ -147,7 +228,7 @@ def save_room(name, room_json, client_id):
             (name, version, room_json, int(time.time() * 1000), client_id),
         )
         conn.commit()
-    return version
+    return name, version
 
 
 def load_room(name, version=None):
@@ -172,6 +253,10 @@ def delete_room(name):
     conn = get_conn()
     with DB_LOCK:
         cur = conn.execute("DELETE FROM rooms WHERE name=?", (name,))
+        conn.execute(
+            "UPDATE browser_sessions SET last_room_name=NULL, last_room_version=NULL WHERE last_room_name=?",
+            (name,),
+        )
         conn.commit()
     return cur.rowcount > 0
 
@@ -235,18 +320,11 @@ class Handler(BaseHTTPRequestHandler):
                 return part[len(name) + 1:]
         return None
 
-    def _is_authed(self):
-        token = self._cookie(SESSION_COOKIE)
-        if not token:
-            return False
-        with SESSION_LOCK:
-            return token in SESSIONS
-
     def _require_auth(self):
-        if not self._is_authed():
+        token = self._cookie(SESSION_COOKIE)
+        if not session_is_valid(token):
             self._send({"error": "unauthorized"}, 401)
             return False
-        token = self._cookie(SESSION_COOKIE)
         with PRESENCE_LOCK:
             PRESENCE[token] = time.time()
         return True
@@ -298,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
         if path == "/api/rooms":
             self._send(room_list())
+        elif path == "/api/session/last":
+            self._send(last_room_for_session(self._cookie(SESSION_COOKIE)))
         elif path == "/api/status":
             self._send({"count": active_count()})
         elif path.startswith("/api/watch/"):
@@ -342,8 +422,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"error": "wrong password"}, 401)
                 return
             token = secrets.token_urlsafe(32)
-            with SESSION_LOCK:
-                SESSIONS.add(token)
+            create_session(token)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "11")  # {"ok": true}
@@ -356,6 +435,22 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"ok": true}')
             return
         if not self._require_auth():
+            return
+        if path == "/api/session/last":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                name = sanitize(data.get("name") or "")
+                version = data.get("version")
+                if not name or not isinstance(version, int) or version < 1:
+                    raise ValueError("bad room")
+            except Exception:
+                self._send({"error": "bad request"}, 400)
+                return
+            if not remember_last_room(self._cookie(SESSION_COOKIE), name, version):
+                self._send({"error": "not found"}, 404)
+                return
+            self._send({"ok": True})
             return
         if path.startswith("/api/live/"):
             name = sanitize(urllib.parse.unquote(path[len("/api/live/"):]))
@@ -389,7 +484,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send({"error": "bad request"}, 400)
             return
-        version = save_room(name, room_json, client_id)
+        name, version = save_room(name, room_json, client_id)
+        remember_last_room(self._cookie(SESSION_COOKIE), name, version)
         # A real save supersedes any unsaved draft for this room.
         with LIVE_LOCK:
             LIVE.pop(name, None)

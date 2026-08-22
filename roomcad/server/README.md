@@ -12,7 +12,7 @@ from scratch if the VPS is ever lost. The web app itself lives in
 | `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078` |
 | `Caddyfile` | production Caddy config (reverse-proxies `/api/*` to the API, serves the web app, TLS) |
 | `nginx-roomcad.conf` | nginx site for `roomcad.91.99.176.243.nip.io` (Let's Encrypt HTTPS, proxies to Caddy `:8077`) |
-| `schema.sql` | SQLite schema (the `rooms` table + index) |
+| `schema.sql` | SQLite schema (versioned rooms plus hashed browser session records) |
 | `rooms.db.sql` | full SQL dump of the rooms database (structure + content), restorable |
 | `deploy.sh` | one-command deploy of the web app + API to the VPS |
 
@@ -67,10 +67,12 @@ ROOMCAD_PASSWORD=your-password
 ```
 
 `roomcad.service` loads it via `EnvironmentFile`. `POST /api/login` checks the
-password and sets an `HttpOnly` session cookie; every other `/api/*` handler
-returns 401 without a valid cookie. The frontend `login.js` just drives the
-form and calls `/api/login`. If the env file is missing, the service starts but
-logins are disabled (fail-closed).
+password and sets an `HttpOnly` session cookie; a hash of that token and the
+last saved/opened room version are stored in SQLite. That lets RoomCAD resume
+the same design after an API restart without adding local-storage or a second
+cookie. Every other `/api/*` handler returns 401 without a valid session. The
+frontend `login.js` just drives the form and calls `/api/login`. If the env file
+is missing, the service starts but logins are disabled (fail-closed).
 
 ## Restoring from a lost VPS
 
@@ -129,4 +131,3 @@ Caddy 2.6+ serves HTTP/3 automatically for every TLS site (no extra directive
 needed), so the production `:8443` site already accepts HTTP/3 over **UDP 8443**
 (and standard UDP 443 where available) in addition to HTTP/1.1 + HTTP/2 over
 TCP. Just make sure the firewall allows UDP on the TLS port.
-

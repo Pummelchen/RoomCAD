@@ -14,7 +14,7 @@ structural, architectural or building-code tool.
 - **Place doors and windows** in walls and slide them with exact spacing to the wall ends and neighbours.
 - **Arrange furniture** (bed, table, chair, wardrobe) and a ceiling-mounted light.
 - **Walk the room in 3D** — real physics (jump onto furniture, crouch, double-jump), soft shadows, and a day/night sky you set with a 24 h time-of-day control (sun, twilight and city lights follow it).
-- **Save rooms to the server** (SQLite, versioned) and reopen them from the sidebar.
+- **Save rooms to the server** (SQLite, versioned), then automatically resume the exact room version you last used on that browser.
 - **Edit together live** — several people can open the same room and see each other's changes in real time.
 - **One shared password** (checked server-side) protects the site.
 
@@ -44,6 +44,8 @@ cd roomcad/web
 
 Drag either divider beside the plan to resize the left tool panel or right
 inspector. RoomCAD remembers those widths in your browser for your next visit.
+Your latest saved or opened design is remembered in the server's SQLite database
+and resumes automatically when you return; unsaved edits still require **Save**.
 
 ## Development
 
