@@ -3,7 +3,7 @@
 RoomCAD is a kid-friendly room planner that runs entirely in the browser. Draw
 walls, drop in doors, windows, furniture and ceiling lights on a
 centimetre-accurate 2D plan, then walk through the result in a real-time 3D
-view — with physics, daylight and a city outside the windows.
+view — with physics and real daylight.
 
 No installation, no native build. It is a quick, simple planning tool — not a
 structural, architectural or building-code tool.
@@ -13,8 +13,8 @@ structural, architectural or building-code tool.
 - **Draw walls** on a 1 / 2 / 5 cm grid (90° only) with a live length readout in centimetres.
 - **Place doors and windows** in walls and slide them with exact spacing to the wall ends and neighbours.
 - **Arrange furniture** (bed, table, chair, wardrobe) and a ceiling-mounted light.
-- **Walk the room in 3D** — real physics (jump onto furniture, crouch, double-jump), soft shadows, and a day/night sky you set with a 24 h time-of-day control (sun, twilight and city lights follow it).
-- **Build solid rooms** — snapped walls are rendered as sealed solids, overlapping the floor, ceiling and one another; only doors and windows cut an opening. Outside, a pedestrian path and connected road ring begin directly at the building envelope, never at the hidden editing canvas.
+- **Walk the room in 3D** — real physics (jump onto furniture, crouch, double-jump), soft shadows, and a day/night sky you set with a 24 h time-of-day control driven by a real Singapore sun position.
+- **Build solid rooms** — snapped walls are rendered as sealed solids, overlapping the floor, ceiling and one another; only doors and windows cut an opening. The 3D scene renders the real building envelope, never the hidden editing canvas.
 - **Save rooms to the server** (SQLite, versioned). New project sessions open the latest saved design; returning browsers resume their exact last-used version.
 - **Edit together live** — when another project member is present, **Join Live** pulses neon green; **Live Active** syncs edits both ways, and **Leave Live Mode** saves once for everyone before detaching your editor.
 - **One shared password** (checked server-side) protects the site.
@@ -52,7 +52,7 @@ in the server's SQLite database. Unsaved edits still require **Save**.
 ## Development
 
 The 3D view uses Three.js **WebGPU (`REVISION = "186dev"`)**, vendored under
-`roomcad/web/lib/` (including the city/skyscraper/terrain/tree generators).
+`roomcad/web/lib/`.
 Physics is Rapier (WASM). There is no build step — the app is plain ES modules
 loaded via an import map.
 

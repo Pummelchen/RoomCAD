@@ -26,7 +26,7 @@ so the page works offline.
 - `web/plan.js` — room model, grid, snapping, geometry, opening spacing, `.rcad` file format
 - `web/store.js` — editing state, tools, undo/redo, save/open, remote-apply
 - `web/editor2d.js` — 2D plan canvas
-- `web/walk3d.js` — Three.js 3D walkthrough (Rapier physics, city, sun, lighting, bloom)
+- `web/walk3d.js` — Three.js 3D walkthrough (Rapier physics, real sun, lighting, bloom)
 - `web/app.js` — UI glue: toolbar, inspector, keyboard, files, live collaboration
 - `web/audio.js` — procedural sound effects (paintball, door)
 - `web/login.js` — password gate + cookie
