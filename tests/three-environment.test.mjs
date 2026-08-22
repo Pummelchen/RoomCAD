@@ -58,6 +58,19 @@ check("traffic is animated from the render loop", walk.includes("this.city.updat
 check("city lighting follows the same daylight as the sun",
   walk.includes("this.city.applyTimeOfDay(dayAmount * (day ? 1 : 0));"));
 
+// — Nothing the city builds shares a depth with the room —————————
+// A surface at exactly the room's floor level z-fights across the whole floor
+// and reads as flicker. The tower under an upper-floor room is the one piece
+// of city geometry that can reach that height, so it has to stop clear of the
+// slab rather than level with it.
+check("the tower stops below the room's floor slab",
+  city.includes("floorLift - ROOM_SLAB_THICKNESS - TOWER_REVEAL"));
+check("the slab thickness the tower avoids matches the one walk3d builds",
+  /ROOM_SLAB_THICKNESS = 0\.06/.test(city) &&
+  walk.includes("new THREE.BoxGeometry(building.width, 0.06, building.length)"));
+check("the tower keeps a positive height even for a shallow lift",
+  city.includes("Math.max(0.05, floorLift - ROOM_SLAB_THICKNESS - TOWER_REVEAL)"));
+
 // — The room's own environment is unchanged ————————————————————
 check("Singapore latitude remains", walk.includes("const SG_LAT = 1.3521;"));
 check("Singapore longitude remains", walk.includes("const SG_LON = 103.8198;"));

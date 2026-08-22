@@ -48,11 +48,11 @@ LOGIN_LOCK = threading.Lock()
 # How many entries at the END of X-Forwarded-For were appended by our own
 # proxies and must be skipped to reach the real client. In the reference
 # deployment the chain is client -> nginx -> Caddy -> here: nginx appends the
-# client's address and Caddy then appends nginx's, so exactly one trailing hop
-# is ours. Counting from the right is what makes this un-spoofable — a client
+# client's address and Caddy forwards that list unchanged, so the real
+# client is the last entry. Counting from the right is un-spoofable: a client
 # can prepend anything it likes to the header, but it cannot control what our
 # own proxies append.
-PROXY_HOPS = int(os.environ.get("ROOMCAD_PROXY_HOPS", "1"))
+PROXY_HOPS = int(os.environ.get("ROOMCAD_PROXY_HOPS", "0"))
 
 # A watcher that stops reading must not be able to grow its queue without
 # bound. Payloads are whole-room snapshots and the newest one supersedes the

@@ -23,6 +23,22 @@ ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
   chmod 755 '$REMOTE_ROOT/server.py' && \
   find '$REMOTE_ROOT/web' -name '._*' -delete"
 
+# Validate the Caddyfile with the Caddy that is actually on the host before it
+# is allowed anywhere near /etc. Caddy directives come and go between versions,
+# so validating with a local binary proves nothing about the server — and an
+# invalid file installed here would leave a landmine that only goes off the
+# next time Caddy restarts, long after the deploy "succeeded".
+echo "Validating the Caddyfile against the Caddy on $HOST …"
+scp -q "$SERVER_DIR/Caddyfile" "$HOST:/tmp/Caddyfile.candidate"
+if ! ssh "$HOST" "caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" >/dev/null 2>&1; then
+  echo "ABORTED: the Caddyfile is not valid for $(ssh "$HOST" 'caddy version' 2>/dev/null | head -1)." >&2
+  ssh "$HOST" "caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" 2>&1 | grep -i error >&2 || true
+  ssh "$HOST" "rm -f /tmp/Caddyfile.candidate"
+  echo "Nothing was installed. The running site is untouched." >&2
+  exit 1
+fi
+ssh "$HOST" "rm -f /tmp/Caddyfile.candidate"
+
 echo "Installing systemd unit, Caddyfile and nginx site …"
 scp "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
 scp "$SERVER_DIR/Caddyfile" "$HOST:/etc/caddy/Caddyfile"

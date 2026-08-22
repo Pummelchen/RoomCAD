@@ -16,6 +16,12 @@ export const BLOCK_SIZE = 46;   // one city block
 export const ROAD_WIDTH = 13;   // carriageway between two blocks
 export const SIDEWALK = 3.2;    // pavement inset around a block
 export const KERB_HEIGHT = 0.16;
+// The room's own floor slab is this thick (walk3d builds it), and the tower
+// underneath has to stop clear of it. Ending the tower level with the slab put
+// two horizontal faces at exactly the same depth across the whole room, which
+// z-fought and read as a flickering floor.
+export const ROOM_SLAB_THICKNESS = 0.06;
+const TOWER_REVEAL = 0.02;
 // Height datum. The pavement top is the room's own floor level, so a ground
 // floor room opens straight onto the street; the carriageway is one kerb down.
 const PAVEMENT_Y = 0;
@@ -355,8 +361,12 @@ export class City {
       // here would rise above the room's own floor.
       return;
     }
-    facades.add(boxMatrix(x, floorLift / 2, z, w, floorLift, d), color);
-    const storeys = Math.max(1, Math.round(floorLift / FLOOR_HEIGHT));
+    // Stop below the underside of the room's floor slab. The tower is wider
+    // than the room, so the small reveal reads as an ordinary floor line
+    // rather than a gap.
+    const height = Math.max(0.05, floorLift - ROOM_SLAB_THICKNESS - TOWER_REVEAL);
+    facades.add(boxMatrix(x, height / 2, z, w, height, d), color);
+    const storeys = Math.max(1, Math.round(height / FLOOR_HEIGHT));
     this._facadeWindows(darkGlass, litGlass, x, z, w, d, storeys, 0, rnd);
   }
 

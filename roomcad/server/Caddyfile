@@ -1,15 +1,5 @@
 {
 	auto_https disable_redirects
-
-	# nginx terminates TLS in front of Caddy on this host. Unless Caddy is told
-	# to trust it, Caddy overwrites X-Forwarded-Proto with its own (plain http)
-	# scheme and replaces X-Forwarded-For with nginx's loopback address — so the
-	# API can neither tell that the request arrived over HTTPS (and must mark
-	# the session cookie Secure) nor tell one client from another for
-	# rate-limiting. Trusting loopback preserves both.
-	servers {
-		trusted_proxies static 127.0.0.1/32 ::1/128
-	}
 }
 
 :8090 {
@@ -30,6 +20,17 @@
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8078 {
 			flush_interval -1
+			# nginx terminates TLS in front of this site. Caddy would otherwise
+			# replace both of these with its own view — X-Forwarded-Proto with
+			# plain "http", and X-Forwarded-For with nginx's loopback address —
+			# leaving the API unable to tell that the request reached the user
+			# over HTTPS, or to tell one client from another for rate limiting.
+			# Passing nginx's values through keeps the real client LAST in
+			# X-Forwarded-For: the entry nginx itself appended, which a client
+			# cannot forge. (trusted_proxies would be tidier but needs Caddy 2.7;
+			# this host runs 2.6.2.)
+			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+			header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
 		}
 	}
 	handle {

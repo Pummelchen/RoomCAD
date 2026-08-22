@@ -262,16 +262,28 @@ def main():
         h.client_address = (sock, 0)
         return server.Handler._client_key(h)
 
-    check("the real client is read past our own proxy hops",
-          client_key_for("203.0.113.9, 127.0.0.1") == "203.0.113.9",
-          client_key_for("203.0.113.9, 127.0.0.1"))
+    # In the reference chain Caddy forwards nginx's X-Forwarded-For unchanged,
+    # so the last entry is the one nginx appended: the real remote address.
+    check("the real client is the entry our own proxy appended",
+          client_key_for("203.0.113.9") == "203.0.113.9",
+          client_key_for("203.0.113.9"))
     check("a client cannot spoof its way to a fresh throttle bucket",
-          client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1") == "203.0.113.9",
-          client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1"))
-    check("a single-proxy chain still identifies the client",
-          client_key_for("203.0.113.9") == "203.0.113.9")
+          client_key_for("1.2.3.4, 203.0.113.9") == "203.0.113.9",
+          client_key_for("1.2.3.4, 203.0.113.9"))
     check("no proxy at all falls back to the socket address",
           client_key_for(None, "198.51.100.7") == "198.51.100.7")
+
+    # A deployment whose proxy appends its own hop sets ROOMCAD_PROXY_HOPS.
+    saved_hops = server.PROXY_HOPS
+    try:
+        server.PROXY_HOPS = 1
+        check("an extra proxy hop can be configured away",
+              client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1") == "203.0.113.9",
+              client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1"))
+        check("a too-short chain still yields something usable",
+              client_key_for("203.0.113.9") == "203.0.113.9")
+    finally:
+        server.PROXY_HOPS = saved_hops
 
     def is_https_for(headers):
         h = server.Handler.__new__(server.Handler)
