@@ -15,7 +15,7 @@ structural, architectural or building-code tool.
 - **Arrange furniture** (bed, table, chair, wardrobe) and a ceiling-mounted light.
 - **Walk the room in 3D** — real physics (jump onto furniture, crouch, double-jump), soft shadows, and a day/night sky you set with a 24 h time-of-day control (sun, twilight and city lights follow it).
 - **Save rooms to the server** (SQLite, versioned). New project sessions open the latest saved design; returning browsers resume their exact last-used version.
-- **Edit together live** — several people can open the same room and see each other's changes in real time.
+- **Edit together live** — when another project member is present, **Join Live** pulses neon green; **Live Active** syncs edits both ways, and **Leave Live Mode** saves once for everyone before detaching your editor.
 - **One shared password** (checked server-side) protects the site.
 
 ## Quick start

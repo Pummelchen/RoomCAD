@@ -165,6 +165,8 @@ def main():
                               {"name": "room1", "version": 1}, cookie)
     check("choosing a version updates session resume target", status == 200 and resp.get("ok") is True, f"{status} {resp}")
     first_time_cookie = login(port)
+    status, resp, _ = request(port, "GET", "/api/status", cookie=first_time_cookie)
+    check("second project session is visible to live collaboration", status == 200 and resp.get("count") == 2, f"{status} {resp}")
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=first_time_cookie)
     check("first project session opens the latest saved file/version",
           status == 200 and resp.get("name") == "room1" and resp.get("version") == 2

@@ -21,6 +21,7 @@ const fileInput = document.getElementById("file-input");
 const undoButton = document.getElementById("undo");
 const redoButton = document.getElementById("redo");
 const liveButton = document.getElementById("live-room");
+const leaveLiveButton = document.getElementById("leave-live-room");
 const appVersion = document.getElementById("app-version");
 const main = document.getElementById("main");
 const leftSidebarResizer = document.getElementById("left-sidebar-resizer");
@@ -537,6 +538,7 @@ document.getElementById("save-room").addEventListener("click", saveRoom);
 document.getElementById("open-room").addEventListener("click", openRoomModal);
 document.getElementById("export-room").addEventListener("click", exportRoom);
 document.getElementById("live-room").addEventListener("click", toggleLive);
+leaveLiveButton.addEventListener("click", leaveLiveMode);
 document.getElementById("open-close").addEventListener("click", () => {
   document.getElementById("open-modal").hidden = true;
 });
@@ -641,27 +643,39 @@ async function apiLiveDraft(json, name, clientId, version) {
 }
 
 let eventSource = null;
+let pendingLiveDraft = null;
+let liveDetached = false;
+let leavingLive = false;
+
+function stopWatching({ detached = false } = {}) {
+  if (eventSource) eventSource.close();
+  eventSource = null;
+  pendingLiveDraft = null;
+  if (detached) liveDetached = true;
+}
 
 /// Subscribes to live updates for a server room (Google-Docs style sharing).
 function watchRoom(name) {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-  }
+  stopWatching();
+  liveDetached = false;
   try {
     eventSource = new EventSource("/api/watch/" + encodeURIComponent(name));
     eventSource.onmessage = e => {
       try {
         const data = JSON.parse(e.data);
+        if (data.name !== store.serverRoomName) return;
         if (data.clientId === CLIENT_ID) return; // ignore our own echo
         if (store.dragTransactionActive) return; // never clobber an active drag
         if (data.live) {
-          // Unsaved draft from a teammate. Apply only when Live is on and on
-          // the same saved version.
-          if (!store.live) return;
+          // Remember the shared draft while the user considers joining. This
+          // lets Join Live adopt the teammate's work instead of overwriting it.
           if (data.version != null && store.serverRoomVersion != null
               && data.version !== store.serverRoomVersion) return;
           const room = P.parseRoom(data.json);
+          if (!store.live) {
+            pendingLiveDraft = { room, version: data.version };
+            return;
+          }
           store.applyRemoteRoom(room, null);
         } else {
           // A real save (from anyone) — apply it and adopt the new version.
@@ -681,7 +695,7 @@ function watchRoom(name) {
   }
 }
 
-async function saveRoom() {
+async function saveRoom({ watch = !liveDetached } = {}) {
   const btn = document.getElementById("save-room");
   btn.classList.remove("saved");
   btn.classList.add("saving");
@@ -710,18 +724,20 @@ async function saveRoom() {
     store.edited = false;
     store.emit();
     renderRooms();
-    watchRoom(result.name);
+    if (watch) watchRoom(result.name);
 
     btn.classList.remove("saving");
     if (verified) {
       btn.classList.add("saved");
       setTimeout(() => btn.classList.remove("saved"), 3000);
     }
+    return verified;
   } catch {
     store.status = "Could not save to the server";
     store.emit();
     toast("Could not save — server not reachable", "error");
     btn.classList.remove("saving");
+    return false;
   }
 }
 
@@ -1038,35 +1054,58 @@ document.addEventListener("keydown", e => {
 // MARK: - Live collaboration (unsaved, real-time sharing)
 
 function renderLiveButton() {
-  // Hide the button when we're the only session; there's nobody to share with.
-  if (store.presenceCount <= 1) {
-    liveButton.hidden = true;
-    return;
-  }
-  liveButton.hidden = false;
+  const teammatePresent = store.presenceCount > 1;
+  const canJoin = teammatePresent && !!store.serverRoomName;
+  liveButton.hidden = !store.live && !canJoin;
+  leaveLiveButton.hidden = !store.live;
+  liveButton.disabled = leavingLive || store.live;
+  leaveLiveButton.disabled = leavingLive;
+  liveButton.classList.toggle("join-live", !store.live && canJoin);
   liveButton.classList.toggle("live-on", store.live);
-  liveButton.textContent = store.live ? `🟢 Live (${store.presenceCount})` : "🟢 Live";
+  liveButton.textContent = store.live ? "Live Active" : "Join Live";
 }
 
 function toggleLive() {
-  if (store.live) {
-    store.live = false;
-    store.status = "Live off — changes stay on this browser until you save";
-    store.emit();
-    return;
-  }
+  if (store.live || leavingLive) return;
   if (!store.serverRoomName) {
-    store.status = "Save or open a room from the server first, then turn Live on";
+    store.status = "Save or open a room from the server first, then Join Live";
     store.emit();
     return;
   }
+  if (store.edited) {
+    store.status = "Save your local changes before joining Live";
+    store.emit();
+    return;
+  }
+  if (liveDetached || !eventSource) watchRoom(store.serverRoomName);
   store.live = true;
-  store.status = "Live — teammates see your changes instantly (nothing is saved yet)";
+  if (pendingLiveDraft) {
+    const draft = pendingLiveDraft;
+    pendingLiveDraft = null;
+    store.applyRemoteRoom(draft.room, null);
+  }
+  store.status = "Live Active — changes now sync for everyone";
   store.emit();
-  pushLiveDraft(); // publish our current state right away
 }
 
-// MARK: - Server status (presence + latency), polled every 10 s
+async function leaveLiveMode() {
+  if (!store.live || leavingLive) return;
+  leavingLive = true;
+  renderLiveButton();
+  const saved = await saveRoom({ watch: false });
+  leavingLive = false;
+  if (!saved) {
+    store.status = "Could not save for everyone — still in Live Active";
+    store.emit();
+    return;
+  }
+  store.live = false;
+  stopWatching({ detached: true });
+  store.status = "Saved for everyone · left Live Mode · working on your own";
+  store.emit();
+}
+
+// MARK: - Server status (presence + latency), polled every 3 s
 
 function updateVersionBadge() {
   let html = "v" + APP_VERSION;
@@ -1163,4 +1202,4 @@ document.title = (store.documentName || store.room.name) + " — RoomCAD";
 updateVersionBadge();
 pollStatus();
 resumeLastRoom();
-setInterval(pollStatus, 10000);
+setInterval(pollStatus, 3000);
