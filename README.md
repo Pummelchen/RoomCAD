@@ -14,6 +14,9 @@ architectural or building-code tool.
   they meet, so rooms close cleanly instead of overshooting or stopping short,
   walls can only start on the building, and any stretch where two walls double
   up is marked yellow.
+- **Even out rooms you eyeballed** — drag a box over a row with the Rooms tool
+  and RoomCAD slides only the walls between them until they match, leaving the
+  outside of the row where it is.
 - **Read every size at a glance** — walls, doors and windows carry permanent
   CAD-style dimension lines, every enclosed room shows its m² in the emptiest
   part of its floor, and there is a measure tool for anything else.
@@ -44,6 +47,8 @@ architectural or building-code tool.
   something real. Windows and street lamps come on after dark.
 - **Build solid rooms** — walls render as sealed solids that bite into the
   floor, the ceiling and each other. Only doors and windows let light through.
+- **Export** as a RoomCAD `.rcad` file, or as an **SVG** measured drawing at a
+  real architectural scale for printing or another program.
 - **Save rooms to the server** (SQLite, versioned). The Room Name is the file
   name: saving under a new name starts a new design at v0 and leaves the old
   one untouched, saving under the same name adds a version. My Rooms lists the
@@ -71,7 +76,7 @@ cd roomcad/web && ./serve.sh           # app on http://localhost:8080
 | --- | --- |
 | Select / Wall / Door / Window | `V` / `W` / `D` / `G` |
 | Erase / Measure / Furniture | `E` / `M` / `F` |
-| Label | `T` |
+| Label / Rooms | `T` / `Y` |
 | Turn furniture or label / delete | `R` / `⌫` |
 | Nudge selection | arrow keys |
 | 2D plan / 3D walk | `⌘1` / `⌘2` |

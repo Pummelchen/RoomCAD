@@ -5,6 +5,7 @@ import { store, TOOL_HELP } from "./store.js";
 import { Editor2D } from "./editor2d.js";
 import { Walk3D } from "./walk3d.js";
 import { APP_VERSION } from "./version.js";
+import { roomToSVG } from "./svg.js";
 
 // A per-tab identity so a client can ignore its own live-update echo.
 const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
@@ -270,6 +271,10 @@ function renderInspector() {
     inspectorContent.innerHTML = publicSection(store.selectedPublicArea());
     return;
   }
+  if (store.tool === "rooms") {
+    inspectorContent.innerHTML = roomsToolSection();
+    return;
+  }
   const kind = store.selectedOpeningKind();
   if (kind === "door" || kind === "window") {
     inspectorContent.innerHTML = openingSection(kind);
@@ -383,6 +388,40 @@ function publicSection(area) {
   html += `<div class="inspector-note">Drag a red corner handle to resize it. ` +
     `Public areas are left untouched by the automatic room layout.</div>`;
   html += `<button class="inspector-button danger" data-action="delete">Delete Public Area</button>`;
+  return html;
+}
+
+function roomsToolSection() {
+  const rooms = store.selectedRooms();
+  let html = `<h4>Rooms</h4>`;
+  if (!store.roomSelection) {
+    html += `<div class="inspector-note">Drag a box across a row of rooms to select ` +
+      `them. RoomCAD can then even out their sizes by sliding only the walls ` +
+      `between them — the outside of the row stays exactly where it is.</div>`;
+    return html;
+  }
+  if (rooms.length === 0) {
+    html += `<div class="inspector-note">No whole rooms in that box. Drag across ` +
+      `the rooms themselves — a room counts when most of its floor is inside.</div>`;
+    return html;
+  }
+  html += statRow("Selected", rooms.length + (rooms.length === 1 ? " room" : " rooms"));
+  for (const r of rooms) {
+    const w = r.bounds.maxX - r.bounds.minX;
+    const l = r.bounds.maxZ - r.bounds.minZ;
+    html += statRow(P.cm(w) + " × " + P.cm(l), r.area.toFixed(2) + " m²");
+  }
+  const check = P.roomRow(rooms);
+  if (check.reason) {
+    html += `<div class="inspector-note">${esc(check.reason)}.</div>`;
+  } else {
+    const span = check.axis === "x"
+      ? check.order[check.order.length - 1].bounds.maxX - check.order[0].bounds.minX
+      : check.order[check.order.length - 1].bounds.maxZ - check.order[0].bounds.minZ;
+    html += statRow("Each would become", P.cm(span / rooms.length));
+    html += `<button class="inspector-button" data-action="equalize-rooms">Make all the same size</button>`;
+  }
+  html += `<button class="inspector-button" data-action="clear-room-selection">Clear selection</button>`;
   return html;
 }
 
@@ -500,6 +539,12 @@ inspectorContent.addEventListener("click", e => {
   if (!t) return;
   if (t.dataset.action === "turn") {
     store.rotateSelectedFurniture();
+  } else if (t.dataset.action === "equalize-rooms") {
+    store.equalizeSelectedRooms();
+  } else if (t.dataset.action === "clear-room-selection") {
+    store.roomSelection = null;
+    store.status = "Selection cleared";
+    store.emit();
   } else if (t.dataset.action === "turn-label") {
     store.rotateSelectedLabel();
   } else if (t.dataset.action === "delete") {
@@ -600,7 +645,24 @@ document.getElementById("new-room").addEventListener("click", () => {
 });
 document.getElementById("save-room").addEventListener("click", saveRoom);
 document.getElementById("open-room").addEventListener("click", openRoomModal);
-document.getElementById("export-room").addEventListener("click", exportRoom);
+const exportButton = document.getElementById("export-room");
+const exportMenu = document.getElementById("export-menu");
+exportButton.addEventListener("click", e => {
+  exportMenu.hidden = !exportMenu.hidden;
+  e.stopPropagation();
+});
+exportMenu.querySelectorAll("[data-export]").forEach(b => {
+  b.addEventListener("click", () => {
+    exportMenu.hidden = true;
+    exportRoom(b.dataset.export);
+  });
+});
+// Clicking anywhere else puts the menu away.
+document.addEventListener("click", e => {
+  if (!exportMenu.hidden && !exportMenu.contains(e.target) && e.target !== exportButton) {
+    exportMenu.hidden = true;
+  }
+});
 document.getElementById("live-room").addEventListener("click", toggleLive);
 leaveLiveButton.addEventListener("click", leaveLiveMode);
 document.getElementById("open-close").addEventListener("click", () => {
@@ -816,19 +878,39 @@ async function saveRoom({ watch = !liveDetached } = {}) {
 
 /// Exports the current room (canvas + walls + furniture) as a .rcad download.
 /// The same `parseRoom` path is used on import, so the file round-trips.
-function exportRoom() {
-  const json = P.serializeRoom(store.room);
-  const base = (store.serverRoomName || store.documentName || store.room.name || "room")
-    .replace(/[^a-zA-Z0-9._-]/g, "_");
-  const blob = new Blob([json], { type: "application/octet-stream" });
+/// Hands the browser a file to save.
+function download(name, text, mime) {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = base + ".rcad";
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function exportBaseName() {
+  return (store.serverRoomName || store.documentName || store.room.name || "room")
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function exportRoom(format = "rcad") {
+  const base = exportBaseName();
+  if (format === "svg") {
+    // A measured drawing rather than a picture of the screen: it prints to a
+    // real architectural scale and opens in anything that reads vectors.
+    const svg = roomToSVG(store.room, {
+      date: new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
+    });
+    download(base + ".svg", svg, "image/svg+xml");
+    const scale = (svg.match(/1 : (\d+)/) || [])[1];
+    store.status = "Exported " + base + ".svg" + (scale ? " · drawn at 1:" + scale : "");
+    store.emit();
+    return;
+  }
+  download(base + ".rcad", P.serializeRoom(store.room), "application/octet-stream");
   store.status = "Exported " + base + ".rcad";
   store.emit();
 }
@@ -1091,6 +1173,7 @@ document.addEventListener("keydown", e => {
     case "KeyE": store.chooseTool("erase"); break;
     case "KeyM": store.chooseTool("measure"); break;
     case "KeyT": store.chooseTool("label"); break;
+    case "KeyY": store.chooseTool("rooms"); break;
     case "KeyF":
       // Toggle the last used furniture kind on/off.
       if (store.tool === "furniture" && store.pendingFurnitureKind) {

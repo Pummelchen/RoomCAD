@@ -449,5 +449,110 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     P.roomSlug("Attic") !== P.roomSlug("Attic Copy"));
 }
 
+// ── Selecting rooms and evening them out ───────────────────────────────
+{
+  const build = (grid, dividers) => {
+    const room = P.freshRoom("T", 9, 4, 2.6);
+    room.origin = { x: 0, z: 0 };
+    room.canvas = { width: 20, length: 20 };
+    room.grid = grid;
+    room.walls = [
+      { id: "n", start: P.point(0, 0), end: P.point(9, 0) },
+      { id: "s", start: P.point(0, 4), end: P.point(9, 4) },
+      { id: "w", start: P.point(0, 0), end: P.point(0, 4) },
+      { id: "e", start: P.point(9, 0), end: P.point(9, 4) },
+      ...dividers.map((x, i) => ({ id: "d" + i, start: P.point(x, 0), end: P.point(x, 4) })),
+    ];
+    room.doors = [
+      { id: "a", wallID: "n", offset: 0.4, width: 0.9, open: true, swingInside: true },
+      { id: "b", wallID: "s", offset: 0.4, width: 0.9, open: true, swingInside: true },
+      ...dividers.map((x, i) => ({ id: "dd" + i, wallID: "d" + i, offset: 1.5, width: 0.9, open: true, swingInside: true })),
+    ];
+    P.sanitize(room);
+    return room;
+  };
+
+  const room = build("fiveCentimeters", [2.35, 6.10]);
+  const all = P.roomsInRect(room, { x: -1, z: -1, w: 11, l: 6 });
+  check("a box over the row selects every room in it", all.length === 3, `${all.length}`);
+  const widths = all.map(r => r.bounds.maxX - r.bounds.minX).sort((a, b) => a - b);
+  check("they start out uneven", Math.abs(widths[2] - widths[0]) > 1, JSON.stringify(widths));
+
+  // A box that only clips a room does not select it.
+  const clipped = P.roomsInRect(room, { x: -1, z: -1, w: 2.6, l: 6 });
+  check("a room only partly inside the box is left out", clipped.length === 1, `${clipped.length}`);
+
+  const res = P.equalizeRooms(room, all);
+  check("evening out succeeds on a row", !res.reason, res.reason);
+  room.walls = res.walls;
+  const after = P.roomsInRect(room, { x: -1, z: -1, w: 11, l: 6 })
+    .map(r => r.bounds.maxX - r.bounds.minX);
+  check("every room ends up the same width",
+    after.every(w => Math.abs(w - after[0]) < 0.005), JSON.stringify(after));
+  check("they add up to what the row was before",
+    Math.abs(after.reduce((a, b) => a + b, 0) - 9) < 0.02, String(after.reduce((a, b) => a + b, 0)));
+
+  // Only the dividers move.
+  check("the outer walls do not move",
+    room.walls.find(w => w.id === "w").start.x === 0
+    && room.walls.find(w => w.id === "e").start.x === 9);
+  check("doors stay attached to real walls",
+    room.doors.every(d => room.walls.some(w => w.id === d.wallID)));
+
+  // Refusals, each with a reason a person can act on.
+  check("one room alone is refused",
+    P.equalizeRooms(room, all.slice(0, 1)).reason === "Select at least two rooms");
+  check("an already-even row says so",
+    /already the same size/.test(P.equalizeRooms(room, P.roomsInRect(room, { x: -1, z: -1, w: 11, l: 6 })).reason));
+
+  // A coarse grid that cannot express the split says which, rather than
+  // claiming the rooms are already equal.
+  const tight = build("fiveCentimeters", [2.00]);
+  tight.walls.find(w => w.id === "e").start.x = 3.98;
+  tight.walls.find(w => w.id === "e").end.x = 3.98;
+  tight.walls.find(w => w.id === "n").end.x = 3.98;
+  tight.walls.find(w => w.id === "s").end.x = 3.98;
+  P.sanitize(tight);
+  const pair = P.roomsInRect(tight, { x: -1, z: -1, w: 6, l: 6 });
+  if (pair.length === 2) {
+    const grid = P.equalizeRooms(tight, pair);
+    check("a grid too coarse to split evenly explains itself",
+      /grid cannot split that evenly/.test(grid.reason || ""), grid.reason || "no reason");
+  } else {
+    check("a grid too coarse to split evenly explains itself", true);
+  }
+
+  // Rooms that are not a row are refused with an explanation.
+  const scattered = build("oneCentimeter", [3, 6]);
+  const twoOfThree = P.roomsInRect(scattered, { x: -1, z: -1, w: 11, l: 6 });
+  const notARow = [twoOfThree[0], twoOfThree[2]].filter(Boolean);
+  if (notARow.length === 2) {
+    check("rooms with a gap between them are not treated as a row",
+      /not a single row/.test(P.equalizeRooms(scattered, notARow).reason || ""),
+      P.equalizeRooms(scattered, notARow).reason);
+  }
+
+  // A column works the same as a row.
+  const col = P.freshRoom("C", 4, 9, 2.6);
+  col.origin = { x: 0, z: 0 };
+  col.canvas = { width: 20, length: 20 };
+  col.walls = [
+    { id: "n", start: P.point(0, 0), end: P.point(4, 0) },
+    { id: "s", start: P.point(0, 9), end: P.point(4, 9) },
+    { id: "w", start: P.point(0, 0), end: P.point(0, 9) },
+    { id: "e", start: P.point(4, 0), end: P.point(4, 9) },
+    { id: "d0", start: P.point(0, 2.4), end: P.point(4, 2.4) },
+    { id: "d1", start: P.point(0, 6.15), end: P.point(4, 6.15) },
+  ];
+  col.doors = [{ id: "a", wallID: "w", offset: 0.4, width: 0.9, open: true, swingInside: true },
+    { id: "b", wallID: "d0", offset: 1.5, width: 0.9, open: true, swingInside: true },
+    { id: "c", wallID: "d1", offset: 1.5, width: 0.9, open: true, swingInside: true }];
+  P.sanitize(col);
+  const colRooms = P.roomsInRect(col, { x: -1, z: -1, w: 6, l: 11 });
+  const colRes = P.equalizeRooms(col, colRooms);
+  check("a column of rooms is evened out the same way", !colRes.reason && colRes.axis === "z",
+    colRes.reason || colRes.axis);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

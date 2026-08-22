@@ -34,6 +34,7 @@ The 3D view needs a **WebGPU**-capable browser.
 | `web/walk3d.js` | Three.js 3D walkthrough (Rapier physics, real sun, lighting, bloom) |
 | `web/city.js` | the stylised city around the room (instanced blocks, roads, traffic) |
 | `web/app.js` | UI glue: toolbar, inspector, keyboard, files, live collaboration |
+| `web/svg.js` | the plan as a measured vector drawing (SVG export) |
 | `web/audio.js` | procedural sound effects |
 | `web/login.js` | password gate + cookie |
 | `web/version.js` | the single visible release number |

@@ -57,7 +57,17 @@
         <button id="new-room" class="primary">＋ New Room</button>
         <button id="save-room">💾 Save</button>
         <button id="open-room">📂 Open…</button>
-        <button id="export-room">⬇️ Export</button>
+        <span class="menu-anchor">
+          <button id="export-room" title="Download this design">⬇️ Export</button>
+          <div id="export-menu" hidden>
+            <button data-export="rcad" title="The RoomCAD file — reopens with everything intact">
+              <span class="icon">💾</span><span>RoomCAD file (.rcad)</span>
+            </button>
+            <button data-export="svg" title="A measured drawing for printing or another program">
+              <span class="icon">📐</span><span>Drawing (.svg)</span>
+            </button>
+          </div>
+        </span>
         <button id="live-room" title="Join the shared live editing session" hidden>Join Live</button>
         <button id="leave-live-room" class="live-leave" title="Save for everyone, then leave live editing" hidden>Leave Live Mode</button>
         <input type="file" id="file-input" accept=".rcad,.room,.json" hidden>
@@ -88,6 +98,9 @@
             </button>
             <button data-tool="label" title="Place a text label (T)">
               <span class="icon">🏷️</span><span>Label</span>
+            </button>
+            <button data-tool="rooms" title="Select rooms and even out their sizes (Y)">
+              <span class="icon">⬚</span><span>Rooms</span>
             </button>
           </div>
           <div id="light-menu" hidden>

@@ -36,6 +36,7 @@ export class Editor2D {
     this.pointers = new Map();
     this.pinch = null;
     this.contextMenu = document.getElementById("context-menu");
+    this.dimensionBoxes = [];  // screen boxes already taken by a readout this frame
     this.measureDrag = null;   // { start, end } while dragging the measure tool
     this.measureResult = null; // last measured { start, end } (stays on screen)
     this.zoomEl = document.getElementById("zoom-level");
@@ -452,6 +453,9 @@ export class Editor2D {
       case "public":
         this.drag = { type: "publicArea", anchor: p, current: p };
         break;
+      case "rooms":
+        this.drag = { type: "roomSelect", anchor: p, current: p };
+        break;
       case "measure":
         this.measureDrag = { start: p, end: p };
         this.drag = { type: "measure" };
@@ -609,6 +613,7 @@ export class Editor2D {
           this.drag.current = P.snapWallEnd(store.room, p, this.drag.anchor);
           break;
         case "publicArea":
+        case "roomSelect":
           this.drag.current = p;
           break;
         case "moveFurniture":
@@ -702,6 +707,12 @@ export class Editor2D {
           store.status = "Walls need to be at least 30 cm long";
           store.emit();
         }
+        break;
+      case "roomSelect":
+        store.setRoomSelection({
+          x1: drag.anchor.x, z1: drag.anchor.z,
+          x2: drag.current.x, z2: drag.current.z,
+        });
         break;
       case "publicArea":
         store.markPublicArea({
@@ -904,6 +915,10 @@ export class Editor2D {
         size: P.LABEL_DEFAULT_SIZE }, false);
     }
 
+    this.drawRoomSelection(room);
+
+    // Readouts claim screen space in draw order; the list resets each frame.
+    this.dimensionBoxes = [];
     this.drawWallClashes(room);
     this.drawRoomCaptions(room);
 
@@ -1044,8 +1059,19 @@ export class Editor2D {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const tw = ctx.measureText(text).width;
+    const box = { x: mid.x - tw / 2 - 3, y: mid.y - 7, w: tw + 6, h: 14 };
+    // Zoomed out, a dense plan puts more readouts on screen than there is room
+    // for and they pile on top of each other, which is worse than not showing
+    // them: an unreadable number is still a number you might trust. Drop the
+    // ones that would collide and let the zoom decide how much detail fits.
+    if (this.dimensionBoxes.some(o =>
+      box.x < o.x + o.w && o.x < box.x + box.w && box.y < o.y + o.h && o.y < box.y + box.h)) {
+      ctx.restore();
+      return;
+    }
+    this.dimensionBoxes.push(box);
     ctx.fillStyle = "rgba(14, 14, 16, 0.82)";
-    ctx.fillRect(mid.x - tw / 2 - 3, mid.y - 7, tw + 6, 14);
+    ctx.fillRect(box.x, box.y, box.w, box.h);
     ctx.fillStyle = options.textColor || DIM_TEXT;
     ctx.fillText(text, mid.x, mid.y);
     ctx.restore();
@@ -1227,6 +1253,63 @@ export class Editor2D {
       ctx.setLineDash([4, 3]);
       ctx.strokeRect(r.x + 0.5, r.y + 0.5, Math.max(r.w - 1, 0), Math.max(r.h - 1, 0));
       ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /// The rooms picked out by the Rooms tool, plus the box being dragged.
+  /// Each selected room is shaded and captioned with the measurement that
+  /// matters for evening them out — its width along the row.
+  drawRoomSelection(room) {
+    const ctx = this.ctx;
+    if (this.drag && this.drag.type === "roomSelect") {
+      const r = this.rect({
+        minX: Math.min(this.drag.anchor.x, this.drag.current.x),
+        maxX: Math.max(this.drag.anchor.x, this.drag.current.x),
+        minZ: Math.min(this.drag.anchor.z, this.drag.current.z),
+        maxZ: Math.max(this.drag.anchor.z, this.drag.current.z),
+      });
+      ctx.fillStyle = "rgba(61, 139, 253, 0.12)";
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = "#3d8bfd";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      ctx.setLineDash([]);
+    }
+    if (store.tool !== "rooms" || !store.roomSelection) return;
+
+    const rooms = store.selectedRooms();
+    ctx.save();
+    for (const region of rooms) {
+      for (const piece of region.rects) {
+        const r = this.rect({
+          minX: piece.x, maxX: piece.x + piece.w,
+          minZ: piece.z, maxZ: piece.z + piece.l,
+        });
+        ctx.fillStyle = "rgba(61, 139, 253, 0.22)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+      }
+    }
+    // One outline and one size per room, on top of the shading.
+    ctx.strokeStyle = "#6fb3ff";
+    ctx.lineWidth = 2;
+    ctx.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const region of rooms) {
+      const b = region.bounds;
+      const r = this.rect({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ });
+      ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+      if (r.w < 34 || r.h < 18) continue;
+      const across = P.cm(b.maxX - b.minX) + " × " + P.cm(b.maxZ - b.minZ);
+      const tw = ctx.measureText(across).width;
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      ctx.fillStyle = "rgba(10, 22, 40, 0.85)";
+      ctx.fillRect(cx - tw / 2 - 5, cy - 9, tw + 10, 18);
+      ctx.fillStyle = "#cfe6ff";
+      ctx.fillText(across, cx, cy);
     }
     ctx.restore();
   }

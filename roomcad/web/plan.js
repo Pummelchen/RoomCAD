@@ -1221,6 +1221,121 @@ export function settlePublicArea(room, rect, ignoreID = null) {
   return out;
 }
 
+/// The enclosed rooms whose floor lies mostly inside `rect`.
+///
+/// "Mostly" rather than "entirely" so a selection box dragged roughly over a
+/// row of rooms picks them all up without having to be precise about it — the
+/// whole point of the gesture is that the plan is not precise yet.
+export function roomsInRect(room, rect, coverage = 0.6) {
+  const out = [];
+  for (const region of detectRooms(room)) {
+    let inside = 0;
+    let total = 0;
+    for (const r of region.rects) {
+      total += r.w * r.l;
+      const ox = Math.min(r.x + r.w, rect.x + rect.w) - Math.max(r.x, rect.x);
+      const oz = Math.min(r.z + r.l, rect.z + rect.l) - Math.max(r.z, rect.z);
+      if (ox > 0 && oz > 0) inside += ox * oz;
+    }
+    if (total > 0 && inside / total >= coverage) out.push(region);
+  }
+  return out;
+}
+
+/// Works out whether a set of rooms forms one row, and along which axis.
+///
+/// Returns { axis, order } with the rooms sorted along that axis, or a
+/// { reason } explaining why they cannot be evened out.
+export function roomRow(regions, tolerance = 0.25) {
+  if (regions.length < 2) return { reason: "Select at least two rooms" };
+  for (const axis of ["x", "z"]) {
+    const lo = axis === "x" ? r => r.bounds.minX : r => r.bounds.minZ;
+    const hi = axis === "x" ? r => r.bounds.maxX : r => r.bounds.maxZ;
+    const crossLo = axis === "x" ? r => r.bounds.minZ : r => r.bounds.minX;
+    const crossHi = axis === "x" ? r => r.bounds.maxZ : r => r.bounds.maxX;
+    const order = [...regions].sort((a, b) => lo(a) - lo(b));
+    // They have to line up across the row...
+    const cLo = crossLo(order[0]);
+    const cHi = crossHi(order[0]);
+    if (!order.every(r => Math.abs(crossLo(r) - cLo) <= tolerance
+      && Math.abs(crossHi(r) - cHi) <= tolerance)) continue;
+    // ...and follow one another along it, with no gap and no overlap.
+    let contiguous = true;
+    for (let i = 1; i < order.length; i++) {
+      if (Math.abs(lo(order[i]) - hi(order[i - 1])) > tolerance) { contiguous = false; break; }
+    }
+    if (!contiguous) continue;
+    return { axis, order, crossLo: cLo, crossHi: cHi };
+  }
+  return { reason: "Those rooms are not a single row — pick rooms that sit side by side" };
+}
+
+/// Evens out a row of rooms by sliding the walls between them.
+///
+/// Only the dividers move. The walls around the outside stay exactly where
+/// they are, so the row keeps its overall size and nothing outside it shifts —
+/// the point is to fix spacing that was eyeballed, not to redraw the plan.
+///
+/// Returns { walls, size, moved } or { reason }.
+export function equalizeRooms(room, regions, opts = {}) {
+  const row = roomRow(regions);
+  if (row.reason) return { reason: row.reason };
+  const { axis, order } = row;
+  const lo = axis === "x" ? r => r.bounds.minX : r => r.bounds.minZ;
+  const hi = axis === "x" ? r => r.bounds.maxX : r => r.bounds.maxZ;
+
+  const start = lo(order[0]);
+  const end = hi(order[order.length - 1]);
+  const span = end - start;
+  const n = order.length;
+  if (span <= 0 || n < 2) return { reason: "Select at least two rooms" };
+  const each = span / n;
+  if (each < MIN_ROOM_DIM) {
+    return { reason: "Those rooms would end up under " + cm(MIN_ROOM_DIM) + " wide" };
+  }
+
+  const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
+  const snap = v => clean(Math.round(v / step) * step);
+  const walls = room.walls.map(w => ({ ...w, start: { ...w.start }, end: { ...w.end } }));
+  let moved = 0;
+
+  for (let i = 1; i < n; i++) {
+    const from = hi(order[i - 1]);          // where the divider is now
+    const to = snap(start + each * i);      // where it belongs
+    if (Math.abs(to - from) < 0.0005) continue;
+    // Every wall lying on the old boundary, running across the row.
+    for (const w of walls) {
+      const alongRow = axis === "x"
+        ? Math.abs(w.start.x - w.end.x) < 0.001    // divider runs across X -> vertical
+        : Math.abs(w.start.z - w.end.z) < 0.001;
+      if (!alongRow) continue;
+      const at = axis === "x" ? w.start.x : w.start.z;
+      if (Math.abs(at - from) > 0.02) continue;
+      // Ignore anything that does not actually span the row.
+      const wLo = axis === "x" ? Math.min(w.start.z, w.end.z) : Math.min(w.start.x, w.end.x);
+      const wHi = axis === "x" ? Math.max(w.start.z, w.end.z) : Math.max(w.start.x, w.end.x);
+      if (Math.min(wHi, row.crossHi) - Math.max(wLo, row.crossLo) < 0.2) continue;
+      if (axis === "x") { w.start.x = to; w.end.x = to; }
+      else { w.start.z = to; w.end.z = to; }
+      moved++;
+    }
+  }
+  if (moved === 0 && !opts.allowNoop) {
+    // Nothing moved for one of two very different reasons, and saying "already
+    // the same size" for both is misleading: on a coarse grid an even split may
+    // simply not be expressible, so the target snaps back onto the boundary it
+    // came from. Tell the user which it is, and what to do about it.
+    const sizes = order.map(r => hi(r) - lo(r));
+    const even = sizes.every(v => Math.abs(v - sizes[0]) < 0.005);
+    if (even) return { reason: "Those rooms are already the same size" };
+    return {
+      reason: "The " + GRID_STEPS[room.grid].label + " grid cannot split that evenly — "
+        + "each would need to be " + cm(each) + ". Switch to a finer grid and try again.",
+    };
+  }
+  return { walls, size: clean(each), axis, moved };
+}
+
 // MARK: - Labels
 
 /// A label's footprint on the plan, used for hit testing and for the selection

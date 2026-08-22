@@ -14,6 +14,7 @@ export const TOOL_HELP = {
   erase: "Click anything to erase it",
   measure: "Click and drag between two points to measure the distance in cm",
   public: "Drag a rectangle to mark shared (public) floor space",
+  rooms: "Drag a box over rooms to select them, then even out their sizes",
 };
 
 export const store = {
@@ -30,6 +31,10 @@ export const store = {
   selectedFurnitureID: null,
   selectedLabelID: null,
   selectedPublicID: null,
+  // The box last dragged with the Rooms tool. The rooms it covers are worked
+  // out from the walls each time rather than stored, so the selection cannot
+  // go stale when the plan changes underneath it.
+  roomSelection: null,
   documentName: null,
   serverRoomName: null, // the ternak_roomN slot this room was opened from (if any)
   serverRoomVersion: null, // the current save version of that slot
@@ -234,6 +239,7 @@ export const store = {
   // MARK: Tools
 
   chooseTool(tool) {
+    if (tool !== "rooms") this.roomSelection = null;
     this.tool = tool;
     this.pendingFurnitureKind = null;
     this.clearSelection();
@@ -622,6 +628,53 @@ export const store = {
     return true;
   },
 
+  // MARK: Room selection
+
+  setRoomSelection(rect) {
+    const x = Math.min(rect.x1, rect.x2);
+    const z = Math.min(rect.z1, rect.z2);
+    const w = Math.abs(rect.x2 - rect.x1);
+    const l = Math.abs(rect.z2 - rect.z1);
+    if (w < 0.2 || l < 0.2) {
+      this.roomSelection = null;
+      this.status = "Drag a box across the rooms you want to even out";
+      this.emit();
+      return;
+    }
+    this.roomSelection = { x, z, w, l };
+    const rooms = this.selectedRooms();
+    this.status = rooms.length === 0
+      ? "No whole rooms in that box — drag across the rooms themselves"
+      : rooms.length + (rooms.length === 1 ? " room selected — select at least two to even them out"
+        : " rooms selected · " + rooms.map(r => P.cm(Math.max(
+          r.bounds.maxX - r.bounds.minX, r.bounds.maxZ - r.bounds.minZ))).join(" · "));
+    this.emit();
+  },
+
+  selectedRooms() {
+    if (!this.roomSelection) return [];
+    return P.roomsInRect(this.room, this.roomSelection);
+  },
+
+  /// Slides the walls between the selected rooms so they come out the same
+  /// size. Only the dividers move; the outside of the row stays put.
+  equalizeSelectedRooms() {
+    const rooms = this.selectedRooms();
+    const result = P.equalizeRooms(this.room, rooms);
+    if (result.reason) {
+      this.status = result.reason;
+      this.emit();
+      return false;
+    }
+    this.commit("Evened out " + rooms.length + " rooms", room => {
+      room.walls = result.walls;
+    });
+    this.status = "Evened out " + rooms.length + " rooms · "
+      + P.cm(result.size) + " each";
+    this.emit();
+    return true;
+  },
+
   // MARK: Public areas
 
   /// Drags one corner of a public area; the opposite corner stays put.
@@ -692,6 +745,21 @@ export const store = {
   // MARK: Erase and delete
 
   erase(p) {
+    // A wall you are pointing straight at wins over furniture standing against
+    // it. Furniture was tested first, so aiming at a wall with a bed pushed up
+    // to it deleted the bed — the wall's 18 cm grab zone reaches well inside
+    // the furniture, and the two are flush by design.
+    const aimedWall = P.wallNear(this.room, p, P.WALL_THICKNESS);
+    if (aimedWall) {
+      this.commit("Erased wall", room => {
+        room.walls = room.walls.filter(w => w.id !== aimedWall.id);
+        room.doors = room.doors.filter(d => d.wallID !== aimedWall.id);
+        room.windows = room.windows.filter(w => w.wallID !== aimedWall.id);
+      });
+      if (this.selectedWallID === aimedWall.id) this.selectedWallID = null;
+      this.emit();
+      return;
+    }
     const label = P.labelNear(this.room, p);
     if (label) {
       this.commit("Erased label", room => {
@@ -1023,7 +1091,12 @@ export const store = {
   // MARK: Rooms
 
   newRoom() {
-    this.room = P.demoRoom();
+    // A button called "New Room" has to give a new room. It used to reload the
+    // seven-room demo, which meant the one obvious way to start something of
+    // your own handed you somebody else's flat. The demo is still what a brand
+    // new browser sees when the project has nothing saved.
+    this.room = P.freshRoom("My Room", 6, 4, 2.6);
+    P.centerRoom(this.room);
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.clearSelection();
@@ -1037,7 +1110,7 @@ export const store = {
     this.live = false;
     this.timeOfDay = 15;
     this.edited = false;
-    this.status = "Started a new room (7-room demo)";
+    this.status = "New room · 600 × 400 cm — drag its walls or set the size on the right";
     this.emit();
   },
 
