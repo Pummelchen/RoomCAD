@@ -671,13 +671,18 @@ export class Editor2D {
           x2: drag.current.x, z2: drag.current.z,
         });
         break;
-      case "moveFurniture":
-        if (moved) store.endDrag("Moved furniture");
+      case "moveFurniture": {
+        // Read the verdict before endDrag clears it.
+        const clashes = store.furnitureFeedback
+          && store.furnitureFeedback.id === drag.id
+          && store.furnitureFeedback.state === "invalid";
+        if (moved) store.endDrag(clashes ? "Moved furniture — it overlaps here" : "Moved furniture");
         else {
           store.discardDrag();
           store.select(p);
         }
         break;
+      }
       case "slideOpening":
         if (moved) store.endDrag(drag.kind === "door" ? "Slid door" : "Slid window");
         else {
@@ -820,6 +825,7 @@ export class Editor2D {
       this.drawOpeningMeasurements(measured.kind, measured.id);
     }
 
+    this._clashing = this.clashingFurniture(room);
     for (const item of room.furniture) {
       this.drawFurniture(item, item.id === store.selectedFurnitureID);
     }
@@ -1455,7 +1461,21 @@ export class Editor2D {
     if (store.furnitureFeedback && store.furnitureFeedback.id === item.id) {
       return store.furnitureFeedback.state; // "valid" | "invalid"
     }
+    // Red is a property of where the item IS, not of what just happened to it.
+    // Deriving it means a piece left overlapping stays red after the drag ends,
+    // and clears itself the moment it is moved or turned somewhere it fits.
+    if (this._clashing && this._clashing.has(item.id)) return "invalid";
     return selected ? "selected" : "default";
+  }
+
+  /// Ids of every furniture item currently overlapping a wall or another item.
+  /// Computed once per frame rather than per item.
+  clashingFurniture(room) {
+    const out = new Set();
+    for (const item of room.furniture || []) {
+      if (!P.isFurniturePlacementValid(room, item, new Set([item.id]))) out.add(item.id);
+    }
+    return out;
   }
 
   furnitureColors(state) {

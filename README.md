@@ -27,7 +27,8 @@ architectural or building-code tool.
   delete one by one.
 - **Furnish** with ten pieces — bed, table, chair, wardrobe, desk, sofa,
   bookshelf, nightstand, dresser, armchair — plus two ceiling lights
-  (60 W bulb, 200 W office panel).
+  (60 W bulb, 200 W office panel). Drag a piece anywhere, including through a
+  wall; it turns red where it does not fit and clears itself once it does.
 - **Auto-lay-out a floor**: choose how many rooms and the target m² each, and
   RoomCAD searches hundreds of arrangements for the one that lands closest,
   carving the corridors the rooms need to be reachable. Floor the rooms don't

@@ -9,6 +9,11 @@
 }
 
 :root {
+  /* Breathing space between the side panels and the edge of the screen.
+     Set in mm because that is the measure that was asked for; the JS that
+     budgets panel widths measures this value rather than assuming a pixel
+     count, so the two can never drift apart. */
+  --edge-gap: 5mm;
   --bg: #101012;
   --panel: #1b1b1f;
   --panel-2: #232327;
@@ -224,6 +229,7 @@ body {
   width: var(--sidebar-width);
   min-width: 0;
   flex: 0 0 var(--sidebar-width);
+  margin-left: var(--edge-gap);
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
@@ -632,6 +638,10 @@ body.resizing-sidebars * {
   width: var(--inspector-width);
   min-width: 0;
   flex: 0 0 var(--inspector-width);
+  /* The gap goes on the INSIDE edge. The inspector's own scrollbar lives at
+     its right edge, and pushing that away from the screen edge would leave the
+     scrollbar floating in the middle of nothing. */
+  margin-left: var(--edge-gap);
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: flex;

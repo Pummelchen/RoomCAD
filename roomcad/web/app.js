@@ -69,6 +69,25 @@ const SIDEBAR_MIN_WIDTH = 140;
 const CANVAS_MIN_WIDTH = 320;
 const RESIZER_TOTAL_WIDTH = 16;
 
+/// The panels are inset from the screen edge by --edge-gap, which is set in mm.
+/// Measure it rather than assuming a pixel count, so the width budget below
+/// always matches whatever the stylesheet says.
+function measureEdgeGap() {
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:absolute;visibility:hidden;height:0;width:var(--edge-gap)";
+  document.body.appendChild(probe);
+  const px = probe.getBoundingClientRect().width;
+  probe.remove();
+  return Number.isFinite(px) ? px : 0;
+}
+let edgeGapPx = 0;
+
+/// Everything between the two panels that is not drawing area: the resizers,
+/// plus the inset on each side.
+function chromeWidth() {
+  return RESIZER_TOTAL_WIDTH + edgeGapPx * 2;
+}
+
 let sidebarWidths = loadSidebarWidths();
 
 function validWidth(value, fallback) {
@@ -97,7 +116,7 @@ function saveSidebarWidths() {
 
 function widthLimit(side) {
   const other = side === "left" ? sidebarWidths.right : sidebarWidths.left;
-  return Math.max(SIDEBAR_MIN_WIDTH, main.clientWidth - other - CANVAS_MIN_WIDTH - RESIZER_TOTAL_WIDTH);
+  return Math.max(SIDEBAR_MIN_WIDTH, main.clientWidth - other - CANVAS_MIN_WIDTH - chromeWidth());
 }
 
 function clampSidebarWidth(side, width) {
@@ -110,7 +129,7 @@ function applySidebarWidths({ persist = false } = {}) {
 
   // If the app is made very narrow, preserve a usable drawing area before
   // honoring a saved wide-panel layout.
-  const available = main.clientWidth - CANVAS_MIN_WIDTH - RESIZER_TOTAL_WIDTH;
+  const available = main.clientWidth - CANVAS_MIN_WIDTH - chromeWidth();
   if (available >= SIDEBAR_MIN_WIDTH * 2 && sidebarWidths.left + sidebarWidths.right > available) {
     sidebarWidths.right = Math.max(SIDEBAR_MIN_WIDTH, available - sidebarWidths.left);
     sidebarWidths.left = Math.max(SIDEBAR_MIN_WIDTH, available - sidebarWidths.right);
@@ -180,6 +199,7 @@ function installSidebarResizer(handle, side, defaultWidth) {
 
 installSidebarResizer(leftSidebarResizer, "left", LEFT_SIDEBAR_DEFAULT);
 installSidebarResizer(rightSidebarResizer, "right", RIGHT_SIDEBAR_DEFAULT);
+edgeGapPx = measureEdgeGap();
 applySidebarWidths();
 window.addEventListener("resize", () => applySidebarWidths({ persist: true }));
 

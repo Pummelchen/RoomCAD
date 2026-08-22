@@ -474,11 +474,9 @@ export const store = {
   placeFurniture(kind, raw) {
     const candidate = { id: P.uid(), kind, center: P.point(raw.x, raw.z), rotationDegrees: 0 };
     candidate.center = P.furnitureCenter(this.room, raw, candidate);
-    if (!P.isFurniturePlacementValid(this.room, candidate)) {
-      this.status = "That spot is taken · click an open space";
-      this.emit();
-      return;
-    }
+    // Placing is not blocked either: the piece lands where it was asked to go
+    // and reads red until it is somewhere it fits.
+    const valid = P.isFurniturePlacementValid(this.room, candidate);
     this.commit("Placed " + P.FURNITURE_KINDS[kind].title.toLowerCase(), room => {
       room.furniture.push(candidate);
     });
@@ -488,7 +486,9 @@ export const store = {
     // the cursor goes back to normal after one placement.
     this.pendingFurnitureKind = null;
     this.tool = "select";
-    this.status = P.FURNITURE_KINDS[kind].title + " placed";
+    this.status = valid
+      ? P.FURNITURE_KINDS[kind].title + " placed"
+      : P.FURNITURE_KINDS[kind].title + " placed — it overlaps here, drag or turn it to fit";
     this.emit();
   },
 
@@ -499,8 +499,12 @@ export const store = {
     const item = this.room.furniture[index];
     const center = P.furnitureCenter(this.room, raw, item);
     const candidate = { ...item, center };
+    // Never block a drag. Refusing to apply an invalid position made the item
+    // stick against walls and other furniture, so it could not be carried
+    // across a room. It follows the cursor wherever it goes and simply reads
+    // red until it is somewhere it fits — the same rule a turn already used.
     const valid = P.isFurniturePlacementValid(this.room, candidate, new Set([id]));
-    if (valid) this.room.furniture[index] = candidate;
+    this.room.furniture[index] = candidate;
     this.furnitureFeedback = { id, state: valid ? "valid" : "invalid" };
     this.refreshFurnitureGaps(id);
   },
@@ -546,14 +550,11 @@ export const store = {
       ...this.room.furniture[index],
       center: P.point(this.room.furniture[index].center.x + dx, this.room.furniture[index].center.z + dz),
     };
-    if (!P.isFurniturePlacementValid(this.room, candidate, new Set([id]))) {
-      this.status = "Can't move any further that way";
-      this.flashFurniture(id, "invalid");
-      return;
-    }
-    // A valid nudge clears any stale red from a previous bad turn.
-    this.flashFurniture(id, "valid");
-    this.commit("Moved " + P.FURNITURE_KINDS[candidate.kind].title.toLowerCase(), room => {
+    // Nudging is a drag by another name, so it is not blocked either.
+    const valid = P.isFurniturePlacementValid(this.room, candidate, new Set([id]));
+    this.flashFurniture(id, valid ? "valid" : "invalid");
+    const name = P.FURNITURE_KINDS[candidate.kind].title.toLowerCase();
+    this.commit(valid ? "Moved " + name : "Moved " + name + " — it overlaps here", room => {
       room.furniture[index] = candidate;
     });
   },
