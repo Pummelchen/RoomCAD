@@ -41,6 +41,9 @@ const GRAVITY = 11;
 const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 16;
 const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
+const PEDESTRIAN_RING_WIDTH = 2.4;
+const RING_ROAD_WIDTH = 7.0;
+const ROAD_CONNECTOR_LENGTH = 12.0;
 
 // Room construction uses closed, overlapping solids. The values below are
 // deliberate physical construction tolerances (centimetres), not a shadow-map
@@ -215,6 +218,33 @@ export class Walk3D {
     return (store.floor - 1) * FLOOR_HEIGHT;
   }
 
+  /// Bounds of the actual constructed building, distinct from the larger 2D
+  /// editing canvas. Existing projects start with their declared room bounds;
+  /// any wall drawn beyond them expands the envelope automatically.
+  buildingBounds(room) {
+    const origin = P.roomOrigin(room);
+    let minX = origin.x;
+    let maxX = origin.x + room.width;
+    let minZ = origin.z;
+    let maxZ = origin.z + room.length;
+    for (const wall of room.walls) {
+      minX = Math.min(minX, wall.start.x, wall.end.x);
+      maxX = Math.max(maxX, wall.start.x, wall.end.x);
+      minZ = Math.min(minZ, wall.start.z, wall.end.z);
+      maxZ = Math.max(maxZ, wall.start.z, wall.end.z);
+    }
+    return {
+      minX,
+      maxX,
+      minZ,
+      maxZ,
+      width: Math.max(0.1, maxX - minX),
+      length: Math.max(0.1, maxZ - minZ),
+      centerX: (minX + maxX) / 2,
+      centerZ: (minZ + maxZ) / 2,
+    };
+  }
+
   /// WebGPU + Rapier are async; build the scene and start once both are ready.
   async start() {
     try {
@@ -282,6 +312,8 @@ export class Walk3D {
     }
     const scene = this.scene;
     const canvas = P.canvasOf(room);
+    const building = this.buildingBounds(room);
+    this.currentBuildingBounds = building;
 
     // Sky and atmospheric depth (switches to night when placed-lights mode).
     scene.background = new THREE.Color(this.lightsOn ? DAY_BACKGROUND : NIGHT_BACKGROUND);
@@ -309,7 +341,7 @@ export class Walk3D {
     // edges, which reads as light leaking through a closed room.
     sun.shadow.normalBias = SUN_SHADOW_NORMAL_BIAS;
     const sunTarget = new THREE.Object3D();
-    sunTarget.position.set(canvas.width / 2, 0, canvas.length / 2);
+    sunTarget.position.set(building.centerX, 0, building.centerZ);
     scene.add(sunTarget);
     sun.target = sunTarget;
     scene.add(sun);
@@ -327,29 +359,32 @@ export class Walk3D {
     this.roomGroup = new THREE.Group();
     scene.add(this.roomGroup);
 
-    // Floor: white marble tiles with thin grey grout lines.
+    // The editor canvas is deliberately larger than the building so users can
+    // draw new rooms. It must not become visible concrete outside a window:
+    // only the actual wall envelope receives a floor and roof.
     this.floorMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0, envMapIntensity: 0 });
     const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(canvas.width, 0.06, canvas.length),
+      new THREE.BoxGeometry(building.width, 0.06, building.length),
       this.floorMaterial
     );
-    floor.position.set(canvas.width / 2, -0.03, canvas.length / 2);
+    floor.position.set(building.centerX, -0.03, building.centerZ);
     floor.receiveShadow = true;
     this.roomGroup.add(floor);
-    this.loadFloorTexture(room);
+    this.loadFloorTexture(building);
 
-    // Ceiling
+    // Roof follows the same real envelope. It never hangs out over the city
+    // ring merely because the editable canvas is wider than the room.
     const ceiling = new THREE.Mesh(
-      new THREE.BoxGeometry(canvas.width, 0.05, canvas.length),
+      new THREE.BoxGeometry(building.width, 0.05, building.length),
       new THREE.MeshStandardMaterial({ color: CEILING_COLOR, roughness: 0.95 })
     );
-    ceiling.position.set(canvas.width / 2, room.height, canvas.length / 2);
+    ceiling.position.set(building.centerX, room.height, building.centerZ);
     ceiling.receiveShadow = true;
     this.roomGroup.add(ceiling);
 
     // The virtual city beyond the windows (fall back to no city on error).
     try {
-      this.buildCity(room);
+      this.buildCity(building);
       if (this.city) this.scene.add(this.city);
     } catch (err) {
       console.error("City generation failed:", err);
@@ -907,8 +942,8 @@ export class Walk3D {
       depthWrite: false,
     });
     const sky = new THREE.Mesh(geo, mat);
-    const canvas = P.canvasOf(room);
-    sky.position.set(canvas.width / 2, this.floorY(), canvas.length / 2);
+    const building = this.currentBuildingBounds || this.buildingBounds(room);
+    sky.position.set(building.centerX, this.floorY(), building.centerZ);
     sky.renderOrder = -10;
     this.scene.add(sky);
     this.skyMesh = sky;
@@ -950,10 +985,9 @@ export class Walk3D {
     // Sun position + intensity (the L toggle still switches the room to
     // placed-lights-only, which turns the sun off).
     const dir = this.sunDirectionVec(altitude, azimuth);
-    const room = store.room;
-    const canvas = P.canvasOf(room);
-    const cx = canvas.width / 2;
-    const cz = canvas.length / 2;
+    const building = this.currentBuildingBounds || this.buildingBounds(store.room);
+    const cx = building.centerX;
+    const cz = building.centerZ;
     const dist = 40;
     this.sun.position.set(cx + dir.x * dist, this.floorY() + dir.y * dist, cz + dir.z * dist);
     this.sunTarget.position.set(cx, this.floorY(), cz);
@@ -989,16 +1023,12 @@ export class Walk3D {
     }
   }
 
-  /// Builds the outside world in layers: a CityGenerator street + sidewalk
-  /// grid (skyscrapers fill the lots only), street trees along the sidewalks,
-  /// and surrounding terrain. A central clearance keeps the room clear of
-  /// buildings. Everything lives in one group so floor changes shift it
-  /// together.
-  buildCity(room) {
-    const canvas = P.canvasOf(room);
-    const cx = canvas.width / 2;
-    const cz = canvas.length / 2;
-    const key = canvas.width.toFixed(1) + "x" + canvas.length.toFixed(1);
+  /// Builds an immediate pedestrian-and-road ring, then joins it to the wider
+  /// city street grid. The city starts at the outer edge of this ring rather
+  /// than at the edge of the hidden editor canvas.
+  buildCity(building) {
+    const key = [building.width, building.length, building.centerX, building.centerZ]
+      .map(v => v.toFixed(1)).join("x");
     if (this.city && key === this.cityCanvasKey) return; // already matches
     this.cityCanvasKey = key;
 
@@ -1009,9 +1039,10 @@ export class Walk3D {
     const group = new THREE.Group();
     group.name = "city";
 
-    const margin = 30; // open ground around the room
-    const clearHalfW = canvas.width / 2 + margin;
-    const clearHalfL = canvas.length / 2 + margin;
+    const halfW = building.width / 2;
+    const halfL = building.length / 2;
+    const clearHalfW = halfW + PEDESTRIAN_RING_WIDTH + RING_ROAD_WIDTH + ROAD_CONNECTOR_LENGTH;
+    const clearHalfL = halfL + PEDESTRIAN_RING_WIDTH + RING_ROAD_WIDTH + ROAD_CONNECTOR_LENGTH;
     const seed = 94;
 
     // Size the city grid so it surrounds the clearance.
@@ -1033,6 +1064,10 @@ export class Walk3D {
 
     const cityGroup = this.cityGenerator.build({ building: this.cityBuildingMaterial });
     group.add(cityGroup);
+
+    // Pavement begins directly at the external wall, followed by a proper
+    // road ring, zebra crossings and four short links to the city grid.
+    group.add(this.buildExteriorRing(building));
 
     // Road surface sized to the city grid plus a crosswalk margin.
     const floorW = this.cityGenerator.layout.cityW + 2 * this.cityGenerator.layout.street;
@@ -1082,8 +1117,64 @@ export class Walk3D {
       { halfW: clearHalfW, halfL: clearHalfL }
     ));
 
-    group.position.set(cx, 0, cz); // city is always at ground level; the room lifts
+    group.position.set(building.centerX, 0, building.centerZ);
     this.city = group;
+  }
+
+  /// A pedestrian path immediately around the wall envelope, an asphalt ring
+  /// beyond it, and street links in all four directions. Coordinates are local
+  /// to the building centre because the city group is positioned there.
+  buildExteriorRing(building) {
+    const group = new THREE.Group();
+    group.name = "building-exterior-ring";
+    const pavement = new THREE.MeshStandardMaterial({ color: 0x9da5a7, roughness: 0.94, metalness: 0 });
+    const asphalt = new THREE.MeshStandardMaterial({ color: 0x292d32, roughness: 0.92, metalness: 0 });
+    const crossing = new THREE.MeshStandardMaterial({ color: 0xe4e1d7, roughness: 0.9, metalness: 0 });
+    const addSurface = (width, length, x, z, material, y = -0.004) => {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, length).rotateX(-Math.PI / 2), material);
+      mesh.position.set(x, y, z);
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    };
+
+    const halfW = building.width / 2;
+    const halfL = building.length / 2;
+    const pathOuterW = halfW + PEDESTRIAN_RING_WIDTH;
+    const pathOuterL = halfL + PEDESTRIAN_RING_WIDTH;
+    const roadOuterW = pathOuterW + RING_ROAD_WIDTH;
+    const roadOuterL = pathOuterL + RING_ROAD_WIDTH;
+
+    // Four pavement bands touch the exterior walls exactly. Their road bands
+    // overlap at the corners, making one continuous ring rather than isolated
+    // strips around the building.
+    addSurface(building.width + PEDESTRIAN_RING_WIDTH * 2, PEDESTRIAN_RING_WIDTH, 0, -halfL - PEDESTRIAN_RING_WIDTH / 2, pavement);
+    addSurface(building.width + PEDESTRIAN_RING_WIDTH * 2, PEDESTRIAN_RING_WIDTH, 0, halfL + PEDESTRIAN_RING_WIDTH / 2, pavement);
+    addSurface(PEDESTRIAN_RING_WIDTH, building.length, -halfW - PEDESTRIAN_RING_WIDTH / 2, 0, pavement);
+    addSurface(PEDESTRIAN_RING_WIDTH, building.length, halfW + PEDESTRIAN_RING_WIDTH / 2, 0, pavement);
+
+    addSurface(building.width + PEDESTRIAN_RING_WIDTH * 2 + RING_ROAD_WIDTH * 2, RING_ROAD_WIDTH, 0, -pathOuterL - RING_ROAD_WIDTH / 2, asphalt, -0.008);
+    addSurface(building.width + PEDESTRIAN_RING_WIDTH * 2 + RING_ROAD_WIDTH * 2, RING_ROAD_WIDTH, 0, pathOuterL + RING_ROAD_WIDTH / 2, asphalt, -0.008);
+    addSurface(RING_ROAD_WIDTH, building.length + PEDESTRIAN_RING_WIDTH * 2, -pathOuterW - RING_ROAD_WIDTH / 2, 0, asphalt, -0.008);
+    addSurface(RING_ROAD_WIDTH, building.length + PEDESTRIAN_RING_WIDTH * 2, pathOuterW + RING_ROAD_WIDTH / 2, 0, asphalt, -0.008);
+
+    // Connect each side of the loop to the surrounding city. These links meet
+    // at crossings, so windows look onto a real street network, not a moat.
+    addSurface(RING_ROAD_WIDTH, ROAD_CONNECTOR_LENGTH, 0, -roadOuterL - ROAD_CONNECTOR_LENGTH / 2, asphalt, -0.008);
+    addSurface(RING_ROAD_WIDTH, ROAD_CONNECTOR_LENGTH, 0, roadOuterL + ROAD_CONNECTOR_LENGTH / 2, asphalt, -0.008);
+    addSurface(ROAD_CONNECTOR_LENGTH, RING_ROAD_WIDTH, -roadOuterW - ROAD_CONNECTOR_LENGTH / 2, 0, asphalt, -0.008);
+    addSurface(ROAD_CONNECTOR_LENGTH, RING_ROAD_WIDTH, roadOuterW + ROAD_CONNECTOR_LENGTH / 2, 0, asphalt, -0.008);
+
+    const stripeWidth = RING_ROAD_WIDTH * 0.76;
+    const stripeDepth = 0.42;
+    const stripeGap = 0.78;
+    for (let i = -3; i <= 3; i++) {
+      const d = i * stripeGap;
+      addSurface(stripeWidth, stripeDepth, 0, -pathOuterL - RING_ROAD_WIDTH / 2 + d, crossing, -0.002);
+      addSurface(stripeWidth, stripeDepth, 0, pathOuterL + RING_ROAD_WIDTH / 2 - d, crossing, -0.002);
+      addSurface(stripeDepth, stripeWidth, -pathOuterW - RING_ROAD_WIDTH / 2 + d, 0, crossing, -0.002);
+      addSurface(stripeDepth, stripeWidth, pathOuterW + RING_ROAD_WIDTH / 2 - d, 0, crossing, -0.002);
+    }
+    return group;
   }
 
   /// Plants street trees along the sidewalk edges of every city block, inset
@@ -1420,8 +1511,8 @@ export class Walk3D {
 
   /// Builds the floor as white 60 × 60 cm marble tiles with thin grey veins
   /// and a ~5 mm grout gap between tiles.
-  loadFloorTexture(room) {
-    this.applyFloorCanvas(this.makeFloorCanvas(room));
+  loadFloorTexture(bounds) {
+    this.applyFloorCanvas(this.makeFloorCanvas(bounds));
   }
 
   applyFloorCanvas(canvas) {
@@ -1435,8 +1526,7 @@ export class Walk3D {
     this.floorMaterial.needsUpdate = true;
   }
 
-  makeFloorCanvas(room) {
-    const bounds = P.canvasOf(room);
+  makeFloorCanvas(bounds) {
     const layout = P.tileLayout(bounds.width, bounds.length);
     const tilePx = 96; // 60 cm → 5 mm grout ≈ 1 px
     const width = Math.max(1, Math.round(layout.columns * tilePx));
