@@ -13,7 +13,8 @@ architectural or building-code tool.
 - **Draw walls** on a 1 / 2 / 5 cm grid (90° only). Ends lock onto any wall
   they meet, so rooms close cleanly instead of overshooting or stopping short.
 - **Read every size at a glance** — walls, doors and windows carry permanent
-  CAD-style dimension lines, and there is a measure tool for anything else.
+  CAD-style dimension lines, every enclosed room shows its m² in the emptiest
+  part of its floor, and there is a measure tool for anything else.
 - **Grab the red handles** on a selected wall, door, window or public area to
   drag either end and resize it in place.
 - **Place doors and windows** in walls and slide them with exact spacing to the
@@ -21,7 +22,9 @@ architectural or building-code tool.
 - **Label the plan** — drop text anywhere; it turns with the plan and stays
   the right way up.
 - **Mark shared (public) floor space**, with live side lengths while you drag
-  it out. Public areas are selectable, resizable and deletable.
+  it out. Areas snap to the grid and sit flush against each other without ever
+  overlapping, while staying separate objects you can select, resize and
+  delete one by one.
 - **Furnish** with ten pieces — bed, table, chair, wardrobe, desk, sofa,
   bookshelf, nightstand, dresser, armchair — plus two ceiling lights
   (60 W bulb, 200 W office panel).

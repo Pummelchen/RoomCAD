@@ -12,6 +12,9 @@ const DIM_COLOR = "rgba(226, 232, 240, 0.62)";
 const DIM_TEXT = "rgba(240, 245, 252, 0.95)";
 const DIM_OFFSET_PX = 16;   // how far the dimension line sits off the element
 const DIM_TICK_PX = 4;
+// Room area captions.
+const CAPTION_PX = 12;
+const CAPTION_COLOR = "rgba(226, 236, 248, 0.78)";
 
 export class Editor2D {
   constructor(canvas) {
@@ -857,6 +860,8 @@ export class Editor2D {
         size: P.LABEL_DEFAULT_SIZE }, false);
     }
 
+    this.drawRoomCaptions(room);
+
     // Permanent CAD dimensions, then the grab handles on top of everything.
     this.drawPermanentDimensions(room);
     this.drawHandles(room);
@@ -1109,6 +1114,55 @@ export class Editor2D {
     ctx.restore();
 
     if (selected) this.drawHandle(label.center);
+  }
+
+  /// The m² caption for every enclosed room that has a door, dropped into the
+  /// emptiest part of the floor so it never lands on furniture or a label.
+  ///
+  /// The caption's footprint depends on the zoom, so the search is redone when
+  /// the zoom changes — but only then, and only when the plan itself has
+  /// changed. At small zooms the caption would be illegible, so it is left out
+  /// rather than drawn as a smudge.
+  drawRoomCaptions(room) {
+    if (this.scale < 26) return;
+    const ctx = this.ctx;
+    ctx.font = `600 ${CAPTION_PX}px -apple-system, "Segoe UI", sans-serif`;
+    // Widest plausible caption ("999.9 m²") in plan metres, plus breathing room.
+    const boxW = (ctx.measureText("999.9 m²").width + 10) / this.scale;
+    const boxH = (CAPTION_PX + 8) / this.scale;
+
+    const key = `${boxW.toFixed(3)}|${boxH.toFixed(3)}|${store.room.walls.length}`;
+    const stamp = this.captionStamp(room);
+    if (!this._captions || this._captionKey !== key || this._captionStamp !== stamp) {
+      this._captions = P.roomCaptions(room, boxW, boxH);
+      this._captionKey = key;
+      this._captionStamp = stamp;
+    }
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const cap of this._captions) {
+      const c = this.screen({ x: cap.x, z: cap.z });
+      const text = cap.area.toFixed(1) + " m²";
+      const w = ctx.measureText(text).width;
+      ctx.fillStyle = "rgba(14, 14, 16, 0.55)";
+      ctx.fillRect(c.x - w / 2 - 5, c.y - CAPTION_PX * 0.72, w + 10, CAPTION_PX * 1.44);
+      ctx.fillStyle = CAPTION_COLOR;
+      ctx.fillText(text, c.x, c.y);
+    }
+  }
+
+  /// Everything a caption's position depends on: the walls and doors that
+  /// define the rooms, and the things it has to avoid.
+  captionStamp(room) {
+    const walls = room.walls.map(w => `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`).join(";");
+    const doors = room.doors.map(d => d.wallID).join(";");
+    const furniture = (room.furniture || [])
+      .map(f => `${f.kind},${f.center.x},${f.center.z},${f.rotationDegrees}`).join(";");
+    const labels = (room.labels || [])
+      .map(l => `${l.center.x},${l.center.z},${l.size},${(l.text || "").length}`).join(";");
+    const publics = (room.publicAreas || []).map(a => `${a.x},${a.z},${a.w},${a.l}`).join(";");
+    return `${walls}|${doors}|${furniture}|${labels}|${publics}`;
   }
 
   drawGrid(room) {

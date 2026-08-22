@@ -209,5 +209,147 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     room.walls.every(w => P.wallLength(w) >= 0.01));
 }
 
+// ── Room area captions ─────────────────────────────────────────────────
+{
+  const room = P.freshRoom("T", 14, 10, 2.6);
+  P.centerRoom(room);
+  const gen = P.autoLayoutRooms(room, { count: 6, area: 14, seed: 1 });
+  room.walls = gen.walls;
+  room.doors = gen.doors;
+  room.windows = gen.windows;
+  room.publicAreas = gen.corridors.map((c, i) => ({ id: "g" + i, ...c, generated: true }));
+
+  const regions = P.detectRooms(room);
+  check("every enclosed room is found", regions.length >= gen.rooms.length,
+    `${regions.length} vs ${gen.rooms.length}`);
+  check("detected areas account for the whole floor",
+    Math.abs(regions.reduce((s, r) => s + r.area, 0) - 140) < 1,
+    String(regions.reduce((s, r) => s + r.area, 0)));
+  check("detected areas match what the generator laid out",
+    gen.rooms.every(g => regions.some(r => Math.abs(r.area - g.w * g.l) < 0.15)));
+
+  // Doors are walls, not gaps: a doorway must not merge two rooms into one.
+  check("a doorway does not merge the rooms it links", regions.length > 2, `${regions.length}`);
+
+  const captions = P.roomCaptions(room, 0.9, 0.32);
+  check("a caption for each room with a door", captions.length === gen.rooms.length,
+    `${captions.length} vs ${gen.rooms.length}`);
+  check("circulation gets no caption",
+    !captions.some(c => Math.abs(c.area - gen.corridors.reduce((s, x) => s + x.w * x.l, 0)) < 0.5));
+
+  // A room with no door gets no caption.
+  const sealed = P.freshRoom("S", 6, 4, 2.6);
+  P.centerRoom(sealed);
+  check("a room with no door gets no caption", P.roomCaptions(sealed, 0.9, 0.32).length === 0);
+
+  // The caption has to dodge whatever is on the floor.
+  const target = regions.find(r => r.hasDoor && r.area > 8);
+  const before = P.captionSpot(room, target, 0.9, 0.32);
+  check("a caption is placed in an empty room", !!before);
+  room.furniture = [{ id: "f", kind: "bed", center: { x: before.x, z: before.z }, rotationDegrees: 0 }];
+  const after = P.captionSpot(room, target, 0.9, 0.32);
+  check("the caption moves off furniture put on its spot", !!after
+    && Math.hypot(after.x - before.x, after.z - before.z) > 0.3,
+    JSON.stringify(after));
+  const f = P.furnitureFootprint(room.furniture[0]);
+  check("the caption box no longer overlaps the furniture",
+    !(after.x - 0.45 < f.maxX && f.minX < after.x + 0.45
+      && after.z - 0.16 < f.maxZ && f.minZ < after.z + 0.16));
+
+  // A room with no clear space at all must yield NO caption rather than one
+  // laid over the furniture. Scoring by clearance alone would still return the
+  // least-bad overlapping spot, so this is what proves the hard check is there.
+  {
+    const tight = P.freshRoom("Tight", 2.6, 2.4, 2.6);
+    P.centerRoom(tight);
+    const w0 = tight.walls[0];
+    tight.doors = [{ id: "d", wallID: w0.id, offset: 0.6, width: 0.9, open: true, swingInside: true }];
+    const region = P.detectRooms(tight).find(r => r.hasDoor);
+    check("the tight room is detected", !!region);
+    const centre = { x: region.bounds.minX + (region.bounds.maxX - region.bounds.minX) / 2,
+      z: region.bounds.minZ + (region.bounds.maxZ - region.bounds.minZ) / 2 };
+    // Two wardrobes side by side leave no gap wide enough for the caption.
+    tight.furniture = [
+      { id: "a", kind: "bed", center: { x: centre.x, z: centre.z - 0.5 }, rotationDegrees: 90 },
+      { id: "b", kind: "bed", center: { x: centre.x, z: centre.z + 0.5 }, rotationDegrees: 90 },
+    ];
+    const crowded = P.captionSpot(tight, region, 1.1, 0.42);
+    if (crowded) {
+      const clashes = tight.furniture.map(P.furnitureFootprint).some(f =>
+        crowded.x - 0.55 < f.maxX && f.minX < crowded.x + 0.55 &&
+        crowded.z - 0.21 < f.maxZ && f.minZ < crowded.z + 0.21);
+      check("a caption is never laid over furniture, even when space is tight", !clashes,
+        JSON.stringify(crowded));
+    } else {
+      check("a caption is never laid over furniture, even when space is tight", true);
+    }
+  }
+
+  // And labels count as things to avoid, not just furniture.
+  room.furniture = [];
+  const spot = P.captionSpot(room, target, 0.9, 0.32);
+  room.labels = [{ id: "l", text: "Bedroom one", center: { x: spot.x, z: spot.z },
+    rotationDegrees: 0, size: 0.3 }];
+  const dodged = P.captionSpot(room, target, 0.9, 0.32);
+  check("the caption also dodges labels",
+    !!dodged && Math.hypot(dodged.x - spot.x, dodged.z - spot.z) > 0.2,
+    JSON.stringify(dodged));
+}
+
+// ── Public areas: on the grid, flush, never overlapping ────────────────
+{
+  const onGrid = (room, r) => {
+    const step = P.GRID_STEPS[room.grid].meters;
+    return [r.x, r.z, r.w, r.l].every(v => Math.abs(v / step - Math.round(v / step)) < 1e-6);
+  };
+
+  for (const grid of ["oneCentimeter", "twoCentimeters", "fiveCentimeters"]) {
+    const room = P.freshRoom("T", 12, 8, 2.6);
+    room.canvas = { width: 25, length: 25 };
+    room.grid = grid;
+    const r = P.settlePublicArea(room, { x: 7.037, z: 1.023, w: 2.114, l: 2.087 });
+    check(`a public area lands on the ${P.GRID_STEPS[grid].label} grid`, onGrid(room, r),
+      JSON.stringify(r));
+  }
+
+  const room = P.freshRoom("T", 12, 8, 2.6);
+  room.canvas = { width: 25, length: 25 };
+  room.publicAreas = [{ id: "a", x: 2, z: 2, w: 4, l: 3 }];   // spans x 2..6, z 2..5
+
+  const fromLeft = P.settlePublicArea(room, { x: 0.5, z: 2.5, w: 3.0, l: 2.0 });
+  check("an area drawn into a neighbour stops at its edge",
+    Math.abs(fromLeft.x + fromLeft.w - 2) < 1e-6, JSON.stringify(fromLeft));
+  const fromRight = P.settlePublicArea(room, { x: 5.0, z: 2.5, w: 3.0, l: 2.0 });
+  check("and from the other side too",
+    Math.abs(fromRight.x - 6) < 1e-6, JSON.stringify(fromRight));
+  const nearlyFlush = P.settlePublicArea(room, { x: 6.04, z: 2.03, w: 2.0, l: 2.97 });
+  check("an edge that is nearly flush snaps exactly onto its neighbour",
+    Math.abs(nearlyFlush.x - 6) < 1e-6 && Math.abs(nearlyFlush.z - 2) < 1e-6,
+    JSON.stringify(nearlyFlush));
+  const clear = P.settlePublicArea(room, { x: 9, z: 6, w: 2, l: 2 });
+  check("an area clear of everything is left where it was drawn",
+    clear.x === 9 && clear.z === 6 && clear.w === 2 && clear.l === 2, JSON.stringify(clear));
+
+  // Areas stay separate objects — settling must never merge them.
+  room.publicAreas = [];
+  for (const [x, z, w, l] of [[2, 2, 4, 3], [5.4, 2.1, 3, 3], [1.7, 4.6, 4, 2], [8, 1, 2, 6], [7.5, 5.5, 3, 2]]) {
+    const r = P.settlePublicArea(room, { x, z, w, l });
+    if (r.w > 0.3 && r.l > 0.3) room.publicAreas.push({ id: "p" + room.publicAreas.length, ...r });
+  }
+  let clashes = 0;
+  for (let i = 0; i < room.publicAreas.length; i++) {
+    for (let j = i + 1; j < room.publicAreas.length; j++) {
+      const a = room.publicAreas[i], b = room.publicAreas[j];
+      if (a.x < b.x + b.w - 1e-6 && b.x < a.x + a.w - 1e-6
+        && a.z < b.z + b.l - 1e-6 && b.z < a.z + a.l - 1e-6) clashes++;
+    }
+  }
+  check("five overlapping draws leave five separate areas",
+    room.publicAreas.length === 5, `${room.publicAreas.length}`);
+  check("and none of them overlap", clashes === 0, `${clashes}`);
+  check("each keeps its own id, so each stays selectable",
+    new Set(room.publicAreas.map(a => a.id)).size === 5);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

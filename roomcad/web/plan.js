@@ -790,6 +790,350 @@ export function resizePublicArea(a, corner, raw, room) {
   };
 }
 
+// MARK: - Enclosed rooms
+
+const MAX_ROOM_CELLS = 60000;   // decomposition guard for pathological plans
+let _roomCache = { key: null, rooms: null };
+
+function roomSignature(room) {
+  const w = room.walls.map(x => `${x.start.x},${x.start.z},${x.end.x},${x.end.z}`).join(";");
+  const d = room.doors.map(x => `${x.wallID}`).join(";");
+  return w + "|" + d;
+}
+
+/// The enclosed rooms of the plan.
+///
+/// Walls are all axis-aligned, so the plan can be cut into the exact grid
+/// implied by every wall coordinate; two neighbouring cells belong to the same
+/// room unless a wall runs along the boundary between them. Doors deliberately
+/// do NOT connect cells — treating a doorway as a gap would merge every room it
+/// links into one region, and then there is nothing to measure.
+///
+/// Returns [{ area, cells, bounds, wallIDs, hasDoor }], outermost space
+/// excluded. Cached on the wall/door layout, since the 2D canvas redraws far
+/// more often than the plan changes.
+export function detectRooms(room) {
+  const key = roomSignature(room);
+  if (_roomCache.key === key) return _roomCache.rooms;
+
+  const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
+  const result = [];
+  if (walls.length < 3) {
+    _roomCache = { key, rooms: result };
+    return result;
+  }
+
+  const xsSet = new Set();
+  const zsSet = new Set();
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const w of walls) {
+    for (const pt of [w.start, w.end]) {
+      xsSet.add(clean(pt.x));
+      zsSet.add(clean(pt.z));
+      minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
+      minZ = Math.min(minZ, pt.z); maxZ = Math.max(maxZ, pt.z);
+    }
+  }
+  // A ring of margin outside every wall, so the space outside the building is
+  // always one identifiable region rather than several.
+  xsSet.add(clean(minX - 1)); xsSet.add(clean(maxX + 1));
+  zsSet.add(clean(minZ - 1)); zsSet.add(clean(maxZ + 1));
+  const xs = [...xsSet].sort((a, b) => a - b);
+  const zs = [...zsSet].sort((a, b) => a - b);
+  const nx = xs.length - 1;
+  const nz = zs.length - 1;
+  if (nx < 1 || nz < 1 || nx * nz > MAX_ROOM_CELLS) {
+    _roomCache = { key, rooms: result };
+    return result;
+  }
+
+  // Wall spans indexed by the line they sit on, so a boundary test is a lookup.
+  const vertical = new Map();     // x -> [{ from, to, id }]
+  const horizontal = new Map();   // z -> [{ from, to, id }]
+  for (const w of walls) {
+    if (Math.abs(w.start.x - w.end.x) < 0.001) {
+      const x = clean(w.start.x);
+      const list = vertical.get(x) || [];
+      list.push({ from: Math.min(w.start.z, w.end.z), to: Math.max(w.start.z, w.end.z), id: w.id });
+      vertical.set(x, list);
+    } else if (Math.abs(w.start.z - w.end.z) < 0.001) {
+      const z = clean(w.start.z);
+      const list = horizontal.get(z) || [];
+      list.push({ from: Math.min(w.start.x, w.end.x), to: Math.max(w.start.x, w.end.x), id: w.id });
+      horizontal.set(z, list);
+    }
+  }
+  // Every wall endpoint is a grid line, so a wall either covers a whole cell
+  // boundary or none of it — testing the midpoint is exact.
+  const blocker = (map, line, mid) => {
+    const spans = map.get(clean(line));
+    if (!spans) return null;
+    for (const s of spans) if (mid > s.from + 0.0005 && mid < s.to - 0.0005) return s.id;
+    return null;
+  };
+
+  const owner = new Int32Array(nx * nz).fill(-1);
+  const at = (i, j) => i * nz + j;
+  let regionCount = 0;
+  const regions = [];
+
+  for (let i0 = 0; i0 < nx; i0++) {
+    for (let j0 = 0; j0 < nz; j0++) {
+      if (owner[at(i0, j0)] !== -1) continue;
+      const id = regionCount++;
+      const cells = [];
+      const wallIDs = new Set();
+      const stack = [[i0, j0]];
+      owner[at(i0, j0)] = id;
+      while (stack.length) {
+        const [i, j] = stack.pop();
+        cells.push([i, j]);
+        const midZ = (zs[j] + zs[j + 1]) / 2;
+        const midX = (xs[i] + xs[i + 1]) / 2;
+        const step = (ni, nj, blockedBy) => {
+          if (blockedBy) { wallIDs.add(blockedBy); return; }
+          if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) return;
+          if (owner[at(ni, nj)] !== -1) return;
+          owner[at(ni, nj)] = id;
+          stack.push([ni, nj]);
+        };
+        step(i - 1, j, blocker(vertical, xs[i], midZ));
+        step(i + 1, j, blocker(vertical, xs[i + 1], midZ));
+        step(i, j - 1, blocker(horizontal, zs[j], midX));
+        step(i, j + 1, blocker(horizontal, zs[j + 1], midX));
+      }
+      regions.push({ id, cells, wallIDs });
+    }
+  }
+
+  // Whatever contains the margin corner is the outside.
+  const outside = owner[at(0, 0)];
+  const doorWalls = new Set((room.doors || []).map(d => d.wallID));
+  for (const region of regions) {
+    if (region.id === outside) continue;
+    let area = 0;
+    let rMinX = Infinity, rMaxX = -Infinity, rMinZ = Infinity, rMaxZ = -Infinity;
+    const rects = [];
+    for (const [i, j] of region.cells) {
+      const r = { x: xs[i], z: zs[j], w: xs[i + 1] - xs[i], l: zs[j + 1] - zs[j] };
+      area += r.w * r.l;
+      rects.push(r);
+      rMinX = Math.min(rMinX, r.x); rMaxX = Math.max(rMaxX, r.x + r.w);
+      rMinZ = Math.min(rMinZ, r.z); rMaxZ = Math.max(rMaxZ, r.z + r.l);
+    }
+    if (area < 0.5) continue;   // slivers between doubled-up walls
+    let hasDoor = false;
+    for (const id of region.wallIDs) if (doorWalls.has(id)) { hasDoor = true; break; }
+    result.push({
+      area: clean(area),
+      rects,
+      bounds: { minX: rMinX, maxX: rMaxX, minZ: rMinZ, maxZ: rMaxZ },
+      wallIDs: [...region.wallIDs],
+      hasDoor,
+    });
+  }
+  _roomCache = { key, rooms: result };
+  return result;
+}
+
+/// Where a room's area caption can sit without landing on anything.
+///
+/// Samples positions across the room and keeps the one whose caption box is
+/// clear of furniture, labels and the room's own walls by the widest margin —
+/// so the text ends up in the emptiest part of the floor rather than on the bed.
+/// Returns null when the caption simply does not fit anywhere.
+export function captionSpot(room, region, boxW, boxH) {
+  const obstacles = [];
+  for (const item of room.furniture || []) {
+    const f = furnitureFootprint(item);
+    if (f.maxX < region.bounds.minX || f.minX > region.bounds.maxX) continue;
+    if (f.maxZ < region.bounds.minZ || f.minZ > region.bounds.maxZ) continue;
+    obstacles.push(f);
+  }
+  for (const label of room.labels || []) {
+    const b = labelBounds(label);
+    if (b.maxX < region.bounds.minX || b.minX > region.bounds.maxX) continue;
+    if (b.maxZ < region.bounds.minZ || b.minZ > region.bounds.maxZ) continue;
+    obstacles.push(b);
+  }
+
+  const inside = (x, z) => region.rects.some(r =>
+    x >= r.x - 0.001 && x <= r.x + r.w + 0.001 && z >= r.z - 0.001 && z <= r.z + r.l + 0.001);
+  const boxFits = (cx, cz) => {
+    const x0 = cx - boxW / 2, x1 = cx + boxW / 2;
+    const z0 = cz - boxH / 2, z1 = cz + boxH / 2;
+    // The whole caption has to be on this room's floor, corners included.
+    if (!inside(x0, z0) || !inside(x1, z0) || !inside(x0, z1) || !inside(x1, z1)
+      || !inside(cx, z0) || !inside(cx, z1) || !inside(x0, cz) || !inside(x1, cz)) return false;
+    for (const o of obstacles) {
+      if (x0 < o.maxX && o.minX < x1 && z0 < o.maxZ && o.minZ < z1) return false;
+    }
+    return true;
+  };
+  // Distance to the nearest thing to avoid; bigger is a calmer spot.
+  const clearance = (cx, cz) => {
+    let best = Infinity;
+    for (const o of obstacles) {
+      const dx = Math.max(o.minX - cx, 0, cx - o.maxX);
+      const dz = Math.max(o.minZ - cz, 0, cz - o.maxZ);
+      best = Math.min(best, Math.hypot(dx, dz));
+    }
+    const b = region.bounds;
+    best = Math.min(best, cx - b.minX, b.maxX - cx, cz - b.minZ, b.maxZ - cz);
+    return best;
+  };
+
+  const b = region.bounds;
+  const spanX = b.maxX - b.minX;
+  const spanZ = b.maxZ - b.minZ;
+  const steps = 22;
+  const stepX = spanX / (steps + 1);
+  const stepZ = spanZ / (steps + 1);
+  let best = null;
+  for (let i = 1; i <= steps; i++) {
+    for (let j = 1; j <= steps; j++) {
+      const cx = b.minX + stepX * i;
+      const cz = b.minZ + stepZ * j;
+      if (!boxFits(cx, cz)) continue;
+      const score = clearance(cx, cz);
+      if (!best || score > best.score) best = { x: cx, z: cz, score };
+    }
+  }
+  return best;
+}
+
+/// How much of a region is floor the user (or the generator) marked public.
+function publicCoverage(room, region) {
+  const areas = room.publicAreas || [];
+  if (areas.length === 0) return 0;
+  let covered = 0;
+  for (const r of region.rects) {
+    for (const a of areas) {
+      const ox = Math.min(r.x + r.w, a.x + a.w) - Math.max(r.x, a.x);
+      const oz = Math.min(r.z + r.l, a.z + a.l) - Math.max(r.z, a.z);
+      if (ox > 0 && oz > 0) covered += ox * oz;
+    }
+  }
+  const total = region.rects.reduce((s, r) => s + r.w * r.l, 0);
+  return total > 0 ? Math.min(1, covered / total) : 0;
+}
+
+/// The area captions to draw: one per enclosed room that has a door, placed
+/// where it will not sit on furniture or a label.
+///
+/// Circulation is skipped. A corridor is bounded by every door that opens onto
+/// it, so it passes the "has a door" test, but it is not a room and already
+/// reads as PUBLIC on the plan.
+export function roomCaptions(room, boxW, boxH) {
+  const out = [];
+  for (const region of detectRooms(room)) {
+    if (!region.hasDoor) continue;
+    if (publicCoverage(room, region) > 0.6) continue;
+    const spot = captionSpot(room, region, boxW, boxH);
+    if (!spot) continue;
+    out.push({ area: region.area, x: spot.x, z: spot.z, clearance: spot.score });
+  }
+  return out;
+}
+
+/// Rounds a rectangle's EDGES to the active grid. Rounding position and size
+/// separately would let two areas disagree about the edge they share.
+export function snapRectToGrid(room, rect) {
+  const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
+  const q = v => clean(Math.round(v / step) * step);
+  const x0 = q(rect.x);
+  const z0 = q(rect.z);
+  const x1 = q(rect.x + rect.w);
+  const z1 = q(rect.z + rect.l);
+  return { x: Math.min(x0, x1), z: Math.min(z0, z1), w: Math.abs(clean(x1 - x0)), l: Math.abs(clean(z1 - z0)) };
+}
+
+/// Pulls edges that are nearly flush with a neighbouring public area onto it
+/// exactly, so areas sit side by side with no seam and no overlap.
+function snapRectToNeighbours(room, rect, ignoreID) {
+  const tolerance = Math.max(GRID_STEPS[room.grid].meters * 2, 0.12);
+  let { x, z, w, l } = rect;
+  const pull = (value, candidates) => {
+    let best = value;
+    let bestD = tolerance;
+    for (const c of candidates) {
+      const d = Math.abs(c - value);
+      if (d <= bestD) { bestD = d; best = c; }
+    }
+    return best;
+  };
+  for (const a of room.publicAreas || []) {
+    if (a.id === ignoreID) continue;
+    // Only snap to an area we actually run alongside.
+    const sharesZ = z < a.z + a.l + tolerance && a.z < z + l + tolerance;
+    const sharesX = x < a.x + a.w + tolerance && a.x < x + w + tolerance;
+    if (sharesZ) {
+      const x1 = pull(x + w, [a.x, a.x + a.w]);
+      const nx = pull(x, [a.x, a.x + a.w]);
+      w = clean(x1 - nx);
+      x = nx;
+    }
+    if (sharesX) {
+      const z1 = pull(z + l, [a.z, a.z + a.l]);
+      const nz = pull(z, [a.z, a.z + a.l]);
+      l = clean(z1 - nz);
+      z = nz;
+    }
+  }
+  return { x: clean(x), z: clean(z), w: clean(Math.max(w, 0)), l: clean(Math.max(l, 0)) };
+}
+
+/// Trims `rect` back so it stops at `other` instead of running into it, along
+/// whichever axis needs the least taken off.
+function trimAgainst(rect, other) {
+  const ox = Math.min(rect.x + rect.w, other.x + other.w) - Math.max(rect.x, other.x);
+  const oz = Math.min(rect.z + rect.l, other.z + other.l) - Math.max(rect.z, other.z);
+  if (ox <= 0.0001 || oz <= 0.0001) return rect;
+  if (ox <= oz) {
+    return rect.x + rect.w / 2 <= other.x + other.w / 2
+      ? { ...rect, w: clean(other.x - rect.x) }
+      : { ...rect, x: clean(other.x + other.w), w: clean(rect.x + rect.w - (other.x + other.w)) };
+  }
+  return rect.z + rect.l / 2 <= other.z + other.l / 2
+    ? { ...rect, l: clean(other.z - rect.z) }
+    : { ...rect, z: clean(other.z + other.l), l: clean(rect.z + rect.l - (other.z + other.l)) };
+}
+
+/// Settles a public-area rectangle: on the grid, flush against its neighbours,
+/// never overlapping one, and inside the canvas. Areas stay separate objects —
+/// each is still selectable and deletable on its own — they just cannot sit on
+/// top of each other.
+export function settlePublicArea(room, rect, ignoreID = null) {
+  const canvas = canvasOf(room);
+  let out = snapRectToGrid(room, rect);
+  out = snapRectToNeighbours(room, out, ignoreID);
+  out = snapRectToGrid(room, out);
+
+  // Take the biggest conflict off first, so the result does not depend on the
+  // order the areas happen to be stored in.
+  for (let pass = 0; pass < 4; pass++) {
+    const clashes = (room.publicAreas || [])
+      .filter(a => a.id !== ignoreID)
+      .map(a => {
+        const ox = Math.min(out.x + out.w, a.x + a.w) - Math.max(out.x, a.x);
+        const oz = Math.min(out.z + out.l, a.z + a.l) - Math.max(out.z, a.z);
+        return { a, overlap: ox > 0.0001 && oz > 0.0001 ? ox * oz : 0 };
+      })
+      .filter(c => c.overlap > 0)
+      .sort((p, q) => q.overlap - p.overlap);
+    if (clashes.length === 0) break;
+    out = trimAgainst(out, clashes[0].a);
+    out = snapRectToGrid(room, out);
+    if (out.w <= 0.0001 || out.l <= 0.0001) break;
+  }
+
+  out.x = clamp(out.x, 0, Math.max(0, canvas.width - out.w));
+  out.z = clamp(out.z, 0, Math.max(0, canvas.length - out.l));
+  out.w = clean(Math.min(out.w, canvas.width - out.x));
+  out.l = clean(Math.min(out.l, canvas.length - out.z));
+  return out;
+}
+
 // MARK: - Labels
 
 /// A label's footprint on the plan, used for hit testing and for the selection

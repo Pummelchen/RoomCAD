@@ -629,9 +629,13 @@ export const store = {
     const areas = this.room.publicAreas || [];
     const index = areas.findIndex(a => a.id === id);
     if (index < 0) return;
-    const next = P.resizePublicArea(areas[index], corner, raw, this.room);
-    areas[index] = { ...areas[index], ...next };
-    this.status = P.cm(next.w) + " × " + P.cm(next.l);
+    const dragged = P.resizePublicArea(areas[index], corner, raw, this.room);
+    // Trimmed against the others, so a corner stops where the neighbour starts.
+    const next = P.settlePublicArea(this.room, dragged, id);
+    if (next.w >= 0.3 && next.l >= 0.3) {
+      areas[index] = { ...areas[index], ...next };
+      this.status = P.cm(next.w) + " × " + P.cm(next.l);
+    }
   },
 
   movePublicArea(id, dx, dz) {
@@ -639,8 +643,26 @@ export const store = {
     const area = (this.room.publicAreas || []).find(a => a.id === id);
     if (!area) return;
     const canvas = P.canvasOf(this.room);
-    area.x = P.clamp(P.clean(area.x + dx), 0, canvas.width - area.w);
-    area.z = P.clamp(P.clean(area.z + dz), 0, canvas.length - area.l);
+    const clear = candidate => {
+      const settled = P.settlePublicArea(this.room, candidate, id);
+      // Moving must never resize: if settling had to trim, this position is
+      // blocked. Trying each axis on its own then lets the area slide along a
+      // neighbour it is pressed against instead of sticking.
+      const sameSize = Math.abs(settled.w - area.w) < 0.001 && Math.abs(settled.l - area.l) < 0.001;
+      return sameSize ? settled : null;
+    };
+    const put = candidate => ({
+      x: P.clamp(candidate.x, 0, canvas.width - area.w),
+      z: P.clamp(candidate.z, 0, canvas.length - area.l),
+      w: area.w,
+      l: area.l,
+    });
+    const both = clear(put({ x: area.x + dx, z: area.z + dz }));
+    const alongX = both || clear(put({ x: area.x + dx, z: area.z }));
+    const target = both || alongX || clear(put({ x: area.x, z: area.z + dz }));
+    if (!target) return;
+    area.x = target.x;
+    area.z = target.z;
   },
 
   deletePublicArea(id) {
@@ -839,15 +861,17 @@ export const store = {
   /// Adds a user-drawn rectangle to the shared (public) floor space. Public
   /// areas are left untouched by the auto room layout.
   markPublicArea(rect) {
-    const area = {
-      id: P.uid(),
-      x: P.clean(Math.min(rect.x1, rect.x2)),
-      z: P.clean(Math.min(rect.z1, rect.z2)),
-      w: P.clean(Math.abs(rect.x2 - rect.x1)),
-      l: P.clean(Math.abs(rect.z2 - rect.z1)),
-    };
+    // On the grid, flush with its neighbours, and trimmed back rather than
+    // laid on top of one.
+    const settled = P.settlePublicArea(this.room, {
+      x: Math.min(rect.x1, rect.x2),
+      z: Math.min(rect.z1, rect.z2),
+      w: Math.abs(rect.x2 - rect.x1),
+      l: Math.abs(rect.z2 - rect.z1),
+    });
+    const area = { id: P.uid(), ...settled };
     if (area.w < 0.5 || area.l < 0.5) {
-      this.status = "Drag a bigger public area";
+      this.status = "Drag a bigger public area — that one had no room left beside its neighbour";
       this.emit();
       return;
     }
