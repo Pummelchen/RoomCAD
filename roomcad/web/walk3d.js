@@ -49,7 +49,7 @@ const FLOOR_HEIGHT = 3; // metres per building floor, for the outside view
 const WALL_VERTICAL_SEAL = 0.04;
 const WALL_END_SEAL = 0.025;
 const CLOSED_DOOR_SEAL = 0.02;
-const POINT_SHADOW_MAP_SIZE = 2048;
+const POINT_SHADOW_MAP_SIZE = 1024;
 const POINT_SHADOW_BIAS = -0.0015;
 const SUN_SHADOW_NORMAL_BIAS = 0.002;
 

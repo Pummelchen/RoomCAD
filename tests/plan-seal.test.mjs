@@ -167,7 +167,7 @@ function check(name, cond, detail = "") {
     walkSrc.includes("const after = span.to >= wallLength - 0.001 ? WALL_END_SEAL : 0;"));
   check("renderer: closed door fills wall depth",
     walkSrc.includes("const thickness = closed ? P.WALL_THICKNESS + CLOSED_DOOR_SEAL * 2 : 0.04;"));
-  check("renderer: point shadows use a 2048 map", mapSize >= 2048);
+  check("renderer: point shadows use a 1024 map", mapSize >= 1024);
   check("renderer: point shadow has a small negative depth bias", bias < 0 && Math.abs(bias) <= 0.002);
   check("renderer: point shadow normal bias is disabled", walkSrc.includes("pl.shadow.normalBias = 0;"));
   check("renderer: sunlight does not detach from wall edges", sunNormalBias >= 0 && sunNormalBias <= 0.002);
