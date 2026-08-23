@@ -1,14 +1,19 @@
 // Contracts for the files that decide how RoomCAD is actually served.
 //
-// A leading "-" on a header directive tells Caddy to DELETE that header, not to
-// set it. Both Caddyfiles used to carry one on X-Frame-Options and
-// X-Content-Type-Options, so the deployed app answered with neither — and the
-// nginx instance in front of it adds no security headers of its own, so nothing
-// downstream made up the difference.
+// Caddy serves RoomCAD end to end — TLS, the app and the API — on its own host
+// and port, with nothing in front of it.
+//
+// Two things here are easy to get wrong in ways nothing else notices. A leading
+// "-" on a header directive tells Caddy to DELETE that header rather than set
+// it, which is how the app came to ship with no clickjacking or MIME-sniffing
+// protection at all. And the CSP allows the inline import map by hash, which
+// stops matching the moment anyone edits index.html — so the hash is recomputed
+// from the file here and compared.
 //
 // Run:  node tests/deploy-config.test.mjs
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -41,12 +46,55 @@ for (const [label, src] of [["production", prod], ["local dev", dev]]) {
 check("production serves the app with no-cache", /Cache-Control\s+"no-cache"/.test(prod));
 check("local dev matches production on caching", /Cache-Control\s+"no-cache"/.test(dev));
 
-// nginx terminates TLS in front, so Caddy must pass its view of the request
-// through rather than replacing it with its own.
-check("production forwards the original protocol",
-  prod.includes("header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}"));
-check("production forwards the original client address",
-  prod.includes("header_up X-Forwarded-For {http.request.header.X-Forwarded-For}"));
+// Caddy serves RoomCAD end to end now. Nothing is in front of it, so its own
+// view of the request is the truth — copying X-Forwarded-* from a header that
+// is no longer sent would tell the API the request came in over plain HTTP and
+// drop the Secure flag from the session cookie.
+check("production does not copy X-Forwarded-* from a proxy that is gone",
+  !/header_up\s+X-Forwarded-/.test(prod));
+check("production terminates TLS itself", /^\s*tls\s+\S+fullchain\.pem\s+\S+privkey\.pem/m.test(prod));
+check("production serves RoomCAD on its own host and port",
+  /roomcad\.[\d.]+\.nip\.io:\d+\s*\{/.test(prod));
+
+// RoomCAD is Caddy-only: nothing about it belongs in nginx.
+check("no nginx site ships with RoomCAD", !existsSync(join(root, "roomcad", "server", "nginx-roomcad.conf")));
+check("deploy installs no nginx site", !/sites-available\/roomcad\.conf/.test(deploy) || /rm -f/.test(deploy));
+check("deploy retires the old nginx site rather than installing one",
+  !/scp[^\n]*nginx-roomcad\.conf/.test(deploy));
+
+// HSTS, on the host Caddy now owns end to end.
+check("production sends HSTS", /Strict-Transport-Security\s+"max-age=\d+/.test(prod));
+check("HSTS is not preloaded and does not claim subdomains",
+  !/Strict-Transport-Security[^"]*"[^"]*(preload|includeSubDomains)/.test(prod));
+
+// Caddy needs a readable copy of the certificate; certbot's own store is 0700.
+check("a certbot deploy hook ships with the server",
+  existsSync(join(root, "roomcad", "server", "certbot-deploy-hook.sh")));
+check("deploy installs the certificate hook", /renewal-hooks\/deploy\/roomcad-caddy\.sh/.test(deploy));
+check("the hook runs once at deploy so the copy exists before Caddy loads it",
+  /roomcad-caddy\.sh\"?\s*$|roomcad-caddy\.sh$/m.test(deploy));
+
+// Content-Security-Policy. The import map in index.html is inline, so it is
+// allowed by hash — which silently stops matching the moment anyone edits it.
+check("production sends a Content-Security-Policy", /Content-Security-Policy\s+"/.test(prod));
+check("the policy does not fall back to unsafe-inline for scripts",
+  !/script-src[^"]*'unsafe-inline'/.test(prod));
+check("the policy does not allow eval", !/'unsafe-eval'/.test(prod.replace(/'wasm-unsafe-eval'/g, "")));
+check("the policy allows WebAssembly for the physics engine",
+  /'wasm-unsafe-eval'/.test(prod));
+check("the policy blocks framing and plugins",
+  /frame-ancestors 'self'/.test(prod) && /object-src 'none'/.test(prod));
+{
+  const html = readFileSync(join(root, "roomcad", "web", "index.html"), "utf8");
+  const inline = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
+  check("index.html still has an inline import map", !!inline);
+  if (inline) {
+    const want = "sha256-" + createHash("sha256").update(inline[1]).digest("base64");
+    check("the CSP hash matches the import map actually in index.html",
+      prod.includes(want), `expected ${want}`);
+    check("the local dev config uses the same hash", dev.includes(want));
+  }
+}
 
 // Server-sent events must not be buffered, or live collaboration stalls.
 check("the API proxy flushes immediately", /flush_interval\s+-1/.test(prod));

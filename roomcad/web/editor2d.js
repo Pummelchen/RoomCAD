@@ -112,20 +112,133 @@ export class Editor2D {
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
+  /// The extent of what the user actually drew, in plan metres.
+  ///
+  /// Not the canvas: the canvas is a 25 m base plate that exists so there is
+  /// somewhere to put new rooms, and fitting to it leaves a 5 m room as a stamp
+  /// in the middle of the screen.
+  contentBounds() {
+    const room = store.room;
+    let b = P.wallsBounds(room);
+    const grow = (minX, minZ, maxX, maxZ) => {
+      if (!b) b = { minX, minZ, maxX, maxZ };
+      else {
+        b.minX = Math.min(b.minX, minX);
+        b.minZ = Math.min(b.minZ, minZ);
+        b.maxX = Math.max(b.maxX, maxX);
+        b.maxZ = Math.max(b.maxZ, maxZ);
+      }
+    };
+    for (const a of room.publicAreas || []) grow(a.x, a.z, a.x + a.w, a.z + a.l);
+    for (const l of room.labels || []) {
+      const lb = P.labelBounds(l);
+      grow(lb.minX, lb.minZ, lb.maxX, lb.maxZ);
+    }
+    for (const f of room.furniture || []) {
+      const fb = P.furnitureFootprint(f);
+      grow(fb.minX, fb.minZ, fb.maxX, fb.maxZ);
+    }
+    if (!b || b.maxX - b.minX < 0.01 || b.maxZ - b.minZ < 0.01) {
+      // Nothing drawn yet — the base plate is all there is to show.
+      const canvas = P.canvasOf(room);
+      return { minX: 0, minZ: 0, maxX: canvas.width, maxZ: canvas.length };
+    }
+    return b;
+  }
+
+  /// The part of the canvas the user can actually see the plan in: the whole
+  /// element, less a margin, less anything floating on top of it.
+  viewport() {
+    const rect = this.canvas.getBoundingClientRect();
+    const margin = 18;
+    let bottom = margin;
+    // The zoom bar floats over the canvas rather than sitting beside it, so the
+    // strip underneath it is not usable space.
+    const zoom = document.getElementById("zoom-controls");
+    if (zoom) {
+      const z = zoom.getBoundingClientRect();
+      if (z.height > 0 && z.bottom > rect.top && z.top < rect.bottom) {
+        bottom = Math.max(bottom, rect.bottom - z.top + 8);
+      }
+    }
+    return {
+      w: rect.width,
+      h: rect.height,
+      left: margin,
+      top: margin,
+      right: margin,
+      bottom,
+      availW: Math.max(40, rect.width - margin * 2),
+      availH: Math.max(40, rect.height - margin - bottom),
+    };
+  }
+
+  /// Screen-space box of everything painted last frame: the plan itself plus
+  /// the dimension readouts and area captions drawn around it.
+  paintedExtent() {
+    const b = this.contentBounds();
+    const r = this.rect(b);
+    let minX = r.x, minY = r.y, maxX = r.x + r.w, maxY = r.y + r.h;
+    for (const d of this.dimensionBoxes) {
+      minX = Math.min(minX, d.x);
+      minY = Math.min(minY, d.y);
+      maxX = Math.max(maxX, d.x + d.w);
+      maxY = Math.max(maxY, d.y + d.h);
+    }
+    return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /// Centres the plan at `scale` so that its painted extent — geometry plus the
+  /// annotations around it — sits in the middle of the usable area.
+  placeAt(scale, view) {
+    this.scale = P.clamp(scale, 20, 400);
+    const b = this.contentBounds();
+    // rect() needs an origin to project through; start from zero and correct.
+    this.origin = { x: 0, y: 0 };
+    const r = this.rect(b);
+    this.origin = {
+      x: view.left + (view.availW - r.w) / 2 - r.x,
+      y: view.top + (view.availH - r.h) / 2 - r.y,
+    };
+  }
+
   fit() {
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 20 || rect.height < 20) return;
-    const size = this.displaySize();
-    const padding = 70;
-    const s = Math.min(
-      (rect.width - padding) / size.width,
-      (rect.height - padding) / size.height
+    const view = this.viewport();
+    const b = this.contentBounds();
+    const wide = Math.max(0.01, b.maxX - b.minX);
+    const tall = Math.max(0.01, b.maxZ - b.minZ);
+    const rotated = store.rotation === 90 || store.rotation === 270;
+    const geomW = rotated ? tall : wide;
+    const geomH = rotated ? wide : tall;
+
+    // First pass: fit the geometry alone, leaving room for the annotations.
+    this.placeAt(Math.min(view.availW / geomW, view.availH / geomH) * 0.82, view);
+    this.draw();
+
+    // The readouts and captions are drawn at a fixed pixel size, so they do not
+    // shrink with the zoom. Measure how much room they actually took and solve
+    // for the scale that makes geometry + annotations exactly fill the view:
+    //   painted = geometry × scale + annotation   (annotation independent of scale)
+    const painted = this.paintedExtent();
+    const annoW = Math.max(0, painted.w - geomW * this.scale);
+    const annoH = Math.max(0, painted.h - geomH * this.scale);
+    const exact = Math.min(
+      (view.availW - annoW) / geomW,
+      (view.availH - annoH) / geomH,
     );
-    this.scale = P.clamp(s, 20, 400);
-    this.origin = {
-      x: (rect.width - size.width * this.scale) / 2,
-      y: (rect.height - size.height * this.scale) / 2,
-    };
+    if (exact > 0 && Number.isFinite(exact)) {
+      this.placeAt(exact, view);
+      // Re-centre on what is actually painted, so the annotation margin is
+      // shared evenly rather than all falling on one side.
+      this.draw();
+      const after = this.paintedExtent();
+      this.origin = {
+        x: this.origin.x + (view.left + (view.availW - after.w) / 2 - after.minX),
+        y: this.origin.y + (view.top + (view.availH - after.h) / 2 - after.minY),
+      };
+    }
     this.didFit = true;
     this.draw();
   }

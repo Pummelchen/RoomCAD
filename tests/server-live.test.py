@@ -466,6 +466,44 @@ def main():
           raw.decode("latin1").startswith("HTTP/1.1 200"),
           raw.decode("latin1").split("\r\n")[0])
 
+    # Deleting a file must take every version of it with it, however many there
+    # are, and leave nothing behind that refers to it.
+    bulk = "bulkroom"
+    bulk_json = '{"room":{"width":6,"length":4}}'
+    for _ in range(120):
+        request(port, "POST", "/api/save",
+                {"name": bulk, "json": bulk_json, "clientId": "bulk"}, cookie)
+    conn = server.get_conn()
+    count_of = lambda: conn.execute(
+        "SELECT COUNT(*) FROM rooms WHERE name=?", (bulk,)).fetchone()[0]
+    check("a file can accumulate many versions", count_of() >= 120, f"{count_of()}")
+
+    # Point a session at it and leave an unsaved draft under its name.
+    request(port, "POST", "/api/live/" + bulk,
+            {"json": bulk_json, "clientId": "other", "version": 119}, cookie)
+    request(port, "POST", "/api/session/last", {"name": bulk, "version": 0}, cookie)
+    check("the draft is there before the delete", bulk in server.LIVE)
+
+    started = time.time()
+    status, _, _ = request(port, "DELETE", "/api/rooms/" + bulk, None, cookie)
+    elapsed = time.time() - started
+    check("deleting a many-versioned file succeeds", status == 200, f"{status}")
+    check("every version goes, not just the newest", count_of() == 0, f"{count_of()} left")
+    check("deleting 120 versions is one transaction, not 120 round trips",
+          elapsed < 2.0, f"took {elapsed:.2f}s")
+    check("no session is left pointing at the deleted file",
+          conn.execute("SELECT COUNT(*) FROM browser_sessions WHERE last_room_name=?",
+                       (bulk,)).fetchone()[0] == 0)
+    # A draft left in memory outlives the file and would be handed to the next
+    # watcher of a room created with the same name.
+    check("the unsaved draft does not outlive the file", bulk not in server.LIVE)
+    status, listing, _ = request(port, "GET", "/api/rooms", None, cookie)
+    names = [r.get("name") for r in listing] if isinstance(listing, list) else []
+    check("the room listing comes back as a list", isinstance(listing, list), repr(listing)[:120])
+    check("the deleted file is gone from the listing", bulk not in names, str(names)[:120])
+    check("deleting a file that is not there is a 404",
+          request(port, "DELETE", "/api/rooms/" + bulk, None, cookie)[0] == 404)
+
     # Empty watcher sets are removed rather than accumulating per room name.
     reader.stop()
     reader2.stop()

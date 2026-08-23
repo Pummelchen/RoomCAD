@@ -52,5 +52,29 @@ check("the mark is yellow", /CLASH_FILL = "rgba\(255, 214, 0/.test(editor));
 check("nothing about the overlap blocks the edit",
   !/canStartWallAt[\s\S]{0,400}overlappingWallAreas/.test(editor));
 
+// Fit puts the ROOM on screen, not the base plate. Fitting to the 25 m canvas
+// left a 5 m room as a stamp in the middle, and the dimension readouts around
+// the plan are drawn at a fixed pixel size, so they have to be measured rather
+// than assumed.
+check("fit measures what was drawn, not the base plate",
+  editor.includes("contentBounds()") && /fit\(\)[\s\S]{0,600}this\.contentBounds\(\)/.test(editor));
+check("fit no longer sizes itself from the canvas plate",
+  !/fit\(\)\s*\{[\s\S]{0,400}this\.displaySize\(\)/.test(editor));
+check("content bounds cover the walls the user drew",
+  /contentBounds\(\)[\s\S]{0,400}P\.wallsBounds\(room\)/.test(editor));
+check("content bounds also cover public floor, labels and furniture",
+  /contentBounds\(\)[\s\S]{0,900}publicAreas[\s\S]{0,400}labelBounds[\s\S]{0,400}furnitureFootprint/.test(editor));
+check("an empty plan still falls back to the base plate",
+  /contentBounds\(\)[\s\S]{0,1200}P\.canvasOf\(room\)/.test(editor));
+check("the usable area excludes whatever floats over the canvas",
+  editor.includes('document.getElementById("zoom-controls")') && editor.includes("viewport()"));
+check("the annotations around the plan are measured, not guessed",
+  editor.includes("paintedExtent()") && editor.includes("this.dimensionBoxes"));
+check("fit solves for the scale that makes geometry plus annotations fill the view",
+  /annoW\s*=\s*Math\.max\(0, painted\.w - geomW \* this\.scale\)/.test(editor)
+  && /\(view\.availW - annoW\) \/ geomW/.test(editor));
+check("fit accounts for a rotated plan",
+  /fit\(\)[\s\S]{0,900}store\.rotation === 90 \|\| store\.rotation === 270/.test(editor));
+
 console.log(`${passed} passed, ${failed} failed — 2D editor behaviour contracts`);
 if (failed) process.exit(1);

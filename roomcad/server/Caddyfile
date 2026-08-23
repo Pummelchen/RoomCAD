@@ -11,58 +11,52 @@
 	file_server
 }
 
-:8077 {
+# RoomCAD. Caddy serves it end to end: TLS, the static app and the API. Nothing
+# else sits in the request path.
+#
+# The port is 8443 rather than 443 because an unrelated service already holds 80
+# and 443 on this host. That also rules out Caddy running ACME for itself —
+# HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443 — so it serves the
+# certificate certbot already maintains for this name, copied somewhere the
+# caddy user can read on every renewal (see certbot-deploy-hook.sh).
+roomcad.91.99.176.243.nip.io:8443 {
+	tls /var/roomcad/tls/fullchain.pem /var/roomcad/tls/privkey.pem
 	encode gzip
-	header {
-		# In Caddy a leading "-" DELETES a header. These lines used to carry
-		# it, so the app shipped with no clickjacking or MIME-sniffing
-		# protection at all — and nginx in front adds none either.
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "SAMEORIGIN"
-		Referrer-Policy "same-origin"
-	}
-	handle /api/* {
-		reverse_proxy 127.0.0.1:8078 {
-			flush_interval -1
-			# nginx terminates TLS in front of this site. Caddy would otherwise
-			# replace both of these with its own view — X-Forwarded-Proto with
-			# plain "http", and X-Forwarded-For with nginx's loopback address —
-			# leaving the API unable to tell that the request reached the user
-			# over HTTPS, or to tell one client from another for rate limiting.
-			# Passing nginx's values through keeps the real client LAST in
-			# X-Forwarded-For: the entry nginx itself appended, which a client
-			# cannot forge. (trusted_proxies would be tidier but needs Caddy 2.7;
-			# this host runs 2.6.2.)
-			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
-			header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
-		}
-	}
-	handle {
-		root * /var/roomcad/web
-		file_server
-		header Cache-Control "no-cache"
-	}
-}
 
-91.99.176.243:8443 {
-	tls internal
-	encode gzip
 	header {
-		# In Caddy a leading "-" DELETES a header. These lines used to carry
-		# it, so the app shipped with no clickjacking or MIME-sniffing
-		# protection at all — and nginx in front adds none either.
+		# In Caddy a leading "-" DELETES a header. These lines used to carry one,
+		# so the app shipped with no clickjacking or MIME-sniffing protection.
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "same-origin"
+		# Caddy terminates TLS here, so this host is only ever reached over
+		# HTTPS. No includeSubDomains — it is one name under a shared wildcard
+		# DNS service — and no preload, which cannot be undone in any useful
+		# time frame.
+		Strict-Transport-Security "max-age=31536000"
+		# The import map in index.html is inline, so it is allowed by hash
+		# rather than by unsafe-inline; tests/deploy-config.test.mjs checks that
+		# the hash still matches the file. wasm-unsafe-eval is for the Rapier
+		# physics engine and does NOT permit eval.
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob:; style-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval' 'sha256-xuoopYrkZJxhGOUJm8Fz4reALjSXs2FHlvONCe4eFsw='"
 	}
+
 	handle /api/* {
+		# No X-Forwarded-* overrides here, deliberately. They existed to stop
+		# Caddy replacing nginx's view of the request. With nothing in front,
+		# Caddy's own values ARE the truth, and copying a header that is no
+		# longer sent would tell the API the request arrived over plain HTTP and
+		# drop the Secure flag from the session cookie.
 		reverse_proxy 127.0.0.1:8078 {
 			flush_interval -1
 		}
 	}
+
 	handle {
 		root * /var/roomcad/web
 		file_server
+		# Revalidate every time, so a browser never keeps serving the previous
+		# build of a module after a deploy.
 		header Cache-Control "no-cache"
 	}
 }

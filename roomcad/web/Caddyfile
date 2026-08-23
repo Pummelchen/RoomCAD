@@ -22,6 +22,11 @@
 			X-Content-Type-Options "nosniff"
 			X-Frame-Options "SAMEORIGIN"
 			Referrer-Policy "same-origin"
+			# The import map is inline, so it is allowed by hash rather than by
+			# unsafe-inline; the hash is checked against index.html by
+			# tests/deploy-config.test.mjs. wasm-unsafe-eval is for the Rapier
+			# physics engine, which instantiates WebAssembly.
+			Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob:; style-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval' 'sha256-xuoopYrkZJxhGOUJm8Fz4reALjSXs2FHlvONCe4eFsw='"
 			# Match production: revalidate every time. Without this the browser
 			# applies heuristic freshness and quietly keeps serving the previous
 			# build of a module after you have edited it.

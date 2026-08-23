@@ -341,6 +341,11 @@ def load_room(name, version=None):
 
 
 def delete_room(name):
+    """Removes a room and every version of it.
+
+    One statement covers all versions however many there are, so a file with a
+    hundred of them goes in a single transaction rather than a hundred.
+    """
     conn = get_conn()
     with DB_LOCK:
         cur = conn.execute("DELETE FROM rooms WHERE name=?", (name,))
@@ -349,6 +354,12 @@ def delete_room(name):
             (name,),
         )
         conn.commit()
+    # An unsaved draft is held in memory under the room's name. Left behind, it
+    # outlives the file it belonged to and is handed to the next watcher of a
+    # room created with the same name — so deleted work reappears in something
+    # that has nothing to do with it.
+    with LIVE_LOCK:
+        LIVE.pop(name, None)
     return cur.rowcount > 0
 
 
