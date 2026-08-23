@@ -24,20 +24,33 @@ function boxesOf(group, meshNames) {
     if (meshNames && !meshNames.includes(node.name)) return;
     const e = node.instanceMatrix.array;
     const backFace = BACK_FACE_MESHES.has(node.name);
+    // The instance scale is not the size: a cylinder carries its radius in the
+    // geometry and is instanced at scale 1, so reading the matrix alone makes
+    // a 16 cm lamp post look like a metre-wide block and invents clashes
+    // between every pair of posts near a junction.
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    const bb = node.geometry.boundingBox;
+    const size = [bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z];
+    const mid = [(bb.max.x + bb.min.x) / 2, (bb.max.y + bb.min.y) / 2, (bb.max.z + bb.min.z) / 2];
     for (let i = 0; i < node.count; i++) {
       const o = i * 16;
       // Rotated instances are not axis-aligned, so they cannot be coplanar
       // with the building grid in the way this looks for.
       if (Math.abs(e[o + 1]) > 1e-6 || Math.abs(e[o + 2]) > 1e-6) continue;
+      const scale = [
+        Math.hypot(e[o + 0], e[o + 1], e[o + 2]),
+        Math.hypot(e[o + 4], e[o + 5], e[o + 6]),
+        Math.hypot(e[o + 8], e[o + 9], e[o + 10]),
+      ];
       out.push({
         mesh: node.name,
         backFace,
-        c: [e[o + 12], e[o + 13], e[o + 14]],
-        half: [
-          Math.hypot(e[o + 0], e[o + 1], e[o + 2]) / 2,
-          Math.hypot(e[o + 4], e[o + 5], e[o + 6]) / 2,
-          Math.hypot(e[o + 8], e[o + 9], e[o + 10]) / 2,
+        c: [
+          e[o + 12] + mid[0] * scale[0],
+          e[o + 13] + mid[1] * scale[1],
+          e[o + 14] + mid[2] * scale[2],
         ],
+        half: [size[0] * scale[0] / 2, size[1] * scale[1] / 2, size[2] * scale[2] / 2],
       });
     }
   });

@@ -97,6 +97,30 @@ const INTERIOR_LIT_COLOR = 0x7a6a55;
 const INTERIOR_GLOW = 0xffd9a2;
 const BULB_COLOR = 0xfff0cc;
 const CORE_COLOR = 0x241f1b;    // the solid middle, so you cannot see through
+// House numbers, drawn as blocks rather than as text. A texture per building
+// would mean a canvas and an upload each; a 3x5 block font costs a handful of
+// instances and suits a city made of boxes.
+const DIGIT_ROWS = {
+  "0": ["111", "101", "101", "101", "111"],
+  "1": ["010", "110", "010", "010", "111"],
+  "2": ["111", "001", "111", "100", "111"],
+  "3": ["111", "001", "111", "001", "111"],
+  "4": ["101", "101", "111", "001", "001"],
+  "5": ["111", "100", "111", "001", "111"],
+  "6": ["111", "100", "111", "101", "111"],
+  "7": ["111", "001", "010", "010", "010"],
+  "8": ["111", "101", "111", "101", "111"],
+  "9": ["111", "101", "111", "001", "111"],
+};
+const DIGIT_CELL = 0.062;
+const DOOR_W = 1.45;
+const DOOR_H = 2.35;
+const ENTRANCE_COLOR = 0x2b2622;   // the doorway itself, in shadow
+const SURROUND_COLOR = 0xd8d2c4;   // stone surround and canopy
+const STEP_COLOR = 0xb9b3a6;
+const NUMBER_PLATE = 0x1d1a17;
+const NUMBER_COLOR = 0xe8c46a;     // brass, and bright enough to read at night
+
 
 const CAR_COLORS = [
   0xd94f4f, 0x4f7fd9, 0xe0c04a, 0x53b06a, 0xdedede,
@@ -109,7 +133,7 @@ const GLASS_COLOR = 0x2a3038;
 
 // Traffic.
 const LANE_OFFSET = 3.1;        // lane centre from the road centreline
-const LIGHT_CYCLE = 26;         // seconds for a full two-phase cycle
+const LIGHT_CYCLE = 30;         // seconds for a full two-phase cycle
 const LIGHT_AMBER = 2.4;
 // All-red after the amber. A bus entering on the last of the green needs
 // several seconds to drag twelve metres of itself out of a thirteen-metre
@@ -124,6 +148,24 @@ const NEAR_SIDE_TURN = -1;
 const CROSSING_TURN = 1;
 const BLINK_HZ = 1.5;
 const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
+// Junction furniture. A driver meets the stop line, then the crossing, then
+// the carriageway, so the crossing sits between the line and the junction.
+const CROSS_GAP = 0.6;          // carriageway edge to the near edge of the crossing
+const CROSS_DEPTH = 2.6;        // how deep the crossing is, along the road
+const CROSS_BAR = 0.55;         // one white bar, across the road
+const CROSS_BAR_GAP = 0.45;
+const STOP_LINE_W = 0.35;
+// Where a vehicle's nose comes to rest, measured out from the junction centre:
+// the far side of the crossing, which is what the stop line is painted on.
+const STOP_LINE_AT = ROAD_WIDTH / 2 + CROSS_GAP + CROSS_DEPTH + STOP_LINE_W;
+const SIGNAL_HEIGHT = 3.4;
+const SIGNAL_HEAD_H = 0.86;
+const SIGNAL_POLE_COLOR = 0x33363b;
+const SIGNAL_HOUSING_COLOR = 0x24272b;
+const SIGNAL_DARK = 0x15171a;
+const SIGNAL_RED = 0xff2a1e;
+const SIGNAL_AMBER = 0xffa617;
+const SIGNAL_GREEN = 0x2ce05a;
 // The hardest any vehicle on these streets can brake. A follower has to assume
 // the one in front might stop as fast as that, which is what keeps a truck —
 // which cannot — far enough back from a car that can.
@@ -137,6 +179,12 @@ const PRECIP_HEIGHT = 30;
 /// The kinds of vehicle on the streets. `share` is how common each is; the
 /// rest is what makes them behave differently — a bus pulls away from a light
 /// far more slowly than a hatchback, and needs a great deal more room to stop.
+const VEHICLE_REF = {
+  car: { L: 4.45, W: 1.78, wheelR: 0.34, lampY: 0.62 },
+  truck: { L: 9.7, W: 2.42, wheelR: 0.5, lampY: 0.86 },
+  bus: { L: 11.35, W: 2.5, wheelR: 0.5, lampY: 0.72 },
+};
+
 const VEHICLE_KINDS = [
   {
     kind: "car", share: 0.66, length: [4.0, 4.9], width: 1.78,
@@ -283,6 +331,214 @@ function boxMatrix(x, y, z, w, h, d, rotY = 0, into = null) {
   return (into || new THREE.Matrix4()).compose(_pos, _q, _scale);
 }
 
+// MARK: - Vehicle bodies
+//
+// A vehicle is one merged mesh rather than a handful of boxes written
+// separately every frame. That buys the detail — a greenhouse that steps in
+// from the body, glass, door shut lines, bumpers, mirrors — for LESS per-frame
+// work than the old three-box car cost, because the whole thing is a single
+// instance with a single matrix. The lamps stay separate: they are the only
+// part that changes independently of the body.
+//
+// Colour comes from the instance, which MULTIPLIES these vertex colours, so
+// bodywork is left white to take the vehicle's own paint, and glass and tyres
+// are dark enough to stay dark whatever colour is laid over them.
+const PAINT = 0xffffff;      // takes the vehicle's colour
+const GLASS = 0x24282e;
+const TYRE = 0x101114;
+const TRIM = 0x4a4d52;
+const GRILLE = 0x2a2c30;
+
+/// Collects boxes and cylinders into one indexed-free geometry.
+function partBuilder() {
+  const position = [];
+  const normal = [];
+  const color = [];
+  const c = new THREE.Color();
+
+  const push = (geo, matrix, hex) => {
+    const g = geo.clone();
+    g.applyMatrix4(matrix);
+    const p = g.attributes.position;
+    const n = g.attributes.normal;
+    const index = g.index;
+    c.setHex(hex);
+    const count = index ? index.count : p.count;
+    for (let i = 0; i < count; i++) {
+      const v = index ? index.getX(i) : i;
+      position.push(p.getX(v), p.getY(v), p.getZ(v));
+      normal.push(n.getX(v), n.getY(v), n.getZ(v));
+      color.push(c.r, c.g, c.b);
+    }
+    g.dispose();
+  };
+
+  const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  const wheelGeo = new THREE.CylinderGeometry(1, 1, 1, 12);
+
+  return {
+    /// A box, optionally pitched about Z (for a raked windscreen).
+    box(x, y, z, w, h, d, hex, pitch = 0) {
+      _pos.set(x, y, z);
+      _scale.set(w, h, d);
+      _q.setFromEuler(_euler.set(0, 0, pitch));
+      push(unitBox, new THREE.Matrix4().compose(_pos, _q, _scale), hex);
+    },
+    /// A road wheel: a cylinder laid on its side, axle across the vehicle.
+    wheel(x, y, z, r, width) {
+      _pos.set(x, y, z);
+      _scale.set(r, width, r);
+      _q.setFromEuler(_euler.set(Math.PI / 2, 0, 0));
+      push(wheelGeo, new THREE.Matrix4().compose(_pos, _q, _scale), TYRE);
+      // Hub, so a wheel is not a plain black cylinder end-on.
+      _pos.set(x, y, z + (width / 2 + 0.01) * Math.sign(z || 1));
+      _scale.set(r * 0.45, 0.03, r * 0.45);
+      push(wheelGeo, new THREE.Matrix4().compose(_pos, _q, _scale), TRIM);
+    },
+    build() {
+      unitBox.dispose();
+      wheelGeo.dispose();
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(position, 3));
+      geo.setAttribute("normal", new THREE.Float32BufferAttribute(normal, 3));
+      geo.setAttribute("color", new THREE.Float32BufferAttribute(color, 3));
+      return geo;
+    },
+  };
+}
+
+/// A saloon: stepped bonnet and boot, a greenhouse narrower than the body,
+/// raked screens, door shut lines and handles, bumpers and mirrors.
+function buildCarGeometry(L, W, wheelR) {
+  const b = partBuilder();
+  const floor = wheelR * 0.55;
+  const bodyH = 0.62;
+  const bodyY = floor + bodyH / 2;
+  const sill = floor + 0.08;
+
+  b.box(0, bodyY, 0, L * 0.96, bodyH, W, PAINT);                       // main body
+  b.box(L * 0.34, bodyY + 0.30, 0, L * 0.28, 0.14, W * 0.95, PAINT);   // bonnet
+  b.box(-L * 0.38, bodyY + 0.28, 0, L * 0.20, 0.12, W * 0.95, PAINT);  // boot lid
+
+  // Greenhouse, stepped in from the body on both sides.
+  const roofY = bodyY + bodyH / 2 + 0.24;
+  b.box(-L * 0.04, roofY, 0, L * 0.46, 0.48, W * 0.86, PAINT);
+  b.box(-L * 0.04, roofY + 0.25, 0, L * 0.40, 0.05, W * 0.80, PAINT);  // roof panel
+
+  // Glass: raked front and rear screens, and a window down each side.
+  b.box(L * 0.21, roofY + 0.02, 0, 0.06, 0.46, W * 0.80, GLASS, -0.42);
+  b.box(-L * 0.29, roofY + 0.02, 0, 0.06, 0.42, W * 0.80, GLASS, 0.5);
+  for (const s of [-1, 1]) {
+    b.box(-L * 0.04, roofY + 0.04, s * W * 0.435, L * 0.40, 0.32, 0.04, GLASS);
+  }
+
+  // Door shut lines and handles.
+  for (const s of [-1, 1]) {
+    for (const at of [L * 0.13, -L * 0.13]) {
+      b.box(at, bodyY, s * W * 0.502, 0.035, bodyH * 0.9, 0.03, TRIM);
+    }
+    b.box(-L * 0.02, bodyY + 0.12, s * W * 0.508, 0.22, 0.05, 0.04, TRIM);
+    // Mirror on its stalk.
+    b.box(L * 0.16, roofY - 0.12, s * W * 0.56, 0.09, 0.07, 0.12, TRIM);
+  }
+
+  // Bumpers, grille and a sill strip.
+  b.box(L * 0.485, floor + 0.30, 0, 0.10, 0.20, W * 0.97, TRIM);
+  b.box(-L * 0.485, floor + 0.30, 0, 0.10, 0.20, W * 0.97, TRIM);
+  b.box(L * 0.47, floor + 0.46, 0, 0.06, 0.14, W * 0.62, GRILLE);
+  for (const s of [-1, 1]) b.box(0, sill, s * W * 0.5, L * 0.7, 0.07, 0.04, TRIM);
+
+  for (const ax of [L * 0.31, -L * 0.31]) {
+    for (const s of [-1, 1]) b.wheel(ax, wheelR, s * W * 0.44, wheelR, W * 0.12);
+  }
+  return b.build();
+}
+
+/// A rigid truck: cab, chassis, and a box body sitting above the frame.
+function buildTruckGeometry(L, W, wheelR) {
+  const b = partBuilder();
+  const floor = wheelR * 0.62;
+  const frameY = floor + 0.28;
+
+  // Chassis rails, visible under the box body.
+  for (const s of [-1, 1]) b.box(-L * 0.06, frameY, s * W * 0.3, L * 0.86, 0.16, 0.12, TRIM);
+
+  // Cab: body, roof, deep screen, side glass, mirrors.
+  const cabL = L * 0.28;
+  const cabX = L * 0.33;
+  const cabY = frameY + 0.72;
+  b.box(cabX, cabY, 0, cabL, 1.36, W * 0.98, PAINT);
+  b.box(cabX, cabY + 0.74, 0, cabL * 0.94, 0.12, W * 0.94, PAINT);
+  b.box(cabX + cabL * 0.5, cabY + 0.30, 0, 0.07, 0.62, W * 0.86, GLASS, -0.16);
+  for (const s of [-1, 1]) {
+    b.box(cabX - cabL * 0.1, cabY + 0.26, s * W * 0.495, cabL * 0.5, 0.42, 0.05, GLASS);
+    b.box(cabX + cabL * 0.42, cabY + 0.34, s * W * 0.60, 0.08, 0.34, 0.10, TRIM);   // mirror
+    b.box(cabX - cabL * 0.28, cabY - 0.1, s * W * 0.5, 0.04, 1.0, 0.04, TRIM);      // door line
+  }
+  b.box(cabX + cabL * 0.48, frameY + 0.16, 0, 0.10, 0.28, W * 0.95, TRIM);          // bumper
+  b.box(cabX + cabL * 0.46, cabY - 0.42, 0, 0.07, 0.34, W * 0.7, GRILLE);
+
+  // Box body, with a ribbed side and rear doors.
+  const boxL = L * 0.60;
+  const boxX = -L * 0.145;
+  const boxY = frameY + 0.95;
+  b.box(boxX, boxY, 0, boxL, 1.82, W, PAINT);
+  b.box(boxX, boxY + 0.95, 0, boxL * 0.99, 0.09, W * 0.99, TRIM);      // roof cap
+  for (const s of [-1, 1]) {
+    for (let i = -2; i <= 2; i++) {
+      b.box(boxX + i * boxL * 0.19, boxY, s * W * 0.503, 0.05, 1.7, 0.03, TRIM);
+    }
+  }
+  b.box(boxX - boxL * 0.502, boxY, 0, 0.04, 1.7, W * 0.9, TRIM);       // rear doors
+  b.box(boxX - boxL * 0.505, boxY, 0, 0.04, 1.7, 0.06, GRILLE);        // door seam
+
+  for (const ax of [L * 0.34, -L * 0.16, -L * 0.34]) {
+    for (const s of [-1, 1]) b.wheel(ax, wheelR, s * W * 0.44, wheelR, W * 0.13);
+  }
+  return b.build();
+}
+
+/// A city bus: a long slab of glass with a roof, doors and wheel arches.
+function buildBusGeometry(L, W, wheelR) {
+  const b = partBuilder();
+  const floor = wheelR * 0.55;
+  const bodyH = 2.1;
+  const bodyY = floor + bodyH / 2 + 0.18;
+
+  b.box(0, bodyY, 0, L * 0.98, bodyH, W, PAINT);
+  b.box(0, bodyY + bodyH / 2 + 0.06, 0, L * 0.94, 0.14, W * 0.96, PAINT);   // roof
+  b.box(0, floor + 0.16, 0, L * 0.9, 0.22, W * 0.94, TRIM);                 // skirt
+
+  // Doorways first: they run the full height of the side, so the window bays
+  // have to give way to them rather than being drawn across them.
+  const doors = [L * 0.28, -L * 0.18];
+  const doorW = 1.04;
+  const bays = 7;
+  const bayW = (L * 0.84 / bays) * 0.82;
+  for (const s of [-1, 1]) {
+    for (const at of doors) {
+      b.box(at, bodyY + 0.06, s * W * 0.502, doorW, 1.94, 0.05, GLASS);
+      b.box(at, bodyY + 0.06, s * W * 0.507, 0.06, 1.94, 0.04, TRIM);   // leaf split
+    }
+    for (let i = 0; i < bays; i++) {
+      const at = -L * 0.42 + (L * 0.84) * ((i + 0.5) / bays);
+      if (doors.some(d => Math.abs(d - at) < (doorW + bayW) / 2 + 0.1)) continue;
+      b.box(at, bodyY + 0.42, s * W * 0.5, bayW, 0.82, 0.05, GLASS);
+    }
+  }
+  // Windscreen and rear window, full width.
+  b.box(L * 0.49, bodyY + 0.34, 0, 0.07, 1.0, W * 0.9, GLASS);
+  b.box(-L * 0.49, bodyY + 0.34, 0, 0.07, 0.9, W * 0.9, GLASS);
+  b.box(L * 0.5, floor + 0.34, 0, 0.09, 0.3, W * 0.95, TRIM);
+  b.box(-L * 0.5, floor + 0.34, 0, 0.09, 0.3, W * 0.95, TRIM);
+  for (const s of [-1, 1]) b.box(L * 0.44, bodyY + 0.78, s * W * 0.57, 0.09, 0.3, 0.1, TRIM);
+
+  for (const ax of [L * 0.33, -L * 0.24, -L * 0.38]) {
+    for (const s of [-1, 1]) b.wheel(ax, wheelR, s * W * 0.45, wheelR, W * 0.13);
+  }
+  return b.build();
+}
+
 export class City {
   constructor() {
     this.group = new THREE.Group();
@@ -293,6 +549,7 @@ export class City {
 
     this.cars = [];
     this.carParts = null;
+    this.vehicleMeshes = null;
     this.litWindows = null;
     this.roomsLit = null;
     this.bulbs = null;
@@ -302,6 +559,8 @@ export class City {
     this.precipitation = null;
     this.drops = [];
     this.junctions = [];
+    this.signals = [];
+    this.signalLamps = null;
     this.roadX = [];
     this.roadZ = [];
     this.key = null;
@@ -415,6 +674,21 @@ export class City {
         new THREE.MeshStandardMaterial({ color: LAMP_POLE_COLOR, roughness: 0.7, metalness: 0.3 }),
         { colored: false }
       ),
+      signalPoles: new InstanceSet(
+        new THREE.CylinderGeometry(0.06, 0.08, 1, 6),
+        new THREE.MeshStandardMaterial({ color: SIGNAL_POLE_COLOR, roughness: 0.6, metalness: 0.4 }),
+        { colored: false }
+      ),
+      signalHousings: new InstanceSet(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({ color: SIGNAL_HOUSING_COLOR, roughness: 0.7 }),
+        { colored: false }
+      ),
+      signalDark: new InstanceSet(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({ color: SIGNAL_DARK, roughness: 0.5 }),
+        { colored: false }
+      ),
       lampHeads: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
         new THREE.MeshStandardMaterial({
@@ -440,15 +714,18 @@ export class City {
           // buildings with rooms behind the windows. Further out the fog has
           // them, and a solid block with flat windows is indistinguishable.
           const near = Math.abs(gx) <= 1 && Math.abs(gz) <= 1;
-          this._blockBuildings(sets, bx, bz, block, rnd, near);
+          this._blockBuildings(sets, bx, bz, block, rnd, near, gx, gz);
         }
         this._blockTrees(sets, bx, bz, block, rnd);
       }
     }
 
+    this._layoutRoads(cx, cz, span);
     this._roadMarkings(sets.flats, cx, cz, block, span);
+    this._trafficSignals(sets.signalPoles, sets.signalHousings, sets.signalDark, cx, cz);
     this._streetLamps(sets.poles, sets.lampHeads, cx, cz, block, span);
     this._buildTraffic(cx, cz, span, reach, rnd);
+    this._buildSignalLamps();
     this._buildPrecipitation(rnd);
 
     sets.facades.build(this.group, "city-facades");
@@ -463,6 +740,9 @@ export class City {
     sets.canopies.build(this.group, "city-tree-canopies");
     sets.poles.build(this.group, "city-lamp-poles");
     this.lampHeads = sets.lampHeads.build(this.group, "city-lamp-heads");
+    sets.signalPoles.build(this.group, "city-signal-poles");
+    sets.signalHousings.build(this.group, "city-signal-housings");
+    sets.signalDark.build(this.group, "city-signal-lenses");
 
     this.group.traverse(node => {
       if (node.isInstancedMesh) {
@@ -557,7 +837,7 @@ export class City {
   /// One slab layer of a block, as up to four strips around an optional hole.
   /// The room's own plot is the hole: paving over it would push pavement up
   /// through the floor of a ground-floor room.
-  _padLayer(flats, rect, hole, top, height, color) {
+  _padLayer(flats, rect, hole, top, height, color, holeGrow = 0) {
     const { x0, x1, z0, z1 } = rect;
     const strip = (ax0, ax1, az0, az1) => {
       const w = ax1 - ax0;
@@ -569,10 +849,14 @@ export class City {
       strip(x0, x1, z0, z1);
       return;
     }
-    const hx0 = Math.max(x0, Math.min(x1, hole.x0));
-    const hx1 = Math.max(x0, Math.min(x1, hole.x1));
-    const hz0 = Math.max(z0, Math.min(z1, hole.z0));
-    const hz1 = Math.max(z0, Math.min(z1, hole.z1));
+    // Each layer cuts its hole a little differently. Cut them all to exactly
+    // the same edge and the kerb strip and the pavement strip share a vertical
+    // face right along the boundary of the room's own plot — which is a face
+    // you look straight at from a ground-floor room.
+    const hx0 = Math.max(x0, Math.min(x1, hole.x0 - holeGrow));
+    const hx1 = Math.max(x0, Math.min(x1, hole.x1 + holeGrow));
+    const hz0 = Math.max(z0, Math.min(z1, hole.z0 - holeGrow));
+    const hz1 = Math.max(z0, Math.min(z1, hole.z1 + holeGrow));
     strip(x0, x1, z0, hz0);
     strip(x0, x1, hz1, z1);
     strip(x0, hx0, hz0, hz1);
@@ -588,7 +872,7 @@ export class City {
     const inset = 0.35;
     this._padLayer(flats, {
       x0: rect.x0 + inset, x1: rect.x1 - inset, z0: rect.z0 + inset, z1: rect.z1 - inset,
-    }, hole, PAVEMENT_Y - 0.005, KERB_HEIGHT, SIDEWALK_COLOR);
+    }, hole, PAVEMENT_Y - 0.005, KERB_HEIGHT, SIDEWALK_COLOR, 0.03);
     if (!hole) {
       this._padLayer(flats, {
         x0: rect.x0 + SIDEWALK, x1: rect.x1 - SIDEWALK,
@@ -603,7 +887,7 @@ export class City {
   /// builds them hollow, with rooms behind the windows; without it they are
   /// solid blocks with windows painted on, which is all the fog lets you see
   /// further out.
-  _blockBuildings(sets, bx, bz, block, rnd, detailed) {
+  _blockBuildings(sets, bx, bz, block, rnd, detailed, gx, gz) {
     const core = block - SIDEWALK * 2;
     const cols = rnd() < 0.5 ? 1 : 2;
     const rows = rnd() < 0.45 ? 1 : 2;
@@ -622,7 +906,20 @@ export class City {
         const z = bz - core / 2 + cellD * (j + 0.5);
         const color = FACADE_COLORS[Math.floor(rnd() * FACADE_COLORS.length)];
         if (detailed) {
-          this._hollowBuilding(sets, x, z, w, d, storeys, PAVEMENT_Y, color, rnd);
+          // Which way the front door faces: away from the middle of its own
+          // block, towards the nearest street.
+          const offX = x - bx;
+          const offZ = z - bz;
+          const street = Math.abs(offX) > Math.abs(offZ)
+            ? { nx: Math.sign(offX) || 1, nz: 0 }
+            : { nx: 0, nz: Math.sign(offZ) || 1 };
+          // Numbered the way Manhattan is: the hundred comes from how far up
+          // the grid the block is, and the last digits run along it, odd on
+          // one side of the street and even on the other.
+          const hundred = (gz + GRID_RADIUS + 1) * 100;
+          const parity = ((gx + GRID_RADIUS) % 2 + 2) % 2;
+          const number = hundred + (i * 2 + j) * 2 + parity;
+          this._hollowBuilding(sets, x, z, w, d, storeys, PAVEMENT_Y, color, rnd, street, number);
         } else {
           sets.facades.add(boxMatrix(x, PAVEMENT_Y + h / 2, z, w, h, d), color);
           this._facadeWindows(sets.darkGlass, sets.litGlass, x, z, w, d, storeys, PAVEMENT_Y, rnd);
@@ -641,7 +938,7 @@ export class City {
   /// where the depth comes from. Looking along a facade, the rooms slide past
   /// their openings exactly the way real ones do, which no amount of painted-on
   /// glass achieves.
-  _hollowBuilding(sets, x, z, w, d, storeys, baseY, color, rnd) {
+  _hollowBuilding(sets, x, z, w, d, storeys, baseY, color, rnd, street, number) {
     const h = storeys * FLOOR_HEIGHT;
     const t = CITY_WALL_T;
     // Rooms are shallower in a small building, so that the ones behind facing
@@ -684,6 +981,15 @@ export class City {
         for (let i = 1; i <= count; i++) centres.push(-half + step * i);
       }
 
+      // The street door replaces the ground-floor opening of the middle
+      // column on the wall that faces the street, and the masonry beneath it
+      // is simply not built — which is what makes it a doorway rather than a
+      // picture of one.
+      const onStreet = street && face.nx === street.nx && face.nz === street.nz;
+      const doorAt = onStreet && centres.length && rowsY.length
+        ? Math.floor((centres.length - 1) / 2)
+        : -1;
+
       // Piers: the full-height masonry between and beside the window columns.
       let cursor = -span / 2;
       const piers = [];
@@ -705,7 +1011,8 @@ export class City {
 
       // Bands: within each window column, the masonry above and below the
       // openings — sill to sill, and the parapet band over the top row.
-      for (const c of centres) {
+      for (let ci = 0; ci < centres.length; ci++) {
+        const c = centres[ci];
         const segs = [];
         let y = baseY;
         for (const [y0, y1] of rowsY) {
@@ -713,6 +1020,9 @@ export class City {
           y = y1;
         }
         segs.push([y, baseY + h]);
+        // Drop the spandrel under the first window of the door column, so the
+        // opening runs from the pavement to the head of that window.
+        if (ci === doorAt) segs.shift();
         for (const [a, b] of segs) {
           if (b - a <= 0.02) continue;
           sets.facades.add(boxMatrix(
@@ -729,8 +1039,11 @@ export class City {
       // drawn from the inside — its front face is culled, and what you see
       // through the window is its back and side walls.
       const roomH = FLOOR_HEIGHT - 0.35;
-      for (const c of centres) {
+      for (let ci = 0; ci < centres.length; ci++) {
+        const c = centres[ci];
         for (let r = 0; r < rowsY.length; r++) {
+          // The ground floor of the door column is the lobby, not a room.
+          if (ci === doorAt && r === 0) continue;
           const lit = rnd() < 0.34;
           const roomCY = baseY + r * FLOOR_HEIGHT + roomH / 2 + 0.12;
           const back = other / 2 - depth / 2;
@@ -755,6 +1068,18 @@ export class City {
           }
         }
       }
+
+      if (doorAt >= 0) {
+        const c = centres[doorAt];
+        const outer = other / 2;
+        this._entrance(
+          sets,
+          alongX ? x + c : x + face.nx * outer,
+          alongX ? z + face.nz * outer : z + c,
+          face.nx, face.nz, alongX,
+          baseY, rowsY[0][1], number
+        );
+      }
     }
 
     // A solid middle, so the building is not a lantern you can see straight
@@ -764,6 +1089,105 @@ export class City {
     const coreD = d - 2 * (depth + CORE_CLEAR);
     if (coreW > 0.2 && coreD > 0.2) {
       sets.facades.add(boxMatrix(x, baseY + h / 2, z, coreW, h, coreD), CORE_COLOR);
+    }
+  }
+
+  /// A street door, with the number over it. The opening is a real one — the
+  /// masonry below the ground-floor window is simply not built for this column
+  /// — so the recess behind it has the same depth the windows do, and the
+  /// stone surround and canopy stand proud of the facade in front of it.
+  ///
+  /// (ox, oz) is the middle of the opening, on the plane of the outer wall.
+  _entrance(sets, ox, oz, nx, nz, alongX, baseY, openTop, number) {
+    const height = openTop - baseY;
+    if (height < 1.6) return;
+    const wide = alongX ? WIN_W + 0.5 : 1.4;      // extents along / into the wall
+    const deep = alongX ? 1.4 : WIN_W + 0.5;
+    const midY = baseY + height / 2;
+    // Half a step out from the wall, per element, so nothing shares a plane.
+    const at = (out) => ({ x: ox + nx * out, z: oz + nz * out });
+
+    // The lobby behind the door, drawn from the inside like the rooms are.
+    // Every piece here is deliberately off the wall's own planes. The
+    // surround wraps the opening edge rather than starting exactly on it, the
+    // lintel overlaps the masonry above instead of butting into it, and the
+    // lobby stops short of that masonry — three separate coplanar clashes the
+    // first version of this shipped with, all of which flicker.
+    const back = at(-0.7);
+    // Its floor sits a few centimetres above the pavement rather than exactly
+    // on it: the block's paving slab runs on under the buildings, and its top
+    // surface is at that same level.
+    sets.roomsDark.add(boxMatrix(back.x, midY - 0.06, back.z, wide, height - 0.20, deep));
+
+    // Glazed leaves, set back in the opening.
+    const leaf = at(-0.09);
+    sets.facades.add(boxMatrix(
+      leaf.x, midY - 0.06, leaf.z,
+      alongX ? WIN_W - 0.06 : 0.06, height - 0.28, alongX ? 0.06 : WIN_W - 0.06
+    ), ENTRANCE_COLOR);
+
+    // Stone surround: two jambs and a lintel, standing proud of the wall.
+    const jamb = at(0.06);
+    const side = alongX ? WIN_W / 2 + 0.09 : 0;
+    const sideZ = alongX ? 0 : WIN_W / 2 + 0.09;
+    for (const s of [-1, 1]) {
+      sets.facades.add(boxMatrix(
+        jamb.x + s * side, midY, jamb.z + s * sideZ,
+        alongX ? 0.30 : 0.26, height + 0.2, alongX ? 0.26 : 0.30
+      ), SURROUND_COLOR);
+    }
+    // Wider and deeper than the jambs it sits on, so the two stone pieces
+    // meet in a rebate rather than sharing four faces at the corners.
+    const lintel = at(0.10);
+    sets.facades.add(boxMatrix(
+      lintel.x, baseY + height + 0.08, lintel.z,
+      alongX ? WIN_W + 0.58 : 0.30, 0.28, alongX ? 0.30 : WIN_W + 0.58
+    ), SURROUND_COLOR);
+
+    // Canopy over the door, and a threshold slab under it.
+    const canopy = at(0.42);
+    sets.roofs.add(boxMatrix(
+      canopy.x, baseY + height + 0.34, canopy.z,
+      alongX ? WIN_W + 0.8 : 1.0, 0.14, alongX ? 1.0 : WIN_W + 0.8
+    ), SURROUND_COLOR);
+    const sill = at(0.22);
+    sets.facades.add(boxMatrix(
+      sill.x, baseY + 0.055, sill.z,
+      alongX ? WIN_W + 0.5 : 0.7, 0.09, alongX ? 0.7 : WIN_W + 0.5
+    ), STEP_COLOR);
+
+    // The number, over the canopy. Manhattan puts it where you can read it
+    // from across the street, so it goes above the door rather than beside it.
+    const text = String(number);
+    const cells = text.length * 4 - 1;
+    const plateW = cells * DIGIT_CELL + 0.14;
+    const plateH = 5 * DIGIT_CELL + 0.1;
+    const plateY = baseY + height + 0.72;
+    const plate = at(0.09);
+    sets.facades.add(boxMatrix(
+      plate.x, plateY, plate.z,
+      alongX ? plateW : 0.04, plateH, alongX ? 0.04 : plateW
+    ), NUMBER_PLATE);
+
+    const glyph = at(0.13);
+    for (let i = 0; i < text.length; i++) {
+      const rows = DIGIT_ROWS[text[i]];
+      if (!rows) continue;
+      const originCell = -cells / 2 + i * 4;
+      for (let r = 0; r < 5; r++) {
+        for (let col = 0; col < 3; col++) {
+          if (rows[r][col] !== "1") continue;
+          const alongOff = (originCell + col + 0.5) * DIGIT_CELL;
+          const upOff = (2 - r) * DIGIT_CELL;
+          sets.facades.add(boxMatrix(
+            alongX ? glyph.x + alongOff : glyph.x,
+            plateY + upOff,
+            alongX ? glyph.z : glyph.z + alongOff,
+            alongX ? DIGIT_CELL * 0.86 : 0.03, DIGIT_CELL * 0.86,
+            alongX ? 0.03 : DIGIT_CELL * 0.86
+          ), NUMBER_COLOR);
+        }
+      }
     }
   }
 
@@ -856,31 +1280,177 @@ export class City {
 
   // MARK: - Streets
 
-  /// Dashed centre lines down every road, plus zebra crossings at the kerbs.
+  /// Road paint, laid out from the junction grid rather than run blindly from
+  /// one side of the city to the other. Lane dashes stop short of every
+  /// junction, each approach gets a stop line, and the crossing sits between
+  /// the line and the carriageway — which is the order a driver meets them in.
   _roadMarkings(flats, cx, cz, block, span) {
     const y = ROAD_Y + 0.02;
-    const half = GRID_RADIUS * span + block / 2 + ROAD_WIDTH / 2;
+    const halfRoad = ROAD_WIDTH / 2;
+    const outer = GRID_RADIUS * span + block / 2 + ROAD_WIDTH / 2;
+
+    // How much of each approach is given over to the crossing and its line.
+    const keepClear = halfRoad + CROSS_GAP + CROSS_DEPTH + STOP_LINE_W + 0.3;
+
     const dash = 2.2;
     const gap = 2.6;
-    for (let g = -GRID_RADIUS; g <= GRID_RADIUS + 1; g++) {
-      const line = cz + (g - 0.5) * span;
-      for (let p = -half; p < half; p += dash + gap) {
-        flats.add(boxMatrix(cx + p + dash / 2, y, line, dash, 0.04, 0.18), MARKING_COLOR);
+    /// Centre dashes along one stretch of road, between two junctions.
+    const dashes = (from, to, alongX, fixed) => {
+      const usable = to - from;
+      if (usable < dash) return;
+      // Centre the pattern in the stretch so it does not start with a stub.
+      const pitch = dash + gap;
+      const n = Math.max(1, Math.floor((usable + gap) / pitch));
+      const used = n * pitch - gap;
+      let p = from + (usable - used) / 2;
+      for (let i = 0; i < n; i++) {
+        const at = p + dash / 2;
+        flats.add(alongX
+          ? boxMatrix(at, y, fixed, dash, 0.04, 0.16)
+          : boxMatrix(fixed, y, at, 0.16, 0.04, dash), MARKING_COLOR);
+        p += pitch;
       }
-      const lineX = cx + (g - 0.5) * span;
-      for (let p = -half; p < half; p += dash + gap) {
-        flats.add(boxMatrix(lineX, y, cz + p + dash / 2, 0.18, 0.04, dash), MARKING_COLOR);
+    };
+
+    for (const [roads, crossRoads, alongX] of [
+      [this.roadZ, this.roadX, true],
+      [this.roadX, this.roadZ, false],
+    ]) {
+      for (const fixed of roads) {
+        // Stretches between consecutive junctions, plus the two open ends.
+        const stops = crossRoads.slice().sort((a, b) => a - b);
+        const edges = [-outer + (alongX ? cx : cz), ...stops, outer + (alongX ? cx : cz)];
+        for (let i = 0; i < edges.length - 1; i++) {
+          const from = edges[i] + (i === 0 ? 0 : keepClear);
+          const to = edges[i + 1] - (i === edges.length - 2 ? 0 : keepClear);
+          dashes(from, to, alongX, fixed);
+        }
       }
     }
-    // Zebra crossings on the approaches to the room's own block.
-    const edge = block / 2 + 1.4;
-    for (let i = 0; i < 6; i++) {
-      const o = -3.4 + i * 1.35;
-      flats.add(boxMatrix(cx + o, y, cz + edge, 0.55, 0.04, 3.2), MARKING_COLOR);
-      flats.add(boxMatrix(cx + o, y, cz - edge, 0.55, 0.04, 3.2), MARKING_COLOR);
-      flats.add(boxMatrix(cx + edge, y, cz + o, 3.2, 0.04, 0.55), MARKING_COLOR);
-      flats.add(boxMatrix(cx - edge, y, cz + o, 3.2, 0.04, 0.55), MARKING_COLOR);
+
+    // Junction furniture: a crossing and a stop line on every arm.
+    for (const rx of this.roadX) {
+      for (const rz of this.roadZ) {
+        for (const arm of [{ dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }]) {
+          this._crossing(flats, rx, rz, arm, y);
+        }
+      }
     }
+  }
+
+  /// One arm of one junction: the crossing, and the line traffic stops at.
+  /// `arm` points outwards from the junction along the road being crossed.
+  _crossing(flats, rx, rz, arm, y) {
+    const alongX = arm.dx !== 0;
+    const dir = alongX ? arm.dx : arm.dz;
+    const halfRoad = ROAD_WIDTH / 2;
+    // Distance out from the junction centre to the near and far edge of the
+    // crossing band, then the stop line beyond it.
+    const near = halfRoad + CROSS_GAP;
+    const far = near + CROSS_DEPTH;
+
+    // The bars run PARALLEL to the traffic, side by side across the road, so
+    // a pedestrian steps over each one in turn. That is what a crossing looks
+    // like; bars laid across the traffic are a ladder, not a crossing.
+    const usable = ROAD_WIDTH - 0.5;
+    const bars = Math.max(3, Math.round(usable / (CROSS_BAR + CROSS_BAR_GAP)));
+    const pitch = usable / bars;
+    for (let i = 0; i < bars; i++) {
+      const off = -usable / 2 + pitch * (i + 0.5);
+      const at = dir * (near + CROSS_DEPTH / 2);
+      flats.add(alongX
+        ? boxMatrix(rx + at, y, rz + off, CROSS_DEPTH, 0.04, CROSS_BAR)
+        : boxMatrix(rx + off, y, rz + at, CROSS_BAR, 0.04, CROSS_DEPTH), MARKING_COLOR);
+    }
+
+    // The stop line covers the approaching half of the carriageway only —
+    // traffic keeps left, so that is the half on the near side of the arm.
+    const lane = ROAD_WIDTH / 4;
+    const side = alongX ? -arm.dx : arm.dz;
+    const at = dir * (far + STOP_LINE_W / 2);
+    flats.add(alongX
+      ? boxMatrix(rx + at, y, rz + side * lane, STOP_LINE_W, 0.04, ROAD_WIDTH / 2 - 0.25)
+      : boxMatrix(rx + side * lane, y, rz + at, ROAD_WIDTH / 2 - 0.25, 0.04, STOP_LINE_W),
+      MARKING_COLOR);
+  }
+
+  /// A signal head on every approach of every junction, showing what the model
+  /// is actually doing. The lights are not decoration timed to look plausible:
+  /// they read the same phase the vehicles obey, so what you see on the pole is
+  /// why the queue in front of it is stopped.
+  _trafficSignals(poles, housings, darkLamps, cx, cz) {
+    this.signals = [];
+    const poleH = SIGNAL_HEIGHT;
+    const reach = ROAD_WIDTH / 2 + 1.6;
+    for (let ix = 0; ix < this.roadX.length; ix++) {
+      for (let iz = 0; iz < this.roadZ.length; iz++) {
+        const rx = this.roadX[ix];
+        const rz = this.roadZ[iz];
+        for (const arm of [{ dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }]) {
+          const alongX = arm.dx !== 0;
+          const axis = alongX ? "x" : "z";
+          // The signal faces the traffic coming IN along this arm, and stands
+          // on that traffic's left — which is the kerb side where traffic
+          // keeps left.
+          const dir = -(alongX ? arm.dx : arm.dz);      // direction of approach
+          const side = alongX ? -dir : dir;
+          const px = alongX ? rx + arm.dx * reach : rx + side * (ROAD_WIDTH / 2 + 1.1);
+          const pz = alongX ? rz + side * (ROAD_WIDTH / 2 + 1.1) : rz + arm.dz * reach;
+          const heading = alongX ? (dir > 0 ? 0 : Math.PI) : (dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+
+          poles.add(boxMatrix(px, PAVEMENT_Y + poleH / 2, pz, 1, poleH, 1));
+          const headY = PAVEMENT_Y + poleH + SIGNAL_HEAD_H / 2 - 0.1;
+          housings.add(boxMatrix(px, headY, pz, 0.34, SIGNAL_HEAD_H, 0.34, -heading));
+
+          // The three dark lenses, always there. The lit one is drawn a
+          // centimetre proud of its lens so the two never share a plane.
+          const faceOut = 0.17;
+          const fx = Math.cos(heading);
+          const fz = Math.sin(heading);
+          const lamps = [];
+          for (let k = 0; k < 3; k++) {
+            const ly = headY + SIGNAL_HEAD_H / 2 - 0.16 - k * 0.26;
+            darkLamps.add(boxMatrix(px + fx * faceOut, ly, pz + fz * faceOut, 0.15, 0.15, 0.15, -heading));
+            lamps.push({ x: px + fx * (faceOut + 0.03), y: ly, z: pz + fz * (faceOut + 0.03) });
+          }
+          this.signals.push({ axis, ix, iz, heading, lamps });
+        }
+      }
+    }
+  }
+
+  /// Lights the lamp the phase calls for, and only that one. Counts move
+  /// rather than lamps being drawn at zero size or hidden inside the housing.
+  _writeSignalLamps() {
+    const parts = this.signalLamps;
+    if (!parts || !this.signals.length) return;
+    let red = 0;
+    let amber = 0;
+    let green = 0;
+    for (const s of this.signals) {
+      const state = this._signalState(s.axis, s.ix, s.iz, this._clock);
+      const lamp = state === "green" ? s.lamps[2] : state === "amber" ? s.lamps[1] : s.lamps[0];
+      const mesh = state === "green" ? parts.green : state === "amber" ? parts.amber : parts.red;
+      const slot = state === "green" ? green++ : state === "amber" ? amber++ : red++;
+      mesh.setMatrixAt(slot, boxMatrix(lamp.x, lamp.y, lamp.z, 0.16, 0.16, 0.16, -s.heading, _m));
+    }
+    parts.red.count = red;
+    parts.amber.count = amber;
+    parts.green.count = green;
+    parts.red.instanceMatrix.needsUpdate = true;
+    parts.amber.instanceMatrix.needsUpdate = true;
+    parts.green.instanceMatrix.needsUpdate = true;
+  }
+
+  /// What one approach's signal is showing. Derived from the same phase the
+  /// vehicles read, so the two cannot disagree.
+  _signalState(axis, ix, iz, t) {
+    if (this._isGreen(axis, ix, iz, t)) return "green";
+    const local = (((t + this._junctionOffset(ix, iz)) % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
+    const half = LIGHT_CYCLE / 2;
+    const amberFrom = axis === "x" ? half - LIGHT_AMBER - LIGHT_CLEAR : LIGHT_CYCLE - LIGHT_AMBER - LIGHT_CLEAR;
+    if (local >= amberFrom && local < amberFrom + LIGHT_AMBER) return "amber";
+    return "red";
   }
 
   _streetLamps(poles, heads, cx, cz, block, span) {
@@ -916,16 +1486,22 @@ export class City {
     return axis === "x" ? { x: dir, z: 0 } : { x: 0, z: dir };
   }
 
-  _buildTraffic(cx, cz, span, reach, rnd) {
-    // Every road in the grid, as a coordinate and an index. Lights are timed
-    // off the index, so neighbouring junctions are deliberately out of step.
+  /// Every road in the grid, as a coordinate and an index. The paint, the
+  /// signals and the traffic all read this, so it is worked out once up front
+  /// rather than by each of them separately — three descriptions of the same
+  /// street grid is three chances for them to disagree about where a junction
+  /// is. Lights are timed off the index, so neighbouring junctions are
+  /// deliberately out of step.
+  _layoutRoads(cx, cz, span) {
     this.roadX = [];
     this.roadZ = [];
     for (let g = -GRID_RADIUS; g <= GRID_RADIUS + 1; g++) {
       this.roadX.push(cx + (g - 0.5) * span);
       this.roadZ.push(cz + (g - 0.5) * span);
     }
+  }
 
+  _buildTraffic(cx, cz, span, reach, rnd) {
     // A lane object per road per direction. Every lane exists even where no
     // vehicle starts, because a turn has to have somewhere to turn into.
     this.lanes = new Map();
@@ -1042,18 +1618,45 @@ export class City {
   /// per-frame work is pure matrix writing. The lamps are the exception: they
   /// are packed each frame and the instance count moved, so a lamp that is off
   /// is simply not drawn rather than drawn at zero size.
+  /// One InstancedMesh per kind of vehicle, each holding the whole merged
+  /// body. A vehicle is then one matrix a frame instead of eight, which is how
+  /// the detail pays for itself. The lamps are the exception: they come and go
+  /// independently of the body, so they keep their own meshes and their counts
+  /// move as lamps light and go out.
   _allocateVehicleMeshes() {
     const n = this.cars.length;
     if (!n) return;
-    let boxes = 0;
-    let wheels = 0;
-    for (const v of this.cars) {
-      v.boxStart = boxes;
-      v.boxCount = v.kind === "truck" ? 2 : 1;
-      boxes += v.boxCount;
-      v.wheelStart = wheels;
-      v.wheelCount = v.axles * 2;
-      wheels += v.wheelCount;
+
+    const geometryFor = {
+      car: () => buildCarGeometry(VEHICLE_REF.car.L, VEHICLE_REF.car.W, VEHICLE_REF.car.wheelR),
+      truck: () => buildTruckGeometry(VEHICLE_REF.truck.L, VEHICLE_REF.truck.W, VEHICLE_REF.truck.wheelR),
+      bus: () => buildBusGeometry(VEHICLE_REF.bus.L, VEHICLE_REF.bus.W, VEHICLE_REF.bus.wheelR),
+    };
+
+    const c = new THREE.Color();
+    this.vehicleMeshes = {};
+    for (const kind of Object.keys(geometryFor)) {
+      const list = this.cars.filter(v => v.kind === kind);
+      if (!list.length) continue;
+      const geo = geometryFor[kind]();
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.42, metalness: 0.22,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+      mesh.name = "city-vehicles-" + kind;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+      this.group.add(mesh);
+      this._disposables.push(geo, mat);
+      list.forEach((v, i) => {
+        v.slot = i;
+        // Paint multiplies the body's own vertex colours: white panels take
+        // it, glass and tyres are dark enough to stay dark under it.
+        mesh.setColorAt(i, c.setHex(v.color));
+      });
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      this.vehicleMeshes[kind] = mesh;
     }
 
     const make = (geo, mat, count) => {
@@ -1061,72 +1664,50 @@ export class City {
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.frustumCulled = false;
+      mesh.count = 0;
       this.group.add(mesh);
       this._disposables.push(geo, mat);
       return mesh;
     };
-
     const lamp = (color, emissive, intensity) => new THREE.MeshStandardMaterial({
       color, emissive, emissiveIntensity: intensity, roughness: 0.4,
     });
-
     this.carParts = {
-      body: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.25 }),
-        n
-      ),
-      box: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.2 }),
-        boxes
-      ),
-      wheel: make(
-        new THREE.CylinderGeometry(1, 1, 1, 8),
-        new THREE.MeshStandardMaterial({ color: TYRE_COLOR, roughness: 0.9 }),
-        wheels
-      ),
-      head: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        lamp(0xfff3d0, 0xffe9b8, 0),
-        n * 2
-      ),
-      tail: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        lamp(0x4a1210, 0xd8241a, 1.1),
-        n * 2
-      ),
-      brake: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        lamp(0x5a1512, 0xff2a18, 3.0),
-        n * 2
-      ),
-      indicator: make(
-        new THREE.BoxGeometry(1, 1, 1),
-        lamp(0x5a3a10, 0xffa621, 3.0),
-        n * 2
-      ),
+      head: make(new THREE.BoxGeometry(1, 1, 1), lamp(0xfff3d0, 0xffe9b8, 0), n * 2),
+      tail: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x4a1210, 0xd8241a, 1.1), n * 2),
+      brake: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x5a1512, 0xff2a18, 3.0), n * 2),
+      indicator: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x5a3a10, 0xffa621, 3.0), n * 2),
     };
     this.headlights = this.carParts.head;
-
-    // Body colour, and the secondary boxes: a car's roof takes the body
-    // colour, a bus's window band is glass, a truck gets a dark cab roof and a
-    // pale box body.
-    const c = new THREE.Color();
-    for (let i = 0; i < n; i++) {
-      const v = this.cars[i];
-      this.carParts.body.setColorAt(i, c.setHex(v.color));
-      if (v.kind === "truck") {
-        this.carParts.box.setColorAt(v.boxStart, c.setHex(GLASS_COLOR));
-        this.carParts.box.setColorAt(v.boxStart + 1, c.setHex(v.color));
-      } else if (v.kind === "bus") {
-        this.carParts.box.setColorAt(v.boxStart, c.setHex(GLASS_COLOR));
-      } else {
-        this.carParts.box.setColorAt(v.boxStart, c.setHex(GLASS_COLOR));
-      }
-    }
-    if (this.carParts.body.instanceColor) this.carParts.body.instanceColor.needsUpdate = true;
-    if (this.carParts.box.instanceColor) this.carParts.box.instanceColor.needsUpdate = true;
+  }
+  /// One mesh per colour, each big enough for every signal in the city, since
+  /// nothing stops a whole grid showing red together.
+  _buildSignalLamps() {
+    const n = this.signals.length;
+    if (!n) { this.signalLamps = null; return; }
+    const make = (color) => {
+      const geo = new THREE.BoxGeometry(1, 1, 1);
+      const mat = new THREE.MeshStandardMaterial({
+        color, emissive: color, emissiveIntensity: 1.6, roughness: 0.35,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+      mesh.count = 0;
+      this.group.add(mesh);
+      this._disposables.push(geo, mat);
+      return mesh;
+    };
+    this.signalLamps = {
+      red: make(SIGNAL_RED),
+      amber: make(SIGNAL_AMBER),
+      green: make(SIGNAL_GREEN),
+    };
+    this.signalLamps.red.name = "city-signal-red";
+    this.signalLamps.amber.name = "city-signal-amber";
+    this.signalLamps.green.name = "city-signal-green";
+    this._writeSignalLamps();
   }
 
   /// Junction timing. The offset is derived from the road indices so that
@@ -1203,8 +1784,9 @@ export class City {
     return {
       index: bestIndex,
       coord: coords[bestIndex],
-      // To the near edge of the carriageway, less the vehicle's own nose.
-      distance: bestDist - ROAD_WIDTH / 2 - v.length / 2,
+      // To the painted stop line, less the vehicle's own nose — so the
+      // queue pulls up where the paint says, leaving the crossing clear.
+      distance: bestDist - STOP_LINE_AT - v.length / 2,
     };
   }
 
@@ -1494,8 +2076,8 @@ export class City {
   }
 
   _writeCarMatrices() {
-    if (!this.carParts) return;
-    const { body, box, wheel, head, tail, brake, indicator } = this.carParts;
+    if (!this.carParts || !this.vehicleMeshes) return;
+    const { head, tail, brake, indicator } = this.carParts;
     const night = 1 - clamp01(this._dayAmount);
     const lightsOn = night > 0.25;
     const blinkOn = ((this._clock * BLINK_HZ) % 1) < 0.55;
@@ -1506,73 +2088,34 @@ export class City {
 
     for (let i = 0; i < this.cars.length; i++) {
       const v = this.cars[i];
+      const mesh = this.vehicleMeshes[v.kind];
+      if (!mesh) continue;
+      const ref = VEHICLE_REF[v.kind];
       const rotY = -v.heading;
       const fx = Math.cos(v.heading);
       const fz = Math.sin(v.heading);
       const rx = -fz;          // the vehicle's right-hand side
       const rz = fx;
+
+      // The body is modelled at a reference length and stretched to this
+      // vehicle's own; everything else about it is already in the mesh.
+      mesh.setMatrixAt(v.slot, boxMatrix(
+        v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1, rotY, _m
+      ));
+
+      // Lamps, arranged the way a real car's are: a cluster at each of the
+      // four corners. The white headlight and the red tail light sit outboard
+      // where the corner is, and the amber indicator sits immediately inboard
+      // of each — one housing, read as one unit. Nothing is drawn at zero
+      // size; a lamp that is off is simply not written.
       const L = v.length;
       const W = v.width;
-      const wheelR = v.wheelR;
-      const floor = ROAD_Y + wheelR * 0.55;
-
-      body.setMatrixAt(i, boxMatrix(v.x, floor + v.bodyH / 2, v.z, L, v.bodyH, W, rotY, _m));
-
-      // Secondary boxes: a cabin, a bus's window band, or a truck's cab and
-      // its box body.
-      const bodyTop = floor + v.bodyH;
-      if (v.kind === "truck") {
-        const cabAt = L * 0.34;
-        box.setMatrixAt(v.boxStart, boxMatrix(
-          v.x + fx * cabAt, bodyTop + v.roofH / 2, v.z + fz * cabAt,
-          L * v.roofFrac, v.roofH, W * 0.94, rotY, _m
-        ));
-        const cargoAt = -L * 0.2;
-        box.setMatrixAt(v.boxStart + 1, boxMatrix(
-          v.x + fx * cargoAt, bodyTop + v.roofH * 0.62, v.z + fz * cargoAt,
-          L * 0.58, v.roofH * 1.24, W * 0.99, rotY, _m
-        ));
-      } else {
-        const at = v.kind === "bus" ? 0 : -L * 0.07;
-        const bandH = v.kind === "bus" ? 0.9 : v.roofH;
-        const bandY = v.kind === "bus" ? floor + v.bodyH * 0.66 : bodyTop + v.roofH / 2;
-        box.setMatrixAt(v.boxStart, boxMatrix(
-          v.x + fx * at, bandY, v.z + fz * at,
-          L * v.roofFrac, bandH, W * (v.kind === "bus" ? 1.01 : 0.87), rotY, _m
-        ));
-      }
-
-      // Wheels. A cylinder's axis is Y, so it is tipped a quarter turn to put
-      // the axle across the vehicle, then turned with the body.
-      const axleSpacing = v.axles === 2 ? [0.32, -0.32] : [0.36, -0.16, -0.32];
-      let w = 0;
-      for (const a of axleSpacing) {
-        for (const s of [-1, 1]) {
-          const px = v.x + fx * (L * a) + rx * (W * 0.46) * s;
-          const pz = v.z + fz * (L * a) + rz * (W * 0.46) * s;
-          _pos.set(px, ROAD_Y + wheelR, pz);
-          _euler.set(Math.PI / 2, rotY, 0, "YXZ");
-          _q.setFromEuler(_euler);
-          _scale.set(wheelR, W * 0.11, wheelR);
-          wheel.setMatrixAt(v.wheelStart + w, _m.compose(_pos, _q, _scale));
-          w++;
-        }
-      }
-
-      // Lamps, arranged the way a real car's are: a cluster at each of the four
-      // corners. The white headlight and the red tail light sit outboard where
-      // the corner is, and the amber indicator sits immediately inboard of each
-      // — one housing, read as one unit. Nothing is drawn at zero size; a lamp
-      // that is off is simply not written, and the instance count moves.
       const nose = L / 2 + 0.02;
       const back = -L / 2 - 0.02;
-      const lampY = floor + v.bodyH * 0.55;
-      const outer = W * 0.36;   // headlight / tail light, on the corner
-      const inner = W * 0.19;   // indicator, beside it in the same cluster
+      const lampY = ROAD_Y + ref.lampY;
+      const outer = W * 0.36;
+      const inner = W * 0.19;
 
-      // Headlights and tail lights are position lamps: both come on after
-      // dark and stay on. The tail light shares its housing with the brake
-      // light, so it gives way to it rather than being drawn underneath.
       if (lightsOn) {
         for (const s of [-1, 1]) {
           head.setMatrixAt(heads++, boxMatrix(
@@ -1591,9 +2134,6 @@ export class City {
           }
         }
       }
-
-      // Brake lights are the same lamp lit hard, and are meant to be visible
-      // in daylight as well — that is the whole point of them.
       if (v.braking) {
         for (const s of [-1, 1]) {
           brake.setMatrixAt(brakes++, boxMatrix(
@@ -1603,9 +2143,6 @@ export class City {
           ));
         }
       }
-
-      // Indicators: both lamps down the side being turned towards, front and
-      // rear, each one tucked in beside its cluster's main lamp.
       if (v.indicate !== 0 && blinkOn) {
         const s = v.indicate;   // +1 right-hand side, -1 left-hand side
         indicator.setMatrixAt(indicators++, boxMatrix(
@@ -1621,13 +2158,13 @@ export class City {
       }
     }
 
+    for (const kind of Object.keys(this.vehicleMeshes)) {
+      this.vehicleMeshes[kind].instanceMatrix.needsUpdate = true;
+    }
     head.count = heads;
     tail.count = tails;
     brake.count = brakes;
     indicator.count = indicators;
-    body.instanceMatrix.needsUpdate = true;
-    box.instanceMatrix.needsUpdate = true;
-    wheel.instanceMatrix.needsUpdate = true;
     head.instanceMatrix.needsUpdate = true;
     tail.instanceMatrix.needsUpdate = true;
     brake.instanceMatrix.needsUpdate = true;
@@ -1654,6 +2191,7 @@ export class City {
       for (const v of this.cars) this._driveVehicle(v, step);
       this._writeCarMatrices();
     }
+    this._writeSignalLamps();
     this._updatePrecipitation(step);
   }
 
@@ -1774,11 +2312,16 @@ export class City {
     this.group.clear();
     this.cars = [];
     this.carParts = null;
+    this.vehicleMeshes = null;
     this.lanes = new Map();
     this.junctions = [];
+    this.signals = [];
+    this.signalLamps = null;
     this.roadX = [];
     this.roadZ = [];
     this.drops = [];
+    this.signals = [];
+    this.signalLamps = null;
     this._turning = [];
     this.precipitation = null;
     this.terrain = null;

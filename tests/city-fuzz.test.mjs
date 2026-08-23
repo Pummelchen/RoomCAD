@@ -20,8 +20,15 @@ import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
 import { coplanarClashes } from "./harness/coplanar.mjs";
 
-const { City, BLOCK_SIZE, ROAD_WIDTH, GRID_RADIUS, ROOM_SLAB_THICKNESS, WEATHER_KINDS, seedFromString } =
-  await loadWebModule("city.js");
+const {
+  City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
+  ROOM_SLAB_THICKNESS, WEATHER_KINDS, seedFromString,
+} = await loadWebModule("city.js");
+
+// Derived rather than exported: the carriageway sits one kerb below the
+// pavement, and the pavement is the room's own floor datum.
+const ROAD_Y = -KERB_HEIGHT;
+const WIN_W = 1.25;   // one window opening, as city.js lays them out
 
 let passed = 0;
 let failed = 0;
@@ -273,7 +280,15 @@ check("nothing lands far outside the neighbourhood",
 // Checked over a range of building sizes, because the layout is derived from
 // them and a clash can exist at one size and not another.
 {
-  const inspected = ["city-facades", "city-rooms-dark", "city-rooms-lit", "city-roofs"];
+  // Every mesh, not a chosen few: the pavement slab turned out to share a
+  // plane with the floor of every ground-floor lobby, and that was only found
+  // once the check stopped looking at buildings alone.
+  const inspected = [
+    "city-facades", "city-rooms-dark", "city-rooms-lit", "city-roofs",
+    "city-ground-details", "city-windows-dark", "city-windows-lit", "city-bulbs",
+    "city-lamp-poles", "city-lamp-heads",
+    "city-signal-poles", "city-signal-housings", "city-signal-lenses",
+  ];
   let worst = null;
   let total = 0;
   for (const [w, l, seed] of [[9, 7, 2718], [4, 4, 11], [22, 6, 99], [14, 14, 4242], [6, 19, 555]]) {
@@ -541,6 +556,186 @@ for (const [w, l, label] of [
   check("after dark every vehicle shows exactly one rear lamp",
     lit === city.cars.length,
     `${parts().tail.count / 2} tail + ${parts().brake.count / 2} brake = ${lit} of ${city.cars.length}`);
+  city.dispose();
+}
+
+// ── Traffic signals ───────────────────────────────────────────────────────
+//
+// The lights are not decoration timed to look plausible: they read the same
+// phase the drivers obey. So the thing worth checking is that the two cannot
+// disagree, and that the sequence is one a real junction runs.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  check("every junction has a signal on every approach",
+    city.signals.length === city.roadX.length * city.roadZ.length * 4,
+    `${city.signals.length} for ${city.roadX.length}x${city.roadZ.length} junctions`);
+
+  // Walk one junction through two full cycles.
+  const s0 = city.signals[0];
+  const seen = [];
+  let last = "";
+  for (let f = 0; f < 70 * 60; f++) {
+    city.update(1 / 60, viewer);
+    const x = city._signalState("x", s0.ix, s0.iz, city._clock);
+    const z = city._signalState("z", s0.ix, s0.iz, city._clock);
+    const key = x + "/" + z;
+    if (key !== last) { seen.push({ t: city._clock, x, z }); last = key; }
+  }
+  const starts = seen.filter(e => e.x === "green");
+  check("the cycle is 30 seconds, as asked",
+    starts.length >= 2 && Math.abs((starts[1].t - starts[0].t) - 30) < 0.1,
+    starts.length >= 2 ? `${(starts[1].t - starts[0].t).toFixed(2)} s` : "never went green");
+  check("green gives way to amber before red, never straight to it",
+    seen.every((e, i) => !(i > 0 && seen[i - 1].x === "green" && e.x === "red")));
+  check("there is an all-red gap between the two directions",
+    seen.some(e => e.x === "red" && e.z === "red"));
+
+  // The dangerous failure: both directions green at the same junction.
+  let bothGreen = 0;
+  for (const s of city.signals) {
+    for (let t = 0; t < 60; t += 0.2) {
+      if (city._signalState("x", s.ix, s.iz, t) === "green"
+        && city._signalState("z", s.ix, s.iz, t) === "green") bothGreen++;
+    }
+  }
+  check("no junction ever shows green in both directions", bothGreen === 0, `${bothGreen} moments`);
+
+  // And exactly one lamp per signal is lit, always.
+  let wrong = 0;
+  for (let f = 0; f < 600; f++) {
+    city.update(1 / 60, viewer);
+    const lit = city.signalLamps.red.count + city.signalLamps.amber.count + city.signalLamps.green.count;
+    if (lit !== city.signals.length) wrong++;
+  }
+  check("exactly one lamp is lit on every signal, every frame", wrong === 0, `${wrong} frames`);
+
+  // A driver's view: the light governing a lane agrees with whether the model
+  // lets that lane through.
+  let disagreements = 0;
+  for (let f = 0; f < 1800; f++) {
+    city.update(1 / 60, viewer);
+    for (const s of city.signals) {
+      const green = city._isGreen(s.axis, s.ix, s.iz, city._clock);
+      const shown = city._signalState(s.axis, s.ix, s.iz, city._clock);
+      if (green !== (shown === "green")) disagreements++;
+    }
+  }
+  check("what the lamp shows is what the traffic model obeys",
+    disagreements === 0, `${disagreements} disagreements`);
+  city.dispose();
+}
+
+// ── Road markings and crossings ───────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 4242, 0);
+  const paint = city.group.children.find(n => n.name === "city-ground-details");
+  const e = paint.instanceMatrix.array;
+  const marks = [];
+  for (let i = 0; i < paint.count; i++) {
+    const o = i * 16;
+    marks.push({
+      x: e[o + 12], y: e[o + 13], z: e[o + 14],
+      w: Math.hypot(e[o + 0], e[o + 1], e[o + 2]),
+      d: Math.hypot(e[o + 8], e[o + 9], e[o + 10]),
+    });
+  }
+  // Lane dashes must stop clear of the junctions rather than running through
+  // them — paint across a junction is the giveaway that it was drawn from one
+  // side of the city to the other without looking.
+  const halfRoad = ROAD_WIDTH / 2;
+  let insideJunctions = 0;
+  for (const m of marks) {
+    if (m.y < ROAD_Y + 0.01) continue;          // pads sit lower than the paint
+    const nearX = city.roadX.some(r => Math.abs(m.x - r) < halfRoad - 0.4);
+    const nearZ = city.roadZ.some(r => Math.abs(m.z - r) < halfRoad - 0.4);
+    if (nearX && nearZ) insideJunctions++;
+  }
+  check("no road paint is laid across a junction", insideJunctions === 0,
+    `${insideJunctions} marks inside junction boxes`);
+
+  // Every arm of every junction gets a crossing.
+  let armsWithCrossing = 0;
+  const arms = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (const rx of city.roadX) {
+    for (const rz of city.roadZ) {
+      for (const [dx, dz] of arms) {
+        const atX = rx + dx * (halfRoad + 1.9);
+        const atZ = rz + dz * (halfRoad + 1.9);
+        const bars = marks.filter(m => Math.abs(m.x - atX) < 2 && Math.abs(m.z - atZ) < 2
+          && m.y > ROAD_Y + 0.01);
+        if (bars.length >= 3) armsWithCrossing++;
+      }
+    }
+  }
+  const totalArms = city.roadX.length * city.roadZ.length * 4;
+  check("every junction arm has a crossing", armsWithCrossing === totalArms,
+    `${armsWithCrossing} of ${totalArms}`);
+  city.dispose();
+}
+
+// ── The vehicles themselves ───────────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const kinds = ["car", "truck", "bus"];
+  for (const kind of kinds) {
+    const mesh = city.vehicleMeshes[kind];
+    check(`there is a ${kind} body`, !!mesh);
+    if (!mesh) continue;
+    const tris = mesh.geometry.attributes.position.count / 3;
+    // The old car was a body box, a cabin box and four wheels: about 152
+    // triangles. Three times that was the ask.
+    check(`a ${kind} has real shape to it, not three boxes`, tris >= 456,
+      `${Math.round(tris)} triangles`);
+    check(`a ${kind} has glass and tyres, not one flat colour`,
+      new Set(Array.from({ length: mesh.geometry.attributes.color.count },
+        (_, i) => mesh.geometry.attributes.color.getX(i).toFixed(2))).size >= 3);
+  }
+  // One instance per vehicle, so the detail costs nothing per frame.
+  const instances = kinds.reduce((n, k) => n + (city.vehicleMeshes[k] ? city.vehicleMeshes[k].count : 0), 0);
+  check("a vehicle is one instance, not a pile of parts written every frame",
+    instances === city.cars.length, `${instances} instances for ${city.cars.length} vehicles`);
+  city.dispose();
+}
+
+// ── Entrances and house numbers ───────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const facades = city.group.children.find(n => n.name === "city-facades");
+  const e = facades.instanceMatrix.array;
+  // Digits are the only thing on a facade this small — five-centimetre cubes
+  // laid out in a 3x5 grid — so they can be counted by size without needing
+  // to know what colour they were painted.
+  let digitBlocks = 0;
+  let lintels = 0;
+  const doorPlaces = new Set();
+  for (let i = 0; i < facades.count; i++) {
+    const o = i * 16;
+    const w = Math.hypot(e[o + 0], e[o + 1], e[o + 2]);
+    const h = Math.hypot(e[o + 4], e[o + 5], e[o + 6]);
+    const d = Math.hypot(e[o + 8], e[o + 9], e[o + 10]);
+    if (Math.max(w, h, d) < 0.075 && Math.min(w, h, d) > 0.02) {
+      digitBlocks++;
+      doorPlaces.add(`${Math.round(e[o + 12] / 3)},${Math.round(e[o + 14] / 3)}`);
+    }
+    // A lintel: a wide, shallow stone band about a quarter of a metre thick.
+    if (h > 0.2 && h < 0.35 && Math.max(w, d) > WIN_W + 0.4 && Math.min(w, d) < 0.35) lintels++;
+  }
+  check("buildings carry house numbers", digitBlocks > 40, `${digitBlocks} digit blocks`);
+  check("the numbers are grouped over doorways, not scattered",
+    doorPlaces.size >= 3 && digitBlocks / doorPlaces.size >= 8,
+    `${digitBlocks} blocks at ${doorPlaces.size} places`);
+  check("every entrance has its stone lintel", lintels >= 3, `${lintels} lintels`);
+
+  // The doorway is a real opening: the masonry below the ground-floor window
+  // of the door column is not built, so there is a lobby behind it rather
+  // than a room.
+  const lobbies = city.group.children.find(n => n.name === "city-rooms-dark");
+  check("there are lobbies behind the doors", !!lobbies && lobbies.count > 0);
   city.dispose();
 }
 
