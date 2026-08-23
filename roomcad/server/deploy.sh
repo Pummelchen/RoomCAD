@@ -110,5 +110,26 @@ if [ "$api" != "401" ] && [ "$api" != "200" ]; then
   exit 1
 fi
 
+# HTTP/3 runs over UDP on the same port number as HTTPS, and a firewall rule
+# that opens a TCP port does NOT open the UDP one — they are separate rules.
+# Caddy advertises h3 via Alt-Svc regardless, so without this check the site
+# can spend months telling every browser to try a protocol that cannot get
+# through. Advisory only: HTTP/2 still serves everyone.
+alt="$(curl -sI --max-time 15 "$SITE/" | tr -d '\r' | grep -i '^alt-svc:' || true)"
+if [ -z "$alt" ]; then
+  echo "NOTE: no Alt-Svc header — HTTP/3 is not being advertised."
+elif curl --version | grep -q HTTP3; then
+  if curl --http3-only -s -o /dev/null --max-time 15 "$SITE/" 2>/dev/null; then
+    echo "HTTP/3 (QUIC) reachable."
+  else
+    port="${SITE##*:}"
+    echo "NOTE: $alt is advertised, but HTTP/3 did not connect from here."
+    echo "      QUIC is UDP. Allow UDP ${port} in the provider firewall as well as TCP;"
+    echo "      opening the TCP port does not open the UDP one."
+  fi
+else
+  echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."
+fi
+
 echo "Deployed. roomcad and caddy are running; nginx is not involved."
 echo "RoomCAD: $SITE/"

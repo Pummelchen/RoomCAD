@@ -96,6 +96,20 @@ check("the policy blocks framing and plugins",
   }
 }
 
+// HTTP/3. It is Caddy's default, but a default is a quiet thing to lose on an
+// upgrade, and QUIC needs a UDP firewall rule that opening the TCP port does
+// not give you — so the deploy has to check reachability rather than assume it.
+check("HTTP/3 is enabled explicitly, not left to the default",
+  /servers\s*\{[\s\S]*?protocols[^\n]*\bh3\b/.test(prod));
+check("HTTP/1.1 and HTTP/2 are kept alongside it",
+  /protocols[^\n]*\bh1\b/.test(prod) && /protocols[^\n]*\bh2\b/.test(prod));
+check("deploy checks HTTP/3 actually connects", /--http3-only/.test(deploy));
+check("deploy reads the Alt-Svc advertisement", /alt-svc/i.test(deploy));
+check("an unreachable HTTP/3 points at the UDP firewall rule",
+  /UDP \$\{?port\}?/.test(deploy) || /Allow UDP/.test(deploy));
+check("a missing HTTP/3 does not fail the deploy — HTTP/2 still serves everyone",
+  !/--http3-only[\s\S]{0,300}exit 1/.test(deploy));
+
 // Server-sent events must not be buffered, or live collaboration stalls.
 check("the API proxy flushes immediately", /flush_interval\s+-1/.test(prod));
 

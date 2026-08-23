@@ -1,5 +1,17 @@
 {
 	auto_https disable_redirects
+	servers {
+		# HTTP/3 is on by default in this Caddy, but say so explicitly: it is a
+		# property of the deployment we care about, and a default is a quiet
+		# thing to lose on an upgrade. Caddy then listens on UDP as well as TCP
+		# for every TLS site and advertises h3 via Alt-Svc.
+		#
+		# QUIC is UDP, and a firewall that allows TCP on a port does not allow
+		# UDP on it — the two are separate rules. If HTTP/3 is not reachable
+		# from outside while it works on the host itself, that is where to look;
+		# deploy.sh checks and says so.
+		protocols h1 h2 h3
+	}
 }
 
 :8090 {

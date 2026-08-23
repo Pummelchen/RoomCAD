@@ -62,6 +62,28 @@ Caddy. `deploy.sh` installs the hook and runs it once.
 `flush_interval -1` on the API proxy keeps the live-collaboration SSE stream
 unbuffered.
 
+### HTTP/3 (QUIC)
+
+Enabled explicitly with `protocols h1 h2 h3`, so Caddy listens on **UDP 8443**
+as well as TCP and advertises `Alt-Svc: h3=":8443"`.
+
+QUIC is UDP, and **a firewall rule that opens a TCP port does not open the UDP
+one** — they are separate rules. Both the host firewall and the provider's
+firewall have to allow UDP 8443. If HTTP/3 works on the host itself but not
+from outside, that is the difference:
+
+```bash
+# on the host — bypasses any external firewall
+curl --http3-only --resolve roomcad.91.99.176.243.nip.io:8443:127.0.0.1 \
+  https://roomcad.91.99.176.243.nip.io:8443/
+# from anywhere else
+curl --http3-only https://roomcad.91.99.176.243.nip.io:8443/
+```
+
+`deploy.sh` runs the second of those and says so if HTTP/3 is advertised but
+cannot connect. It is advisory: HTTP/2 over TCP still serves every client, and
+browsers fall back on their own when a QUIC attempt fails.
+
 ## Authentication
 
 The site is protected by one shared password, checked server-side. The password
