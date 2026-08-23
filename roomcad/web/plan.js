@@ -1760,10 +1760,17 @@ const LAYOUT_MIN_LINE_GAP = 0.15;
 /// exactly on the edge of a walkway rather than near it. Long spans between
 /// those lines are then subdivided, because a room grown out of 4-metre cells
 /// can only ever be a crude staircase.
-function layoutGrid(layout, obstacles) {
-  const lines = (lo, hi, edges) => {
+function layoutGrid(layout, obstacles, guides = { xs: [], zs: [] }) {
+  // Lines come in two kinds. HARD lines are the edges of things that already
+  // exist — the plate, a walkway, the end of a wall the user drew — and a room
+  // boundary has to be able to land exactly on them, or it ends up overlapping
+  // an existing wall by a few centimetres. SOFT lines are the subdivisions this
+  // function adds to make the grid fine enough to shape rooms with, and they
+  // can go anywhere. Only soft lines are dropped when the grid gets crowded.
+  const lines = (lo, hi, edges, preferred = []) => {
     const set = new Set([clean(lo), clean(hi)]);
     for (const v of edges) if (v > lo + 1e-9 && v < hi - 1e-9) set.add(clean(v));
+    const wins = new Set(preferred.map(clean));
     let sorted = [...set].sort((a, b) => a - b);
     // Two obstacle edges a few millimetres apart would give a cell that thin,
     // and a boundary that thin becomes a wall shorter than sanitize keeps —
@@ -1777,7 +1784,13 @@ function layoutGrid(layout, obstacles) {
     // built to prevent.
     const spaced = [sorted[0]];
     for (const v of sorted.slice(1)) {
-      if (v - spaced[spaced.length - 1] >= LAYOUT_MIN_LINE_GAP) spaced.push(v);
+      const last = spaced[spaced.length - 1];
+      if (v - last >= LAYOUT_MIN_LINE_GAP) { spaced.push(v); continue; }
+      // Too close to keep both. If one of them is the line of a wall that
+      // already exists, that is the one to keep: a boundary a few centimetres
+      // to the side of an existing wall is not a separate wall, it is two walls
+      // overlapping — they are 10 cm thick, so 5 cm apart is an overlap.
+      if (wins.has(v) && !wins.has(last) && spaced.length > 1) spaced[spaced.length - 1] = v;
     }
     const last = sorted[sorted.length - 1];
     if (spaced[spaced.length - 1] !== last) {
@@ -1790,19 +1803,27 @@ function layoutGrid(layout, obstacles) {
     const out = [sorted[0]];
     for (let i = 1; i < sorted.length; i++) {
       const span = sorted[i] - sorted[i - 1];
-      // Never split a span so finely that a slice falls under the minimum.
+      // Never split a span so finely that a slice falls under the minimum, and
+      // never so that a subdivision crowds the hard line at either end.
       const steps = Math.max(1, Math.min(
         Math.round(span / LAYOUT_TARGET_CELL),
         Math.floor(span / LAYOUT_MIN_CELL),
       ));
-      for (let k = 1; k < steps; k++) out.push(clean(sorted[i - 1] + (span * k) / steps));
-      out.push(sorted[i]);        // the obstacle edge itself is never moved
+      for (let k = 1; k < steps; k++) {
+        const v = clean(sorted[i - 1] + (span * k) / steps);
+        if (v - out[out.length - 1] >= LAYOUT_MIN_LINE_GAP && sorted[i] - v >= LAYOUT_MIN_LINE_GAP) {
+          out.push(v);
+        }
+      }
+      out.push(sorted[i]);        // a hard line is never moved and never dropped
     }
     return out;
   };
 
-  let xs = lines(layout.x, layout.x + layout.w, obstacles.flatMap(o => [o.x, o.x + o.w]));
-  let zs = lines(layout.z, layout.z + layout.l, obstacles.flatMap(o => [o.z, o.z + o.l]));
+  let xs = lines(layout.x, layout.x + layout.w,
+    [...obstacles.flatMap(o => [o.x, o.x + o.w]), ...guides.xs], guides.xs);
+  let zs = lines(layout.z, layout.z + layout.l,
+    [...obstacles.flatMap(o => [o.z, o.z + o.l]), ...guides.zs], guides.zs);
   // Keep the grid affordable on a very large plate by coarsening evenly.
   while ((xs.length - 1) * (zs.length - 1) > LAYOUT_MAX_CELLS) {
     xs = xs.filter((_, i) => i % 2 === 0 || i === xs.length - 1);
@@ -2190,7 +2211,20 @@ export function autoLayoutRooms(room, opts = {}) {
     x: clean(r.x), z: clean(r.z), w: clean(r.w), l: clean(r.l),
   }));
 
-  const grid = layoutGrid(layout, blockers);
+  // Every end of a wall the user drew becomes a grid line. Without this a
+  // generated boundary can run along the same line as an existing wall and
+  // overlap only PART of it — neither the same wall nor a separate one — and
+  // the plan comes back with two walls lying on top of each other, which the
+  // editor rightly flags. With it, a generated run either coincides with the
+  // existing wall exactly, and is folded into it, or lies clear of it.
+  const guides = { xs: [], zs: [] };
+  for (const w of keptWalls) {
+    guides.xs.push(w.start.x, w.end.x);
+    guides.zs.push(w.start.z, w.end.z);
+  }
+  guides.xs = [...new Set(guides.xs.map(clean))];
+  guides.zs = [...new Set(guides.zs.map(clean))];
+  const grid = layoutGrid(layout, blockers, guides);
   let freeArea = 0;
   for (let c = 0; c < grid.blocked.length; c++) if (!grid.blocked[c]) freeArea += grid.area[c];
   if (freeArea < MIN_ROOM_DIM * MIN_ROOM_DIM) return null;
@@ -2274,24 +2308,81 @@ export function autoLayoutRooms(room, opts = {}) {
   // Where each room can be entered: a boundary run with walkway on the far
   // side, else the open air, else a neighbouring room.
   const access = kept.map(() => ({ circulation: [], outside: [], neighbour: [] }));
-  for (const sg of segments) {
-    const span = Math.hypot(sg.to.x - sg.from.x, sg.to.z - sg.from.z);
+  /// Splits a boundary run against the walls the user drew that lie along the
+  /// same line, so each piece either IS one of those walls or is clear of it.
+  ///
+  /// Without this a generated run can overlap PART of an existing wall — the
+  /// same line, a different span — which is neither the same wall nor a
+  /// separate one, and the plan comes back with two walls lying on top of each
+  /// other. Breaking the run at the existing wall's ends is not enough on its
+  /// own, because runs are merged by which rooms they separate and sail
+  /// straight through a grid line that does not change that.
+  const piecesOf = (from, to) => {
+    const vertical = Math.abs(from.x - to.x) < 1e-6;
+    const axis = vertical ? "z" : "x";
+    const fixed = vertical ? "x" : "z";
+    const lo = Math.min(from[axis], to[axis]);
+    const hi = Math.max(from[axis], to[axis]);
+    const along = keptWalls
+      .filter(w => {
+        const wv = Math.abs(w.start.x - w.end.x) < 1e-6;
+        return wv === vertical && Math.abs(w.start[fixed] - from[fixed]) < 1e-6;
+      })
+      .map(w => ({
+        lo: Math.min(w.start[axis], w.end[axis]),
+        hi: Math.max(w.start[axis], w.end[axis]),
+        wall: w,
+      }))
+      .sort((a, b) => a.lo - b.lo);
+
+    const out = [];
+    let cursor = lo;
+    for (const span of along) {
+      if (span.hi <= cursor || span.lo >= hi) continue;
+      if (span.lo > cursor) out.push({ lo: cursor, hi: Math.min(span.lo, hi), wall: null });
+      const from2 = Math.max(cursor, span.lo);
+      const to2 = Math.min(hi, span.hi);
+      if (to2 > from2) out.push({ lo: from2, hi: to2, wall: span.wall });
+      cursor = Math.max(cursor, span.hi);
+      if (cursor >= hi) break;
+    }
+    if (cursor < hi) out.push({ lo: cursor, hi, wall: null });
+
+    const at = v => (vertical ? point(from.x, v) : point(v, from.z));
+    return out
+      .filter(pc => pc.hi - pc.lo > 1e-9)
+      .map(pc => ({ from: at(pc.lo), to: at(pc.hi), wall: pc.wall, span: pc.hi - pc.lo }));
+  };
+
+  for (const raw of segments) {
+    for (const piece of piecesOf(raw.from, raw.to)) {
+      const sg = { from: piece.from, to: piece.to, a: raw.a, b: raw.b, existing: piece.wall };
+      const span = piece.span;
     // EVERY boundary becomes a wall, however short. Skipping the short ones
     // leaves gaps, and a gap is not a stub — it is a hole that joins two rooms
     // into one: a plan of six 14 m² rooms came back with a 58 m² region because
     // three of them were connected through 30 cm of missing wall.
-    const wall = addEdge(sg.from, sg.to);
+    const wall = sg.existing || addEdge(sg.from, sg.to);
     const mid = { x: (sg.from.x + sg.to.x) / 2, z: (sg.from.z + sg.to.z) / 2 };
     const nearWalk = publics.some(a =>
       mid.x >= a.x - 0.08 && mid.x <= a.x + a.w + 0.08
       && mid.z >= a.z - 0.08 && mid.z <= a.z + a.l + 0.08);
     if (span < 0.35) continue;              // too short to hang a door on
+    // Where this run sits ALONG the wall. Several rooms can front onto one wall
+    // — every room along the top of a plan shares the outer wall — so "does
+    // this wall have a door" is the wrong question. It has to be "is there a
+    // door in the stretch this room actually touches", or the first room along
+    // the wall takes the only door and the rest are left with no way in.
+    const p1 = wallProjection(wall, sg.from).offset;
+    const p2 = wallProjection(wall, sg.to).offset;
+    const range = { lo: Math.min(p1, p2), hi: Math.max(p1, p2) };
     for (const [mine, other] of [[sg.a, sg.b], [sg.b, sg.a]]) {
       if (mine < 0) continue;
-      const entry = { wall, length: span };
+      const entry = { wall, length: span, range };
       if (other >= 0) access[mine].neighbour.push(entry);
       else if (other === SPARE || nearWalk) access[mine].circulation.push(entry);
       else access[mine].outside.push(entry);
+    }
     }
   }
 
@@ -2312,15 +2403,22 @@ export function autoLayoutRooms(room, opts = {}) {
   /// Where an opening of `width` can sit on this wall without landing on
   /// anything already there. `preferred`, when given, is the offset it would
   /// like; the nearest clear gap to it wins. Returns null if nothing fits.
-  const gapOn = (wall, width, preferred = null) => {
+  const gapOn = (wall, width, preferred = null, range = null) => {
     const len = wallLength(wall);
     if (len < width + 0.20) return null;
     const taken = (occupied.get(wall.id) || []).slice().sort((a, b) => a.from - b.from);
-    const gaps = [];
+    let gaps = [];
     let cursor = 0.10;
     for (const span of [...taken, { from: len - 0.10, to: len - 0.10 }]) {
       if (span.from - cursor >= width) gaps.push({ from: cursor, to: span.from });
       cursor = Math.max(cursor, span.to);
+    }
+    // Confine the search to the stretch of wall this room fronts onto, so the
+    // door lands in its own room and not in the neighbour's.
+    if (range) {
+      gaps = gaps
+        .map(g => ({ from: Math.max(g.from, range.lo), to: Math.min(g.to, range.hi) }))
+        .filter(g => g.to - g.from >= width);
     }
     if (gaps.length === 0) return null;
     let best = null;
@@ -2335,8 +2433,8 @@ export function autoLayoutRooms(room, opts = {}) {
   };
 
   /// Puts an opening in a clear stretch of a wall, or null if there is none.
-  const opening = (wall, width) => {
-    const offset = gapOn(wall, width);
+  const opening = (wall, width, range = null) => {
+    const offset = gapOn(wall, width, null, range);
     if (offset === null) return null;
     occupy(wall.id, offset, offset + width);
     return { id: uid(), wallID: wall.id, offset, width, open: true, swingInside: true, generated: true };
@@ -2353,32 +2451,45 @@ export function autoLayoutRooms(room, opts = {}) {
     .map((r, k) => ({ k, choices: access[k].circulation.length + access[k].outside.length }))
     .sort((a, b) => a.choices - b.choices);
 
+  // A standard door first; a narrower one only if nothing else will take it. In
+  // a cramped plan every boundary can be shorter than 1.1 m — a 0.9 m door plus
+  // its clearances — and the room was simply left with no way in.
+  const DOOR_WIDTHS = [0.9, 0.75, 0.6];
+  const doorIn = c => [...doors, ...(room.doors || [])].some(d =>
+    d.wallID === c.wall.id
+    && d.offset + d.width > c.range.lo - 0.02
+    && d.offset < c.range.hi + 0.02);
+
+  const fitDoor = walls => {
+    for (const width of DOOR_WIDTHS) {
+      for (const c of walls) {
+        const d = opening(c.wall, width, c.range);
+        if (d) { doors.push(d); hasDoor.add(c.wall.id); return true; }
+      }
+    }
+    return false;
+  };
+
   // First pass: every room that CAN open onto circulation or the outside gets
   // its own door. A door shared with a neighbour is not access — it means
   // walking through someone else's room to reach this one.
   for (const { k } of byNeed) {
     const own = [...access[k].circulation, ...access[k].outside];
-    if (own.some(c => hasDoor.has(c.wall.id))) continue;
-    for (const c of own.sort((a, b) => b.length - a.length)) {
-      const d = opening(c.wall, 0.9);
-      if (d) { doors.push(d); hasDoor.add(c.wall.id); break; }
-    }
+    if (own.some(doorIn)) continue;
+    fitDoor(own.sort((a, b) => b.length - a.length));
   }
   // Second pass: a room with no frontage of its own has to borrow a neighbour's
   // wall, but only if it has no way in at all yet.
   for (const { k } of byNeed) {
     const all = [...access[k].circulation, ...access[k].outside, ...access[k].neighbour];
-    if (all.some(c => hasDoor.has(c.wall.id))) continue;
-    for (const c of all.sort((a, b) => b.length - a.length)) {
-      const d = opening(c.wall, 0.9);
-      if (d) { doors.push(d); hasDoor.add(c.wall.id); break; }
-    }
+    if (all.some(doorIn)) continue;
+    fitDoor(all.sort((a, b) => b.length - a.length));
   }
 
   if (windows) {
     for (let k = 0; k < kept.length; k++) {
       for (const c of access[k].outside.sort((a, b) => b.length - a.length)) {
-        const win = opening(c.wall, 1.0);
+        const win = opening(c.wall, 1.0, c.range);
         if (win) { winList.push(win); hasWindow.add(c.wall.id); break; }
       }
     }

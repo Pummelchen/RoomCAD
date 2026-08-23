@@ -49,6 +49,9 @@ let laidOut = 0;
 let empty = 0;
 let shortestWall = Infinity;
 let worstOverlap = 0;
+let doubled = 0;
+let roomsWithoutADoor = 0;
+let totalRooms = 0;
 
 for (const step of GRIDS) {
   let seed = 7;
@@ -71,8 +74,16 @@ for (const step of GRIDS) {
         l: snap(0.5 + rnd() * Math.max(0.6, L * 0.4)),
       });
     }
+    // Walls the user has already drawn, which the engine must build around
+    // rather than across. This is where doubled walls came from: a generated
+    // boundary landing a few centimetres to the side of one of these is not a
+    // separate wall, it is two 10 cm walls overlapping.
     if (rnd() < 0.4) {
       room.walls.push({ id: "iw" + trial, start: P.point(snap(W * 0.4), 0), end: P.point(snap(W * 0.4), snap(L * 0.5)) });
+    }
+    if (rnd() < 0.3) {
+      const cz = snap(L * 0.5);
+      room.walls.push({ id: "core" + trial, start: P.point(0, cz), end: P.point(snap(W * 0.5), cz) });
     }
     P.sanitize(room);
 
@@ -152,10 +163,35 @@ for (const step of GRIDS) {
       if (w && o.offset + o.width > P.wallLength(w) + 1e-6) note("an opening past the end of its wall", "");
       if (o.offset < -1e-9) note("a negative opening offset", "");
     }
+
+    // Apply the result and look at it the way the editor does.
+    const applied = P.parseRoom(JSON.stringify({
+      format: "com.maria.roomcad-v2.room", version: 1,
+      room: {
+        ...room, walls: result.walls, doors: result.doors, windows: result.windows,
+        publicAreas: room.publicAreas.concat(
+          result.corridors.map(c => ({ id: P.uid(), ...c, generated: true }))),
+      },
+    }));
+    if (P.overlappingWallAreas(applied).length) doubled++;
+    const regions = P.detectRooms(applied);
+    for (const g of result.rooms) {
+      totalRooms++;
+      const candidates = regions.filter(x => Math.abs(x.area - g.area) < 0.2);
+      if (candidates.length && candidates.every(x => !x.hasDoor)) roomsWithoutADoor++;
+    }
   }
 }
 
 check("the engine lays out the plans it is given", laidOut > 500, `${laidOut} laid out, ${empty} empty`);
+check("no plan comes back with two walls on top of each other",
+  doubled === 0, `${doubled} of ${laidOut} plans`);
+// A room nobody can get into is not a room. A handful of pathological plans —
+// a few square metres carved up by several walkways — still defeat it, so this
+// is a rate rather than an absolute.
+check("almost every room has a way in",
+  roomsWithoutADoor <= totalRooms * 0.01,
+  `${roomsWithoutADoor} of ${totalRooms} rooms (${(roomsWithoutADoor / totalRooms * 100).toFixed(2)}%)`);
 check("no wall is too short to survive a reload", shortestWall >= 0.15, `shortest ${shortestWall.toFixed(3)} m`);
 check("no room is laid on floor the user marked",
   worstOverlap < 1e-6, `largest overlap ${worstOverlap.toExponential(2)} m²`);
