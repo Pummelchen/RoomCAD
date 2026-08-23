@@ -11,6 +11,10 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const walk = readFileSync(join(root, "roomcad", "web", "walk3d.js"), "utf8");
+// Comments discuss the very calls being checked for, so anything that asserts
+// a call HAPPENS has to look at code only — commenting a line out otherwise
+// leaves the text in place and the check still passes.
+const walkCode = walk.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
 const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
 const store = readFileSync(join(root, "roomcad", "web", "store.js"), "utf8");
 
@@ -120,8 +124,38 @@ check("the lamps are arranged as corner clusters, not spread along the body",
   /const outer = W \* 0\.36;/.test(city) && /const inner = W \* 0\.19;/.test(city));
 check("a car has tail lights, not just brake lights",
   /tail: make\(/.test(city) && /tail\.setMatrixAt/.test(city));
+// One housing, two brightnesses: exactly one of the two meshes is written per
+// side, so they can never stack in the same place.
 check("the tail light gives way to the brake light rather than being drawn under it",
-  /if \(!v\.braking\) \{[\s\S]{0,300}tail\.setMatrixAt/.test(city));
+  /if \(v\.braking\) brake\.setMatrixAt\(brakes\+\+, m\);\s*\n\s*else tail\.setMatrixAt/.test(city));
+check("headlights are running lamps, not something that switches on at dusk",
+  !/lightsOn/.test(city) && /this\.headlights\.material\.emissiveIntensity = 0\.6 \+/.test(city));
+
+// The street grid is a closed network: a vehicle that reaches the outermost
+// road turns along it rather than being wrapped round to the far side, which
+// is a car vanishing from one street and appearing in another.
+check("the street grid is closed — nothing wraps",
+  !/Wrap beyond the fog/.test(city) && /No wrapping, and nothing is ever removed/.test(city));
+check("a vehicle at the edge must turn, and takes the turn that needs no gap",
+  /v\.mustTurn = true/.test(city) && /legal\.includes\(NEAR_SIDE_TURN\) \? NEAR_SIDE_TURN/.test(city));
+check("the turn arc starts under the wheels rather than snapping the vehicle to it",
+  /const R = Math\.min\(TURN_RADIUS, toCrossing\)/.test(city));
+check("a turn missed by the time it is due is abandoned, not taken late",
+  /if \(!v\.mustTurn\) v\.turn = 0;/.test(city));
+
+// — Shooting out a window ————————————————————————————————
+check("window panes are marked so a shot can tell glass from wall",
+  /mesh\.userData\.glass = true/.test(walk));
+check("a paintball breaks the pane instead of splattering on it",
+  /this\.breakGlass\(pane\);/.test(walkCode));
+check("and carries on to whatever was behind it",
+  /hits\.find\(h => h\.object !== pane && !h\.object\.userData\.glass\)/.test(walkCode));
+check("broken glass leaves falling shards", /this\.updateShards\(dt\);/.test(walkCode)
+  && /this\.shards\.push\(/.test(walkCode));
+check("the shared glass material is never disposed with a pane",
+  /the material is shared; only the pane is ours/.test(walk));
+check("the city is already in range of a shot, so nothing special is needed to hit it",
+  /shootableMeshes\(\)/.test(walk) && /this\.scene\.traverse/.test(walk));
 
 check("weather is a state of the whole scene", city.includes("setWeather(kind)") &&
   city.includes("atmosphere()") && walk.includes("this.city.setWeather(store.weather)"));

@@ -192,6 +192,7 @@ export class Walk3D {
     // Paintball easter egg
     this.paintballMode = false;
     this.paintballs = [];
+    this.shards = [];
     this.splats = [];
     this.raycaster = new THREE.Raycaster();
     this.gun = null;
@@ -316,6 +317,7 @@ export class Walk3D {
     }
     this.disposeScene();
     this.paintballs = [];
+    this.shards = [];
     this.splats = [];
     if (this.paintballMode) {
       this.paintballMode = false;
@@ -623,6 +625,8 @@ export class Walk3D {
     if (h <= 0.001 || span.to - span.from <= 0.001) return;
     const geometry = new THREE.BoxGeometry(thickness, h, span.to - span.from);
     const mesh = new THREE.Mesh(geometry, this.glassMaterial);
+    // Marked so a paintball can tell glass from wall and break it.
+    mesh.userData.glass = true;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     const center = P.wallPointAt(wall, (span.from + span.to) / 2);
@@ -1604,6 +1608,84 @@ export class Walk3D {
     this.updatePaintballUI();
   }
 
+  /// Breaks a window pane: the glass goes, leaving the opening, and a handful
+  /// of shards fall out of it. With the pane gone the next shot passes
+  /// straight through — the ray already reaches the city, the glass was simply
+  /// the first thing in its way — so the room can be shot out of.
+  ///
+  /// The wall's collider is unaffected: physics treats a wall as solid whether
+  /// or not it has openings, so this changes what you can SEE and SHOOT
+  /// through, not what you can walk through.
+  breakGlass(pane) {
+    if (!pane || pane.userData.broken) return;
+    pane.userData.broken = true;
+
+    pane.geometry.computeBoundingBox();
+    const box = pane.geometry.boundingBox;
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    for (let i = 0; i < 12; i++) {
+      // Splinters of the pane, in its own frame, then carried into the world
+      // by the pane's transform — so they start exactly where the glass was.
+      const w = size.z * (0.12 + Math.random() * 0.22);
+      const h = size.y * (0.12 + Math.random() * 0.26);
+      const geometry = new THREE.BoxGeometry(size.x * 0.9, h, w);
+      const material = this.glassMaterial.clone();
+      material.transparent = true;
+      const shard = new THREE.Mesh(geometry, material);
+      shard.castShadow = false;
+      shard.receiveShadow = false;
+      shard.position.set(
+        0,
+        (Math.random() - 0.5) * (size.y - h),
+        (Math.random() - 0.5) * (size.z - w)
+      );
+      pane.localToWorld(shard.position);
+      shard.quaternion.copy(pane.quaternion);
+      this.scene.add(shard);
+
+      // Outward, along the pane's own normal, plus a little scatter.
+      const out = new THREE.Vector3(1, 0, 0).applyQuaternion(pane.quaternion);
+      out.multiplyScalar((Math.random() * 1.6 + 0.4) * (Math.random() < 0.5 ? 1 : -1));
+      this.shards.push({
+        mesh: shard,
+        velocity: out.add(new THREE.Vector3(
+          (Math.random() - 0.5) * 0.8, Math.random() * 1.2, (Math.random() - 0.5) * 0.8
+        )),
+        spin: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)
+          .multiplyScalar(7),
+        life: 1.4 + Math.random() * 0.7,
+        age: 0,
+      });
+    }
+
+    if (pane.parent) pane.parent.remove(pane);
+    pane.geometry.dispose();   // the material is shared; only the pane is ours
+  }
+
+  /// Falling glass. Cheap ballistics — there is nothing for a shard to collide
+  /// with that matters, and they are gone in under two seconds.
+  updateShards(dt) {
+    for (let i = this.shards.length - 1; i >= 0; i--) {
+      const shard = this.shards[i];
+      shard.age += dt;
+      shard.velocity.y -= 9.8 * dt;
+      shard.mesh.position.addScaledVector(shard.velocity, dt);
+      shard.mesh.rotation.x += shard.spin.x * dt;
+      shard.mesh.rotation.y += shard.spin.y * dt;
+      shard.mesh.rotation.z += shard.spin.z * dt;
+      const left = 1 - shard.age / shard.life;
+      shard.mesh.material.opacity = Math.max(0, left);
+      if (left <= 0) {
+        this.scene.remove(shard.mesh);
+        shard.mesh.geometry.dispose();
+        shard.mesh.material.dispose();
+        this.shards.splice(i, 1);
+      }
+    }
+  }
+
   /// Removes every paintball and splat from the scene.
   clearPaintball() {
     for (const ball of this.paintballs) {
@@ -1618,6 +1700,15 @@ export class Walk3D {
       splat.material.dispose();
     }
     this.splats = [];
+    // Shards belong to the same mess. The broken panes themselves are not
+    // restored — the glass is gone until the room is rebuilt, which is what
+    // breaking it means.
+    for (const shard of this.shards) {
+      this.scene.remove(shard.mesh);
+      shard.mesh.geometry.dispose();
+      shard.mesh.material.dispose();
+    }
+    this.shards = [];
   }
 
   updatePaintballUI() {
@@ -1642,7 +1733,15 @@ export class Walk3D {
     this.raycaster.set(origin, direction);
     const targets = this.shootableMeshes();
     const hits = this.raycaster.intersectObjects(targets, false);
-    const hit = hits.length > 0 ? hits[0] : null;
+    let hit = hits.length > 0 ? hits[0] : null;
+    // A pane is broken by the shot rather than splattered: the glass falls out
+    // and the ball carries on to whatever was behind it, which out of a window
+    // is the city.
+    if (hit && hit.object.userData.glass) {
+      const pane = hit.object;
+      this.breakGlass(pane);
+      hit = hits.find(h => h.object !== pane && !h.object.userData.glass) || null;
+    }
     const range = 60;
     const to = hit
       ? hit.point.clone()
@@ -1796,6 +1895,7 @@ export class Walk3D {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.tick(dt);
     this.updatePaintballs(dt);
+    this.updateShards(dt);
     this.city.update(dt, this.camera.position);
     this.updateClouds(dt);
 

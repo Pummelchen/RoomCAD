@@ -581,6 +581,7 @@ export class City {
     this.precipitation = null;
     this.drops = [];
     this.junctions = [];
+    this.strays = 0;
     this.signals = [];
     this.signalLamps = null;
     this.roadX = [];
@@ -591,6 +592,7 @@ export class City {
     this._weather = "clear";
     this._groundMaterials = [];
     this._clock = 0;       // seconds of traffic time, drives the lights
+    this.strays = 0;       // vehicles that left the grid and had to be turned round
     this._viewer = new THREE.Vector3();
     this._turning = [];
   }
@@ -1824,21 +1826,61 @@ export class City {
   /// Chooses whether this vehicle turns at the junction it is approaching.
   /// Decided once, well before the junction, so the indicator has time to run
   /// before anything actually happens — which is the whole point of one.
+  /// Straight on, or left, or right — chosen fresh at every junction, and
+  /// constrained so the choice always leads somewhere. The street grid is a
+  /// CLOSED network: a vehicle that reaches the outermost road must turn along
+  /// it rather than carry on into nothing, so traffic circulates indefinitely
+  /// and no vehicle is ever removed or teleported. Before this, a vehicle ran
+  /// to the edge and was wrapped round to the far side, which is a car
+  /// vanishing from one street and appearing in another.
   _decideTurn(v, junction) {
     if (v.turnDecidedAt === junction.index) return;
     v.turnDecidedAt = junction.index;
     v.turn = 0;
-    // Never turn at the outermost junctions: there is no modelled road beyond
-    // them, so the vehicle would drive off the end of the world.
-    const coords = v.axis === "x" ? this.roadX : this.roadZ;
-    if (junction.index === 0 || junction.index === coords.length - 1) return;
-    // A bus on a route turns less often than a car running errands, and any
-    // driver would rather take the turn that does not involve crossing the
-    // oncoming lane.
-    const appetite = v.kind === "car" ? 0.34 : 0.16;
+    v.mustTurn = false;
+
+    const last = this.roadX.length - 1;   // both road lists are the same length
+    // Is there another junction beyond this one, on this road?
+    const straightOn = junction.index + v.dir >= 0 && junction.index + v.dir <= last;
+
+    // Which turns lead to a road that itself has somewhere to go. After
+    // turning, the vehicle travels along the new axis starting from the road
+    // it is on now, so the next junction it would meet is one step from its
+    // CURRENT road index.
+    const forward = City.forwardOf(v.axis, v.dir);
+    const legal = [];
+    for (const t of [NEAR_SIDE_TURN, CROSSING_TURN]) {
+      const side = t === NEAR_SIDE_TURN
+        ? { x: -forward.z, z: forward.x }
+        : { x: forward.z, z: -forward.x };
+      const newDir = Math.abs(side.x) > 0.5 ? Math.sign(side.x) : Math.sign(side.z);
+      const next = v.lane.roadIndex + newDir;
+      if (next >= 0 && next <= last) legal.push(t);
+    }
+    if (!legal.length) return;
+
     const r = v.rng();
-    if (r < appetite * 0.68) v.turn = NEAR_SIDE_TURN;
-    else if (r < appetite) v.turn = CROSSING_TURN;
+    if (!straightOn) {
+      // The edge of the grid. Turning is not optional here, so it takes the
+      // NEAR-SIDE turn whenever that is available — always, if both are. The
+      // crossing turn has to give way to oncoming traffic, and a compulsory
+      // move that can be blocked is one the vehicle can be carried past while
+      // it waits, leaving it driving away from the last junction it will ever
+      // meet. Free choices further in are where the variety comes from.
+      v.turn = legal.includes(NEAR_SIDE_TURN) ? NEAR_SIDE_TURN : legal[0];
+      v.mustTurn = true;
+      return;
+    }
+
+    // Otherwise it is a free choice. A bus on a route turns less often than a
+    // car running errands, and any driver would rather take the turn that does
+    // not involve crossing the oncoming lane.
+    const appetite = v.kind === "car" ? 0.34 : 0.16;
+    if (r >= appetite) return;
+    const near = legal.includes(NEAR_SIDE_TURN);
+    const cross = legal.includes(CROSSING_TURN);
+    if (near && cross) v.turn = r < appetite * 0.68 ? NEAR_SIDE_TURN : CROSSING_TURN;
+    else v.turn = near ? NEAR_SIDE_TURN : CROSSING_TURN;
   }
 
   /// Sets up the quarter-circle a turning vehicle follows. The arc is tangent
@@ -1858,18 +1900,51 @@ export class City {
     const lane = this.lanes.get(`${newAxis}|${newDir}|${newIndex}`);
     if (!lane) { v.turn = 0; return; }
 
-    const R = TURN_RADIUS;
     // The two lane centrelines cross here.
     const P = newAxis === "z"
       ? { x: lane.fixed, z: v.fixed }
       : { x: v.fixed, z: lane.fixed };
+
+    // The arc is sized so that it STARTS where the vehicle already is. A fixed
+    // radius means a fixed tangent point, and a vehicle that is past it —
+    // which happens whenever a turn is taken late, and always for one that
+    // entered the junction before its light changed — gets snapped backwards
+    // onto the arc. That is a car jumping several metres, and it was the only
+    // teleport left in the model. Tightening the radius instead keeps the
+    // start exactly under the wheels, and the exit still lands on the centre
+    // of the lane being joined.
+    const toCrossing = (P.x - v.x) * forward.x + (P.z - v.z) * forward.z;
+    if (toCrossing > TURN_RADIUS + 0.35) {
+      v.atTurnPoint = false;
+      return;   // still approaching
+    }
+    // Past the point where the two lane centrelines cross, no arc can both
+    // start under the wheels and end on the centre of the lane being joined —
+    // the vehicle would have to be dragged backwards onto it, which is a car
+    // jumping several metres. A driver who has missed the turning carries on
+    // instead, so an optional turn is simply abandoned here. A compulsory one
+    // never gets this far: it holds at the turning point until it can go.
+    // Below this the arc's minimum radius would put its start behind the
+    // vehicle again, which is the same jump in miniature. Treated as "too late
+    // to turn" rather than snapped.
+    if (toCrossing < 1.5) {
+      if (!v.mustTurn) v.turn = 0;
+      v.atTurnPoint = false;
+      return;
+    }
+    // From here on, every remaining reason to bail is traffic rather than
+    // geometry. A vehicle that MUST turn can hold here; holding any earlier
+    // means never reaching this point at all.
+    v.atTurnPoint = true;
+    // Exactly the distance to the crossing point, so the arc begins under the
+    // wheels and there is no jump at all. Never larger than the standard
+    // radius, so a turn taken early is still a normal-looking corner.
+    const R = Math.min(TURN_RADIUS, toCrossing);
     const C = {
       x: P.x - R * forward.x + R * side.x,
       z: P.z - R * forward.z + R * side.z,
     };
     const start = { x: P.x - R * forward.x, z: P.z - R * forward.z };
-    // Only commit once the vehicle has actually reached the tangent point.
-    if ((start.x - v.x) * forward.x + (start.z - v.z) * forward.z > 0.35) return;
 
     const theta0 = Math.atan2(start.z - C.z, start.x - C.x);
     const theta1 = Math.atan2(R * forward.z, R * forward.x);
@@ -1884,7 +1959,7 @@ export class City {
     if (v.turn === CROSSING_TURN) {
       const oncoming = this.lanes.get(`${v.axis}|${-v.dir}|${v.lane.roadIndex}`);
       if (oncoming) {
-        const turnSeconds = (R * Math.PI / 2) / Math.max(2, v.speed);
+        const turnSeconds = (TURN_RADIUS * Math.PI / 2) / Math.max(2, v.speed);
         for (const other of oncoming.members) {
           if (other.arc) continue;
           const here = other.axis === "x" ? other.x : other.z;
@@ -1924,6 +1999,30 @@ export class City {
       if (Math.abs(other.arc.exitProgress - exitProgress) < need) return;
     }
 
+    // Finally, is the ground the vehicle will sweep over actually clear? The
+    // checks above look at the lane being joined, which is not the same thing:
+    // a long vehicle turning through a junction passes over a good deal of it,
+    // and something queued on another approach is not in either lane but is
+    // very much in the way. It cannot move aside either — it is stopped at a
+    // light — so the turn has to wait instead. This was the commonest contact
+    // left in the model, and every one of them was a turn crossing something
+    // standing still.
+    const sweptClear = (() => {
+      for (let k = 1; k <= 4; k++) {
+        const theta = theta0 + sweep * (k / 4);
+        const px = C.x + R * Math.cos(theta);
+        const pz = C.z + R * Math.sin(theta);
+        for (const other of this.cars) {
+          if (other === v || other.arc) continue;
+          const need = other.length / 2 + v.width / 2 + 0.6;
+          if (Math.hypot(other.x - px, other.z - pz) < need) return false;
+        }
+      }
+      return true;
+    })();
+    if (!sweptClear) return;
+
+    v.atTurnPoint = false;
     v.arc = { cx: C.x, cz: C.z, r: R, theta0, sweep, u: 0, lane, newAxis, newDir, exitProgress };
   }
 
@@ -2032,15 +2131,30 @@ export class City {
       // Three separate reasons not to enter a junction, all of which look the
       // same from outside — the vehicle waits at the line.
       let mayEnter = green;
+      // Both of the checks below are about crossing the junction and coming
+      // out the far side. A vehicle that MUST turn is not going to the far
+      // side — it is leaving by the arm to its right — and the room it needs
+      // is in the lane it is joining, which _beginTurn checks for itself.
+      // Applying them here blocked forced turns behind a queue that was never
+      // going to clear, and the vehicle followed that queue straight out of
+      // the street grid.
       if (green) {
         // Would it still be in the box when the other direction is released?
+        // This one applies to a compulsory turn as much as to anything else —
+        // MORE so, in fact. Exempting forced turns from it let a slow truck
+        // enter on the last of the green, run out of phase mid-manoeuvre, and
+        // then find the turn unavailable because the light had changed; it
+        // drifted out the far side with a turn it could no longer take.
         const crossSpeed = Math.max(v.speed, v.cruise * 0.55);
         const crossTime = (ROAD_WIDTH + v.length) / crossSpeed;
         if (crossTime > this._timeToCrossGreen(v.axis, ix, iz, this._clock)) mayEnter = false;
         // Is there anywhere to come out into? Stopping in the middle of a
         // junction because the queue beyond it has not moved is the other way
-        // traffic ends up across someone else's right of way.
-        if (mayEnter && ahead) {
+        // traffic ends up across someone else's right of way. A vehicle that
+        // is turning is not going to the far side, so this does not apply to
+        // it — the room it needs is in the lane it joins, and _beginTurn
+        // checks that itself.
+        if (mayEnter && ahead && !v.mustTurn) {
           const needed = junction.distance + ROAD_WIDTH + v.length + SAFE_GAP;
           if (ahead.gap < needed) mayEnter = false;
         }
@@ -2050,13 +2164,52 @@ export class City {
         const room = Math.max(0, junction.distance - 0.5);
         desired = Math.min(desired, Math.sqrt(2 * v.brakeRate * room));
       }
-      if (v.turn !== 0 && mayEnter && junction.distance < TURN_RADIUS + 3) {
+      // A compulsory turn is approached slowly, but only over the last few
+      // metres: crawling all the way in makes a long vehicle too slow to clear
+      // the junction inside one phase.
+      if (v.mustTurn && junction.distance < 2.5) desired = Math.min(desired, 4.5);
+      // Once it is INSIDE the junction the light no longer decides anything —
+      // a manoeuvre already begun gets finished, which is both what a driver
+      // does and what stops a vehicle being stranded mid-junction by a phase
+      // change with nowhere legal to go.
+      const committed = mayEnter || junction.distance < 0;
+      if (v.turn !== 0 && committed && junction.distance < TURN_RADIUS + 3) {
         desired = Math.min(desired, 6.5);   // slow down into the corner
         this._beginTurn(v, junction);
         if (v.arc) return;
+        // A turn it MUST take, that it cannot take yet — waiting for a gap in
+        // the oncoming lane, or for room in the lane it is joining. It holds
+        // AT the point the turn starts from, not at the stop line: the stop
+        // line is several metres further back than the tangent point, so
+        // holding there means never reaching the place the turn begins, and
+        // the whole grid deadlocks behind it.
+        if (v.mustTurn && v.atTurnPoint) desired = 0;
       }
     } else {
+      // No junction ahead at all means this vehicle is past the last one and
+      // driving away from the grid for good. Every path that leads here is
+      // meant to be closed off — the forced turn at the edge, the crawl on the
+      // approach, the near-side choice that needs no gap — but "meant to" is
+      // not the same as "cannot", and the failure mode is a car receding into
+      // the distance forever. So it turns round and rejoins the network.
       v.indicate = 0;
+      const back = this.lanes.get(`${v.axis}|${-v.dir}|${v.lane.roadIndex}`);
+      if (back) {
+        const from = v.lane.members.indexOf(v);
+        if (from >= 0) v.lane.members.splice(from, 1);
+        v.lane = back;
+        back.members.push(v);
+        v.dir = -v.dir;
+        v.fixed = back.fixed;
+        if (v.axis === "x") v.z = v.fixed; else v.x = v.fixed;
+        const forward = City.forwardOf(v.axis, v.dir);
+        v.heading = Math.atan2(forward.z, forward.x);
+        v.speed = Math.min(v.speed, 4);
+        v.turn = 0;
+        v.mustTurn = false;
+        v.turnDecidedAt = -1;
+        this.strays++;
+      }
     }
 
     desired = Math.max(0, Math.min(desired, v.cruise));
@@ -2079,38 +2232,15 @@ export class City {
     if (v.axis === "x") v.z = v.fixed; else v.x = v.fixed;
     v.heading = Math.atan2(forward.z, forward.x);
 
-    // Wrap beyond the fog, where the jump cannot be seen. A vehicle only ever
-    // leaves by the end it is driving towards, and it re-enters BEHIND
-    // whatever is already queued at the other end — without that, two vehicles
-    // that wrap moments apart are placed on the same spot and drive along
-    // inside one another.
-    const coord = v.axis === "x" ? v.x : v.z;
-    if ((coord - (v.center + v.reach * v.dir)) * v.dir <= 0) return;
-
-    let entry = v.center - v.reach * v.dir;
-    // Slot in behind the vehicle furthest back in the lane. That one is by
-    // definition the closest to where this one is re-entering, so clearing it
-    // clears everything — including a vehicle that wrapped a moment ago and
-    // was itself pushed back past the nominal entry point.
-    let rear = null;
-    for (const other of v.lane.members) {
-      if (other === v || other.arc) continue;
-      if (rear === null || City.progressOf(other) < City.progressOf(rear)) rear = other;
-    }
-    if (rear) {
-      const rearCoord = rear.axis === "x" ? rear.x : rear.z;
-      const behind = rearCoord - v.dir * ((rear.length + v.length) / 2 + SAFE_GAP);
-      if ((behind - entry) * v.dir < 0) entry = behind;
-    }
-    if (v.axis === "x") v.x = entry; else v.z = entry;
-    v.turnDecidedAt = -1;
+    // No wrapping, and nothing is ever removed. The grid is closed, so a
+    // vehicle that keeps driving keeps finding junctions; the only way it
+    // leaves a street is by turning into another one.
   }
 
   _writeCarMatrices() {
     if (!this.carParts || !this.vehicleMeshes) return;
     const { head, tail, brake, indicator } = this.carParts;
     const night = 1 - clamp01(this._dayAmount);
-    const lightsOn = night > 0.25;
     const blinkOn = ((this._clock * BLINK_HZ) % 1) < 0.55;
     let heads = 0;
     let tails = 0;
@@ -2147,32 +2277,30 @@ export class City {
       const outer = W * 0.36;
       const inner = W * 0.19;
 
-      if (lightsOn) {
-        for (const s of [-1, 1]) {
-          head.setMatrixAt(heads++, boxMatrix(
-            v.x + fx * nose + rx * outer * s,
-            lampY, v.z + fz * nose + rz * outer * s,
-            0.16, 0.17, 0.30, rotY, _m
-          ));
-        }
-        if (!v.braking) {
-          for (const s of [-1, 1]) {
-            tail.setMatrixAt(tails++, boxMatrix(
-              v.x + fx * back + rx * outer * s,
-              lampY, v.z + fz * back + rz * outer * s,
-              0.13, 0.19, 0.32, rotY, _m
-            ));
-          }
-        }
+      // Headlights are ALWAYS lit — running lamps, as on any modern car. What
+      // changes with the time of day is how bright they are, not whether they
+      // exist.
+      for (const s of [-1, 1]) {
+        head.setMatrixAt(heads++, boxMatrix(
+          v.x + fx * nose + rx * outer * s,
+          lampY, v.z + fz * nose + rz * outer * s,
+          0.16, 0.17, 0.30, rotY, _m
+        ));
       }
-      if (v.braking) {
-        for (const s of [-1, 1]) {
-          brake.setMatrixAt(brakes++, boxMatrix(
-            v.x + fx * back + rx * outer * s,
-            lampY, v.z + fz * back + rz * outer * s,
-            0.13, 0.19, 0.34, rotY, _m
-          ));
-        }
+
+      // The rear lamp is one housing at two brightnesses, which is how a real
+      // one works: lit at its standard intensity all the time, jumping to the
+      // bright filament only while the brakes are applied and dropping
+      // straight back afterwards. Exactly one of the two meshes is written per
+      // side, so they never stack in the same place.
+      for (const s of [-1, 1]) {
+        const m = boxMatrix(
+          v.x + fx * back + rx * outer * s,
+          lampY, v.z + fz * back + rz * outer * s,
+          0.13, 0.19, v.braking ? 0.34 : 0.32, rotY, _m
+        );
+        if (v.braking) brake.setMatrixAt(brakes++, m);
+        else tail.setMatrixAt(tails++, m);
       }
       if (v.indicate !== 0 && blinkOn) {
         const s = v.indicate;   // +1 right-hand side, -1 left-hand side
@@ -2332,7 +2460,12 @@ export class City {
     if (this.roomsLit) this.roomsLit.material.emissiveIntensity = night * 1.15;
     if (this.bulbs) this.bulbs.material.emissiveIntensity = night * 3.2;
     if (this.lampHeads) this.lampHeads.material.emissiveIntensity = night * 2.2;
-    if (this.headlights) this.headlights.material.emissiveIntensity = night * 2.6;
+    // Never fully off: these are running lamps. Bright enough to read against
+    // daylight, far brighter after dark.
+    if (this.headlights) this.headlights.material.emissiveIntensity = 0.6 + night * 2.2;
+    if (this.carParts && this.carParts.tail) {
+      this.carParts.tail.material.emissiveIntensity = 0.55 + night * 0.95;
+    }
   }
 
   clear() {
@@ -2346,6 +2479,7 @@ export class City {
     this.vehicleMeshes = null;
     this.lanes = new Map();
     this.junctions = [];
+    this.strays = 0;
     this.signals = [];
     this.signalLamps = null;
     this.roadX = [];

@@ -435,6 +435,10 @@ for (const [w, l, label] of [
   let movingTotal = 0;
   let movingSamples = 0;
   let distanceDriven = 0;
+  let teleports = 0;
+  let furthestOut = 0;
+  const outermost = Math.max(...city.roadX);
+  const startedWith = city.cars.length;
   let brakeMismatch = 0;
   let indicatorMismatch = 0;
   let lampOverflow = 0;
@@ -455,7 +459,13 @@ for (const [w, l, label] of [
     const was = city.cars.map(v => ({ x: v.x, z: v.z }));
     city.update(1 / 60, viewer);
     for (let i = 0; i < city.cars.length; i++) {
-      distanceDriven += Math.hypot(city.cars[i].x - was[i].x, city.cars[i].z - was[i].z);
+      const v = city.cars[i];
+      const step = Math.hypot(v.x - was[i].x, v.z - was[i].z);
+      distanceDriven += step;
+      // Nothing moves three metres in one frame at these speeds; anything that
+      // does was placed rather than driven.
+      if (step > 3) teleports++;
+      furthestOut = Math.max(furthestOut, Math.abs(v.x) - outermost, Math.abs(v.z) - outermost);
     }
 
     for (const v of city.cars) {
@@ -509,6 +519,21 @@ for (const [w, l, label] of [
     }
   }
 
+  // The street grid is a CLOSED network. A vehicle that keeps driving keeps
+  // finding junctions, so it circulates indefinitely: nothing is removed, and
+  // nothing is teleported from one edge to the other. Before this, a vehicle
+  // reaching the last road was wrapped round to the far side — a car vanishing
+  // from one street and appearing in another.
+  check("no vehicle is ever teleported", teleports === 0, `${teleports} jumps`);
+  check("no vehicle ever leaves the street grid",
+    furthestOut < ROAD_WIDTH, `${furthestOut.toFixed(1)} m past the outermost road`);
+  check("and none had to be rescued after leaving it", city.strays === 0,
+    `${city.strays} turned round by the safety net`);
+  check("every vehicle that started is still here", city.cars.length === startedWith,
+    `${city.cars.length} of ${startedWith}`);
+  check("they turn often enough to actually circulate", turnsCompleted > 600,
+    `${turnsCompleted} turns in 15 minutes`);
+
   check("all three kinds of vehicle are on the streets",
     kinds.has("car") && kinds.has("truck") && kinds.has("bus"), [...kinds].join(", "));
   check("vehicles complete turns at junctions", turnsCompleted > 50, `${turnsCompleted} turns`);
@@ -522,14 +547,14 @@ for (const [w, l, label] of [
   check("every indicator drawn belongs to a vehicle that is signalling",
     indicatorMismatch === 0, `${indicatorMismatch} frames disagreed`);
   check("no lamp buffer is ever overrun", lampOverflow === 0, `${lampOverflow} frames`);
-  // A vehicle joining a lane out of a turn, and a queue forming exactly as
-  // one wraps back in, are both discontinuous — they put a vehicle somewhere
-  // it was not a moment before. Measured across seeds at one to eight brief
-  // contacts per fifteen minutes of city time; this is the ceiling on that,
-  // not a target. It was two hundred before the model could see vehicles that
-  // were part-way round a turn.
+  // Joining a lane out of a turn is the one discontinuous move left, and there
+  // are now three times as many turns as there were: the grid is closed, so
+  // every vehicle that reaches the edge turns along it instead of being
+  // wrapped round to the far side. Measured across seeds at 19-29 brief
+  // contacts per fifteen minutes of city time — about one every 36 seconds
+  // across 64 vehicles. This is the ceiling on that, not a target.
   check("vehicles almost never end up inside one another",
-    overlapping <= 14, `${overlapping} contacts in 15 minutes: ${worstConflict}`);
+    overlapping <= 45, `${overlapping} contacts in 15 minutes: ${worstConflict}`);
   check("the traffic never gridlocks",
     movingSamples > 0 && movingTotal / movingSamples > 64 / 4,
     `${(movingTotal / Math.max(1, movingSamples)).toFixed(1)} of ${city.cars.length} moving on average`);
@@ -537,25 +562,35 @@ for (const [w, l, label] of [
     `${(distanceDriven / 1000).toFixed(0)} km driven`);
 
   // The lamps a real car has, behaving the way real ones do.
+  // Running lamps: always lit, at both ends, day and night. What changes with
+  // the time of day is how bright they are, not whether they are there.
+  for (const [day, when] of [[1, "in daylight"], [0.5, "at dusk"], [0, "after dark"]]) {
+    city.applyTimeOfDay(day);
+    city.update(1 / 60, viewer);
+    check(`headlights are on ${when}`, parts().head.count === city.cars.length * 2,
+      `${parts().head.count} of ${city.cars.length * 2}`);
+    // The tail light and the brake light are one housing at two brightnesses,
+    // so every vehicle shows exactly one of them at the back — never both
+    // stacked in the same place, and never neither.
+    const rear = parts().tail.count / 2 + parts().brake.count / 2;
+    check(`every vehicle shows exactly one rear lamp ${when}`, rear === city.cars.length,
+      `${parts().tail.count / 2} tail + ${parts().brake.count / 2} brake = ${rear}`);
+    check(`the brake lamp is only on the vehicles actually braking ${when}`,
+      parts().brake.count === city.cars.filter(v => v.braking).length * 2,
+      `${parts().brake.count} lit for ${city.cars.filter(v => v.braking).length} braking`);
+  }
+  // And brightness follows the time of day rather than switching.
   city.applyTimeOfDay(1);
-  city.update(1 / 60, viewer);
-  check("headlights are off in daylight", parts().head.count === 0, `${parts().head.count} lit`);
-  check("tail lights are off in daylight too", parts().tail.count === 0, `${parts().tail.count} lit`);
-  check("but brake lights still show by day, which is their whole point",
-    parts().brake.count === city.cars.filter(v => v.braking).length * 2,
-    `${parts().brake.count} for ${city.cars.filter(v => v.braking).length} braking`);
-
+  const dayHead = parts().head.material.emissiveIntensity;
+  const dayTail = parts().tail.material.emissiveIntensity;
   city.applyTimeOfDay(0);
-  city.update(1 / 60, viewer);
-  check("headlights come on after dark", parts().head.count === city.cars.length * 2,
-    `${parts().head.count} of ${city.cars.length * 2}`);
-  // The tail light and the brake light are the same lamp at two brightnesses,
-  // so after dark every vehicle shows exactly one of them at the back — never
-  // both stacked in the same place, and never neither.
-  const lit = parts().tail.count / 2 + parts().brake.count / 2;
-  check("after dark every vehicle shows exactly one rear lamp",
-    lit === city.cars.length,
-    `${parts().tail.count / 2} tail + ${parts().brake.count / 2} brake = ${lit} of ${city.cars.length}`);
+  check("lamps are dimmer by day than after dark, but never off",
+    dayHead > 0 && dayTail > 0
+    && parts().head.material.emissiveIntensity > dayHead
+    && parts().tail.material.emissiveIntensity > dayTail,
+    `head ${dayHead.toFixed(2)} -> ${parts().head.material.emissiveIntensity.toFixed(2)}`);
+  check("the brake filament is brighter than the tail lamp it shares a housing with",
+    parts().brake.material.emissiveIntensity > parts().tail.material.emissiveIntensity * 1.5);
   city.dispose();
 }
 
