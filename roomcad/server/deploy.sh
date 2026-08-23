@@ -127,12 +127,17 @@ if [ -z "$alt" ]; then
   echo "NOTE: no Alt-Svc header — HTTP/3 is not being advertised."
 elif curl --version | grep -q HTTP3; then
   if curl --http3-only -s -o /dev/null --max-time 15 "$SITE/" 2>/dev/null; then
-    echo "HTTP/3 (QUIC) reachable."
+    echo "HTTP/3 (QUIC) reachable from this machine."
   else
-    port="${SITE##*:}"
-    echo "NOTE: $alt is advertised, but HTTP/3 did not connect from here."
-    echo "      QUIC is UDP. Allow UDP ${port} in the provider firewall as well as TCP;"
-    echo "      opening the TCP port does not open the UDP one."
+    echo "NOTE: HTTP/3 is advertised but did not connect FROM THIS MACHINE."
+    echo "      That is not proof it is broken for visitors. This machine may not"
+    echo "      reach the server over the public internet at all — a VPN or mesh"
+    echo "      network (Tailscale, WireGuard) silently carries the traffic over a"
+    echo "      different path with a different MTU, and QUIC is far more sensitive"
+    echo "      to that than TCP is. Check with:  ip route get ${SITE#https://}"
+    echo "      To judge it properly, test from a device on an unrelated network."
+    echo "      If it does fail publicly too, QUIC is UDP: a firewall rule opening"
+    echo "      the TCP port does NOT open the UDP one."
   fi
 else
   echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."

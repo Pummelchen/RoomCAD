@@ -130,8 +130,15 @@ check("HTTP/1.1 and HTTP/2 are kept alongside it",
   /protocols[^\n]*\bh1\b/.test(prod) && /protocols[^\n]*\bh2\b/.test(prod));
 check("deploy checks HTTP/3 actually connects", /--http3-only/.test(deploy));
 check("deploy reads the Alt-Svc advertisement", /alt-svc/i.test(deploy));
-check("an unreachable HTTP/3 points at the UDP firewall rule",
-  /UDP \$\{?port\}?/.test(deploy) || /Allow UDP/.test(deploy));
+// A failed HTTP/3 test from the deploying machine does not mean HTTP/3 is
+// broken for visitors: a VPN or mesh network carries the traffic over a
+// different path with a different MTU, and QUIC minds that far more than TCP.
+check("an unreachable HTTP/3 does not jump to blaming the firewall",
+  /not proof it is broken for visitors/.test(deploy));
+check("it names the likelier cause and how to check it",
+  /Tailscale|WireGuard/.test(deploy) && /ip route get/.test(deploy));
+check("it still mentions the UDP rule as the other possibility",
+  /does NOT open the UDP one/.test(deploy));
 check("a missing HTTP/3 does not fail the deploy — HTTP/2 still serves everyone",
   !/--http3-only[\s\S]{0,300}exit 1/.test(deploy));
 

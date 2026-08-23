@@ -94,6 +94,18 @@ curl --http3-only https://roomcad.91.99.176.243.nip.io:8443/
 cannot connect. It is advisory: HTTP/2 over TCP still serves every client, and
 browsers fall back on their own when a QUIC attempt fails.
 
+**Do not trust an HTTP/3 test from a machine that reaches the server over a VPN
+or mesh network.** If the host is in a Tailscale/WireGuard network, traffic to
+its public address is carried over that tunnel instead of the public internet —
+a different path with a smaller MTU, which QUIC is far more sensitive to than
+TCP. `ip route get <ip>` shows which interface is really used, and a capture on
+the server (`tcpdump -ni any 'udp port 8443'`) shows which interface packets
+arrive on. Judge public reachability only from a device on an unrelated network.
+
+Caddy must be recent. Debian ships 2.6.2 (upstream 2022), whose QUIC and config
+reloading are both long superseded — a reload of that build could panic and
+take the process down. The host now tracks Caddy's official apt repository.
+
 ## Authentication
 
 The site is protected by one shared password, checked server-side. The password
