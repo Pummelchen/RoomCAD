@@ -1167,3 +1167,20 @@ body.resizing-sidebars * {
   height: 40px;
   padding: 0;
 }
+
+/* A measured value, not a field: the overall size comes from the walls, so it
+   is shown rather than typed. The hint says where the number comes from. */
+.field .readout.measured {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text, #e8eef7);
+}
+/* Its own line: the sidebar is narrow enough that a hint beside the value
+   wraps into it. */
+.field .hint {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  opacity: 0.55;
+}

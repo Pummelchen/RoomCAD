@@ -427,20 +427,27 @@ function roomsToolSection() {
 
 function roomSection() {
   const room = store.room;
-  const area = (room.width * room.length).toFixed(2);
+  // The floor actually enclosed by the walls — not width × length, which counts
+  // the notch of an L-shaped plan as if it were inside.
+  const area = P.floorArea(room).toFixed(2);
+  const rooms = P.detectRooms(room).length;
   let html = `<h4>Room</h4>`;
   html += `<div class="field"><label>Room Name</label>` +
     `<input type="text" data-action="rename" value="${esc(room.name)}"></div>`;
-  html += `<div class="field"><label>Width (cm)</label><div class="value-row">` +
-    `<input type="number" data-action="room-w" value="${Math.round(room.width * 100)}" min="200" max="2000" step="1">` +
-    `<span class="readout">= ${room.width.toFixed(2)} m</span></div></div>`;
-  html += `<div class="field"><label>Length (cm)</label><div class="value-row">` +
-    `<input type="number" data-action="room-l" value="${Math.round(room.length * 100)}" min="200" max="2000" step="1">` +
-    `<span class="readout">= ${room.length.toFixed(2)} m</span></div></div>`;
+  // Size is measured from the walls, not typed. It used to be a pair of fields
+  // that changed the number and moved nothing, so the label and the drawing
+  // could disagree by metres. Resize by dragging a wall instead — outside walls
+  // unlock from their right-click menu.
+  html += `<div class="field"><label>Overall size</label>` +
+    `<div class="value-row"><span class="readout measured">${P.cm(room.width)} × ${P.cm(room.length)}</span></div>` +
+    `<div class="hint">measured from the walls — drag a wall to resize</div></div>`;
   html += `<div class="field"><label>Wall height (cm)</label><div class="value-row">` +
     `<input type="number" data-action="height" value="${Math.round(room.height * 100)}" min="220" max="500" step="1">` +
     `<span class="readout">= ${room.height.toFixed(2)} m</span></div></div>`;
   html += `<div class="stat-row"><span>Floor area</span><span>${area} m²</span></div>`;
+  if (rooms > 0) {
+    html += `<div class="stat-row"><span>Enclosed rooms</span><span>${rooms}</span></div>`;
+  }
   html += `<div class="inspector-note">Tap a wall, door, window, or furniture to edit it. ` +
     `The grey area is just extra drawing space for more rooms.</div>`;
   html += `<div class="inspector-sep"></div>`;
@@ -512,10 +519,6 @@ inspectorContent.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset.action === "rename") {
     store.renameRoom(t.value);
-  } else if (t.dataset.action === "room-w") {
-    store.updateRoomSize(Number(t.value) / 100, store.room.length);
-  } else if (t.dataset.action === "room-l") {
-    store.updateRoomSize(store.room.width, Number(t.value) / 100);
   } else if (t.dataset.action === "height") {
     store.updateRoomHeight(Number(t.value) / 100);
   } else if (t.dataset.action === "canvas-size") {

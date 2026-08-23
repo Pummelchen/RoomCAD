@@ -775,5 +775,109 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     near(nudged.start.x, 0) && near(nudged.end.x, 30));
 }
 
+// ── Size is measured, never typed ─────────────────────────────────────────
+//
+// width/length used to be stored independently of the walls: typing a number
+// moved nothing and moving a wall changed no number, so the two drifted apart.
+// The generator, the SVG title block and the 3D view all size themselves from
+// these fields, so a plan could be laid out and printed in a rectangle that had
+// nothing to do with the building.
+{
+  const room = P.freshRoom("M", 6, 4, 2.6);
+  P.centerRoom(room);
+  const b0 = P.wallsBounds(room);
+  check("a fresh room's size matches its walls",
+    near(room.width, b0.maxX - b0.minX) && near(room.length, b0.maxZ - b0.minZ));
+
+  // Setting the fields by hand must not survive sanitising.
+  room.width = 99;
+  room.length = 77;
+  P.sanitize(room);
+  check("a size that contradicts the walls is corrected, not kept",
+    near(room.width, 6) && near(room.length, 4), `${room.width} × ${room.length}`);
+  check("origin is derived too, so origin + size is the wall extent",
+    near(room.origin.x + room.width, b0.maxX) && near(room.origin.z + room.length, b0.maxZ));
+
+  // An L-shaped plan: the bounding box is not the floor.
+  const L = P.freshRoom("L", 8, 8, 2.6);
+  P.centerRoom(L);
+  const q = P.roomOrigin(L);
+  const seg = (id, ax, az, bx, bz) => ({ id, start: { x: q.x + ax, z: q.z + az }, end: { x: q.x + bx, z: q.z + bz } });
+  L.walls = [seg("n",0,0,8,0), seg("e",8,0,8,4), seg("ns",8,4,4,4),
+             seg("nw",4,4,4,8), seg("s",4,8,0,8), seg("w",0,8,0,0)];
+  P.sanitize(L);
+  check("an L-shape still reports its overall extent",
+    near(L.width, 8) && near(L.length, 8), `${L.width} × ${L.length}`);
+  check("but its floor area is the floor, not the bounding box",
+    near(P.floorArea(L), 48, 0.6), `${P.floorArea(L)} m² (box would be 64)`);
+
+  // A room with no walls keeps whatever it had — nothing to measure.
+  const empty = P.freshRoom("E", 6, 4, 2.6);
+  empty.walls = [];
+  P.sanitize(empty);
+  check("a plan with no walls keeps its stored size", near(empty.width, 6) && near(empty.length, 4));
+}
+
+// ── Dragging a wall takes the joined walls with it ────────────────────────
+{
+  const mk = () => {
+    const r = P.freshRoom("D", 6, 4, 2.6);
+    r.origin = { x: 0, z: 0 };
+    r.canvas = { width: 25, length: 25 };
+    P.sanitize(r);
+    return r;
+  };
+  const sealed = r => P.detectRooms(r).length;
+
+  // A corner follows the whole way, so the room stays closed.
+  const rect = mk();
+  const east = rect.walls.find(w => near(w.start.x, 6) && near(w.end.x, 6));
+  check("the rectangle starts sealed", sealed(rect) === 1);
+  const moved = P.dragWall(rect, east.id, 1, 0);
+  check("dragging a wall returns a new wall list", !!moved);
+  rect.walls = moved;
+  check("the room is still sealed after the drag", sealed(rect) === 1, `${sealed(rect)} regions`);
+  const nb = P.wallsBounds(rect);
+  check("and it actually got wider", near(nb.maxX - nb.minX, 7), `${nb.maxX - nb.minX}`);
+  check("every wall still meets another at both ends",
+    rect.walls.every(w => rect.walls.some(o => o !== w &&
+      (near(o.start.x, w.end.x) && near(o.start.z, w.end.z)
+       || near(o.end.x, w.end.x) && near(o.end.z, w.end.z)))));
+
+  // A T-junction follows only the movement ACROSS the wall.
+  const tee = mk();
+  const eastT = tee.walls.find(w => near(w.start.x, 6) && near(w.end.x, 6));
+  tee.walls.push({ id: "spur", start: P.point(4, 2), end: P.point(6, 2) });
+  const across = P.dragWall(tee, eastT.id, 0.5, 0);
+  const spurAcross = across.find(w => w.id === "spur");
+  check("a T-junction stretches to stay attached when the wall is pushed sideways",
+    near(spurAcross.end.x, 6.5) && near(spurAcross.start.x, 4),
+    `${spurAcross.start.x} -> ${spurAcross.end.x}`);
+
+  const alongList = P.dragWall(tee, eastT.id, 0, 0.5);
+  const spurAlong = alongList.find(w => w.id === "spur");
+  check("but stays put when the wall only slides along its own line",
+    near(spurAlong.end.x, 6) && near(spurAlong.end.z, 2),
+    `${spurAlong.end.x},${spurAlong.end.z}`);
+
+  // It refuses to crush a wall that carries a door.
+  const doored = mk();
+  const north = doored.walls.find(w => near(w.start.z, 0) && near(w.end.z, 0));
+  const eastD = doored.walls.find(w => near(w.start.x, 6) && near(w.end.x, 6));
+  doored.doors = [{ id: "d", wallID: north.id, offset: 0.2, width: 0.9, open: true, swingInside: true }];
+  check("a drag that would leave the door no wall is refused",
+    P.dragWall(doored, eastD.id, -5.2, 0) === null);
+  check("a drag that still leaves room for it is allowed",
+    P.dragWall(doored, eastD.id, -1, 0) !== null);
+
+  // And it will not walk off the plate.
+  const edge = mk();
+  const west = edge.walls.find(w => near(w.start.x, 0) && near(w.end.x, 0));
+  check("a drag off the edge of the plate is refused or clamped",
+    P.dragWall(edge, west.id, -5, 0) === null
+    || P.wallsBounds({ ...edge, walls: P.dragWall(edge, west.id, -5, 0) }).minX >= -1e-9);
+  check("dragging an id that is not there returns null", P.dragWall(edge, "nope", 1, 0) === null);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

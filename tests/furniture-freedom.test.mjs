@@ -273,5 +273,29 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     reloaded.walls.find(w => w.id === outerWall.id).dragUnlocked === true);
 }
 
+// ── Resizing by dragging, through the store ───────────────────────────────
+{
+  const room = P.freshRoom("R", 6, 4, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  store.room = P.parseRoom(P.serializeRoom(room));
+  const east = store.room.walls.find(w => near(w.start.x, 6) && near(w.end.x, 6));
+
+  check("the plan starts sealed", P.detectRooms(store.room).length === 1);
+  check("size starts equal to the walls", near(store.room.width, 6) && near(store.room.length, 4));
+
+  store.setWallDragUnlocked(east.id, true);
+  check("dragging the east wall out works", store.moveWall(east.id, 1, 0) === true);
+  store.commit("settle", () => {});
+  check("the room is still one sealed space",
+    P.detectRooms(store.room).length === 1, `${P.detectRooms(store.room).length}`);
+  check("and the recorded size followed the wall",
+    near(store.room.width, 7), `${store.room.width}`);
+  check("floor area followed too", near(P.floorArea(store.room), 28, 0.6), `${P.floorArea(store.room)}`);
+
+  // The size cannot be set behind the walls' back any more.
+  check("there is no way to set the size directly", typeof store.updateRoomSize === "undefined");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -47,5 +47,18 @@ check("returning to the tab refreshes immediately",
 check("a hidden tab keeps counting as present",
   !app.includes("if (document.hidden) {\n    scheduleStatus"));
 
+// Overall size is measured from the walls, not typed. The old pair of fields
+// changed a number and moved no walls, so the label and the drawing could
+// disagree by metres — and the generator, the SVG title block and the 3D view
+// all size themselves from that number.
+check("the size fields are gone from the sidebar",
+  !app.includes('data-action="room-w"') && !app.includes('data-action="room-l"'));
+check("nothing tries to set the size any more", !app.includes("updateRoomSize"));
+check("the sidebar shows a measured size instead", app.includes('class="readout measured"'));
+check("and says where the number comes from and how to change it",
+  /measured from the walls[^`]*drag a wall to resize/.test(app));
+check("floor area is the enclosed floor, not width times length",
+  app.includes("P.floorArea(room)") && !app.includes("(room.width * room.length)"));
+
 console.log(`${passed} passed, ${failed} failed — live collaboration UI contracts`);
 if (failed) process.exit(1);

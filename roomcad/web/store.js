@@ -321,14 +321,15 @@ export const store = {
       this.emit();
       return false;
     }
+    // Take the joined walls along, or dragging one wall tears the building
+    // open. Returns null when the step would crush a wall or leave the plate,
+    // which on a drag just stops the wall at its limit.
+    const moved = P.dragWall(this.room, id, dx, dz);
+    if (!moved) return false;
     this.beginDrag();
-    const canvas = P.canvasOf(this.room);
-    // Doors and windows are positioned along their wall, so moving the wall
-    // carries them with it: nothing to update here, as long as the wall keeps
-    // its identity and its length (see translateWall).
-    this.room.walls[index] = P.translateWall(
-      this.room.walls[index], dx, dz, canvas.width, canvas.length
-    );
+    // Doors and windows are positioned along their wall, so they travel with it
+    // for free — as long as the wall keeps its identity and its length.
+    this.room.walls = moved;
     return true;
   },
 
@@ -887,17 +888,6 @@ export const store = {
   },
 
   // MARK: Room settings
-
-  updateRoomSize(width, length) {
-    const w = P.clamp(width, 2, 20);
-    const l = P.clamp(length, 2, 20);
-    if (w === this.room.width && l === this.room.length) return;
-    this.commit("Resized room to " + P.cm(w) + " × " + P.cm(l), room => {
-      room.width = w;
-      room.length = l;
-    });
-    this.clearSelection();
-  },
 
   /// Resizes the buildable base plate (canvas). The plate always keeps at
   /// least the main room's footprint and stays centred around the room.

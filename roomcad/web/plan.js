@@ -380,6 +380,112 @@ export function translateWall(w, dx, dz, width, length) {
   };
 }
 
+/// How short a wall may become before it would lose something mounted on it.
+function neededWallLength(room, wall) {
+  let needed = MIN_WALL_LENGTH;
+  for (const list of [room.doors || [], room.windows || []]) {
+    for (const o of list) {
+      if (o.wallID !== wall.id) continue;
+      needed = Math.max(needed, o.width + 0.2);
+    }
+  }
+  return needed;
+}
+
+const JOINT_EPS = 0.005;
+
+/// Moves a whole wall, taking the walls joined to it along.
+///
+/// Moving a wall on its own tears the building open: drag the east wall of a
+/// rectangle and the north and south walls stay behind, so the room is no
+/// longer enclosed. Since resizing is done by dragging, the joints have to come
+/// too, and they come in two ways:
+///
+///   - a corner — another wall's endpoint sitting on one of this wall's ends —
+///     travels the full distance, so the corner stays a corner and the wall it
+///     belongs to simply gets longer or shorter;
+///   - a T-junction — an endpoint landing partway along this wall — follows only
+///     the part of the movement ACROSS the wall. Slide a wall along its own line
+///     and a T stays where it is; push the wall sideways and the T comes with
+///     it, stretching the wall that meets it.
+///
+/// That is what keeps an L, a U or a courtyard intact instead of only a plain
+/// rectangle. Returns the new wall list, or null if the step is not allowed.
+export function dragWall(room, id, dx, dz) {
+  const walls = room.walls || [];
+  const moving = walls.find(w => w.id === id);
+  if (!moving) return null;
+  const canvas = canvasOf(room);
+
+  // Clamp the MOVEMENT, never the endpoints separately, or the wall changes
+  // length as it meets the edge of the plate.
+  const lo = (a, b) => (a > b ? 0 : null);
+  const minX = Math.min(moving.start.x, moving.end.x);
+  const maxX = Math.max(moving.start.x, moving.end.x);
+  const minZ = Math.min(moving.start.z, moving.end.z);
+  const maxZ = Math.max(moving.start.z, moving.end.z);
+  const mx = lo(-minX, canvas.width - maxX) ?? clamp(dx, -minX, canvas.width - maxX);
+  const mz = lo(-minZ, canvas.length - maxZ) ?? clamp(dz, -minZ, canvas.length - maxZ);
+  if (Math.abs(mx) < 1e-9 && Math.abs(mz) < 1e-9) return null;
+
+  const A = { ...moving.start };
+  const B = { ...moving.end };
+  const len = wallLength(moving) || 1;
+  const ux = (B.x - A.x) / len;
+  const uz = (B.z - A.z) / len;
+  // The part of the movement that is across the wall rather than along it.
+  const along = mx * ux + mz * uz;
+  const acrossX = mx - along * ux;
+  const acrossZ = mz - along * uz;
+
+  const same = (p, q) => Math.abs(p.x - q.x) <= JOINT_EPS && Math.abs(p.z - q.z) <= JOINT_EPS;
+  const partway = p => {
+    const t = (p.x - A.x) * ux + (p.z - A.z) * uz;
+    if (t <= JOINT_EPS || t >= len - JOINT_EPS) return false;
+    return Math.hypot(p.x - (A.x + ux * t), p.z - (A.z + uz * t)) <= JOINT_EPS;
+  };
+
+  const shifted = walls.map(w => {
+    if (w.id === id) {
+      return {
+        ...w,
+        start: point(clean(A.x + mx), clean(A.z + mz)),
+        end: point(clean(B.x + mx), clean(B.z + mz)),
+      };
+    }
+    const carry = p => {
+      if (same(p, A) || same(p, B)) return point(clean(p.x + mx), clean(p.z + mz));
+      if (partway(p)) return point(clean(p.x + acrossX), clean(p.z + acrossZ));
+      return null;
+    };
+    const s = carry(w.start);
+    const e = carry(w.end);
+    if (!s && !e) return w;
+    return { ...w, start: s || w.start, end: e || w.end };
+  });
+
+  // Refuse a step that would crush a wall out of existence or push one off the
+  // plate. On a drag this simply stops the wall at the limit.
+  for (const w of shifted) {
+    if (wallLength(w) < neededWallLength(room, w) - 1e-9) return null;
+    for (const p of [w.start, w.end]) {
+      if (p.x < -1e-9 || p.x > canvas.width + 1e-9) return null;
+      if (p.z < -1e-9 || p.z > canvas.length + 1e-9) return null;
+    }
+  }
+  return shifted;
+}
+
+/// The floor actually enclosed by the walls, in m².
+///
+/// Not width × length: on an L, a U or anything with a courtyard that measures
+/// the bounding box and overstates the room, sometimes by a lot.
+export function floorArea(room) {
+  const regions = detectRooms(room);
+  if (regions.length === 0) return clean((room.width || 0) * (room.length || 0));
+  return clean(regions.reduce((sum, r) => sum + r.area, 0));
+}
+
 /// The rectangle the drawn walls occupy, or null when nothing is drawn yet.
 export function wallsBounds(room) {
   const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
@@ -1554,6 +1660,31 @@ export function sanitize(room) {
       rotationDegrees: quarterTurn(l.rotationDegrees),
       size: clamp(Number(l.size) || LABEL_DEFAULT_SIZE, 0.08, 1.0),
     }));
+
+  syncExtent(room);
+}
+
+/// Makes `origin`, `width` and `length` describe the walls that are actually
+/// drawn, rather than being a size someone typed once.
+///
+/// They used to be stored independently, so editing them moved no walls and
+/// editing walls moved no numbers. The two drifted apart, and because the room
+/// generator, the SVG title block and the 3D view all size themselves from
+/// these fields, a plan could be laid out, printed and walked in a rectangle
+/// that had nothing to do with the building. Deriving them here — the one place
+/// every edit passes through — makes that impossible.
+///
+/// For anything other than a plain rectangle this is the overall extent, which
+/// is what those consumers need. The floor actually enclosed is floorArea().
+export function syncExtent(room) {
+  const bounds = wallsBounds(room);
+  if (!bounds) return;                    // nothing drawn: keep what was stored
+  const width = clean(bounds.maxX - bounds.minX);
+  const length = clean(bounds.maxZ - bounds.minZ);
+  if (width < 0.01 || length < 0.01) return;
+  room.origin = { x: clean(bounds.minX), z: clean(bounds.minZ) };
+  room.width = width;
+  room.length = length;
 }
 
 // MARK: - Auto room layout
