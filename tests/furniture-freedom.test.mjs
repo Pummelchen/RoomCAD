@@ -155,5 +155,48 @@ const isValid = item => P.isFurniturePlacementValid(store.room, item, new Set([i
     JSON.stringify(f));
 }
 
+// ── The layout status line must report the ask, not the compromise ────────
+//
+// It used to print the internal target — the value the space forced the ask
+// down to — labelled "asked", so a user who typed 14 m² and got 9 was told
+// they had asked for 11.1. It also stayed silent when the space would not take
+// as many rooms as were requested.
+{
+  const room = P.freshRoom("Status", 10, 8, 2.6);
+  P.centerRoom(room);
+
+  const big = P.autoLayoutRooms(room, { count: 3, area: 40, seed: 1 });
+  check("an oversized ask still produces a layout", !!big);
+  check("the result remembers what was actually asked for",
+    big.requested && big.requested.count === 3 && big.requested.area === 40,
+    JSON.stringify(big && big.requested));
+  const bigText = store.describeLayout(big);
+  check("the status quotes the area the user typed, not the clamped target",
+    bigText.includes("asked 40.0"), bigText);
+  check("the status never quotes the internal target as the ask",
+    !bigText.includes(`asked ${big.targetArea.toFixed(1)}`)
+    || big.targetArea === 40, bigText);
+
+  // A layout that comes up short must say so.
+  const short = { rooms: [{}, {}], corridors: [], areaPerRoom: 8,
+    targetArea: 8, requested: { count: 5, area: 8 } };
+  const shortText = store.describeLayout(short);
+  check("a shortfall in room count is reported", shortText.includes("2 of 5 rooms"), shortText);
+
+  // And one that delivers must not cry wolf.
+  const exact = { rooms: [{}, {}], corridors: [], areaPerRoom: 8,
+    targetArea: 8, requested: { count: 2, area: 8 } };
+  const exactText = store.describeLayout(exact);
+  check("a layout that matched the ask reports no shortfall",
+    !exactText.includes(" of ") && !exactText.includes("asked"), exactText);
+
+  // No area given: fall back to the target rather than printing "asked null".
+  const noArea = { rooms: [{}], corridors: [], areaPerRoom: 5,
+    targetArea: 9, requested: { count: 1, area: null } };
+  const noAreaText = store.describeLayout(noArea);
+  check("with no area asked for, the status still reads sensibly",
+    !noAreaText.includes("null") && !noAreaText.includes("NaN"), noAreaText);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

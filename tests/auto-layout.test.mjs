@@ -326,6 +326,47 @@ function areaOf(r) { return r.w * r.l; }
     narrow.length === 0, `${narrow.map(c => Math.min(c.w, c.l)).join(", ")}`);
 }
 
+// Asking for more than the space can hold must give the best it can, not
+// nothing. The "already walled off, leave it alone" test used to be measured
+// against the requested area, so a large request marked every region smaller
+// than that — including the whole open floor — as already built, and the
+// generator reported there was nowhere to put anything.
+{
+  const asks = [
+    { w: 6, l: 5, count: 2, area: 200 },
+    { w: 6, l: 5, count: 1, area: 200 },
+    { w: 10, l: 8, count: 2, area: 200 },
+    { w: 10, l: 8, count: 6, area: 25 },
+  ];
+  for (const ask of asks) {
+    const room = P.freshRoom("T", ask.w, ask.l, 2.6);
+    P.centerRoom(room);
+    const r = P.autoLayoutRooms(room, { count: ask.count, area: ask.area, seed: 1 });
+    check(`${ask.count} rooms of ${ask.area} m² in ${ask.w}×${ask.l} still lays out`,
+      !!r && r.rooms.length > 0, "got nothing");
+    if (!r) continue;
+    // It should hand back the largest rooms the space allows, not the ask.
+    check(`${ask.count}×${ask.area} m² is capped at what the floor can give`,
+      r.targetArea <= ask.w * ask.l, `target ${r.targetArea} in ${ask.w * ask.l} m²`);
+    for (const rm of r.rooms) {
+      check("no room from an oversized ask escapes the floor plate",
+        rm.x >= P.roomOrigin(room).x - 1e-6 && rm.z >= P.roomOrigin(room).z - 1e-6
+        && rm.x + rm.w <= P.roomOrigin(room).x + ask.w + 1e-6
+        && rm.z + rm.l <= P.roomOrigin(room).z + ask.l + 1e-6);
+    }
+  }
+
+  // The same ask on an empty room and on one with a big open region already
+  // enclosed by the shell must not disagree about whether there is room.
+  const plain = P.freshRoom("T", 6, 5, 2.6);
+  P.centerRoom(plain);
+  const withArea = P.autoLayoutRooms(plain, { count: 2, area: 200, seed: 1 });
+  const withoutArea = P.autoLayoutRooms(plain, { count: 2, seed: 1 });
+  check("an impossible area lands on the same target as giving no area at all",
+    !!withArea && !!withoutArea && withArea.targetArea === withoutArea.targetArea,
+    `${withArea && withArea.targetArea} vs ${withoutArea && withoutArea.targetArea}`);
+}
+
 // Free space has to survive being cut up by scattered obstacles. Subtracting
 // them one after another slices full-width strips off every time, which turns
 // an open floor into slivers that only exist because of the order of the cuts.

@@ -864,15 +864,6 @@ export function publicAreaCorners(a) {
   ];
 }
 
-export function publicAreaCornerNear(room, p, tolerance = 0.22) {
-  for (const a of (room.publicAreas || [])) {
-    for (const c of publicAreaCorners(a)) {
-      if (distance(c, p) <= tolerance) return { area: a, corner: c.corner };
-    }
-  }
-  return null;
-}
-
 /// Moves one corner of a public area, keeping the opposite corner pinned.
 export function resizePublicArea(a, corner, raw, room) {
   const canvas = canvasOf(room);
@@ -1861,14 +1852,23 @@ export function autoLayoutRooms(room, opts = {}) {
   const keptDoors = (room.doors || []).filter(d => !d.generated && keptIDs.has(d.wallID));
   const keptWindows = (room.windows || []).filter(w => !w.generated && keptIDs.has(w.wallID));
 
-  // Anything already walled off small enough to be a room in its own right is
-  // treated as occupied — the generator fills what is left over, it does not
-  // re-partition rooms that already exist.
-  const subdivideFloor = (Number(opts.area) > 0 ? Number(opts.area) : 8) * 2;
+  // Anything already walled off that could not be split in two is a room in its
+  // own right, and is treated as occupied: the generator fills what is left
+  // over rather than re-partitioning rooms that already exist.
+  //
+  // The test is geometric on purpose. Measuring it against the requested area
+  // instead made a large request blank out the plan — ask for rooms of 200 m²
+  // and every region smaller than that, including the whole open floor, counted
+  // as already built, leaving nowhere to put anything.
+  const holdsTwoRooms = b => {
+    const w = b.maxX - b.minX;
+    const l = b.maxZ - b.minZ;
+    return Math.min(w, l) >= MIN_ROOM_DIM && Math.max(w, l) >= MIN_ROOM_DIM * 2;
+  };
   let built = [];
   try {
     built = detectRooms({ ...room, walls: keptWalls, publicAreas: [] })
-      .filter(r => r.area > 0 && r.area < subdivideFloor)
+      .filter(r => r.area > 0 && !holdsTwoRooms(r.bounds))
       .map(r => ({
         x: r.bounds.minX, z: r.bounds.minZ,
         w: clean(r.bounds.maxX - r.bounds.minX),
@@ -2122,6 +2122,10 @@ export function autoLayoutRooms(room, opts = {}) {
     corridors,
     areaPerRoom: clean(areas.reduce((a, b) => a + b, 0) / areas.length),
     targetArea: clean(targetArea),
+    // What was actually asked for, kept separate from the target the space
+    // allowed, so the status line can report the ask rather than presenting a
+    // number the user never typed as though they had.
+    requested: { count, area: Number(opts.area) > 0 ? Number(opts.area) : null },
     score: best.score,
     alternatives: contenders.length,
   };

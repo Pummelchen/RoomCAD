@@ -978,13 +978,21 @@ export const store = {
   /// An honest summary: what was asked for, what the space actually allowed,
   /// and how much floor went to circulation.
   describeLayout(result) {
-    const target = result.targetArea;
+    const asked = result.requested || {};
     const actual = result.areaPerRoom;
-    const off = target > 0 ? Math.abs(actual - target) / target : 0;
     const walk = result.corridors.reduce((s, c) => s + c.w * c.l, 0);
-    let text = result.rooms.length + " rooms · " + actual.toFixed(1) + " m² each";
-    if (off > 0.02) {
-      text += " (asked " + target.toFixed(1) + " — that is the closest the space allows)";
+
+    // Say so when the space would not take as many rooms as were asked for,
+    // rather than quietly reporting the smaller number as if it were the ask.
+    let text = asked.count && result.rooms.length < asked.count
+      ? result.rooms.length + " of " + asked.count + " rooms (no room for the rest)"
+      : result.rooms.length + " rooms";
+    text += " · " + actual.toFixed(1) + " m² each";
+
+    // Compare against what the user typed, not the target the space imposed.
+    const wanted = asked.area > 0 ? asked.area : result.targetArea;
+    if (wanted > 0 && Math.abs(actual - wanted) / wanted > 0.02) {
+      text += " (asked " + wanted.toFixed(1) + " — that is the closest the space allows)";
     }
     if (walk > 0.5) text += " · " + walk.toFixed(1) + " m² walk paths";
     return text;

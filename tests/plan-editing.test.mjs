@@ -105,8 +105,14 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("the corners span the rectangle",
     corners.some(c => c.x === 2 && c.z === 2) && corners.some(c => c.x === 5 && c.z === 4));
 
-  const hit = P.publicAreaCornerNear(room, { x: 5.02, z: 3.98 });
+  // The editor grabs a corner by walking publicAreaCorners of the SELECTED area
+  // against a tolerance it derives from the zoom, so exercise that same path
+  // rather than a helper nothing in the app calls.
+  const grab = (pt, tol) => corners.find(c => P.distance(c, pt) <= tol) || null;
+  const hit = grab({ x: 5.02, z: 3.98 }, 0.22);
   check("a corner is grabbable near its position", hit && hit.corner === "se", JSON.stringify(hit));
+  check("a point well away from every corner grabs nothing",
+    grab({ x: 3.5, z: 3 }, 0.22) === null);
 
   // Dragging the SE corner keeps the NW corner pinned.
   const resized = P.resizePublicArea(room.publicAreas[0], "se", { x: 6, z: 5 }, room);
