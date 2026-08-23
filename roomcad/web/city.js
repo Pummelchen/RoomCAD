@@ -1905,15 +1905,26 @@ export class City {
       return;
     }
 
-    // Otherwise it is a free choice. A bus on a route turns less often than a
-    // car running errands, and any driver would rather take the turn that does
-    // not involve crossing the oncoming lane.
-    const appetite = v.kind === "car" ? 0.34 : 0.16;
-    if (r >= appetite) return;
-    const near = legal.includes(NEAR_SIDE_TURN);
-    const cross = legal.includes(CROSSING_TURN);
-    if (near && cross) v.turn = r < appetite * 0.68 ? NEAR_SIDE_TURN : CROSSING_TURN;
-    else v.turn = near ? NEAR_SIDE_TURN : CROSSING_TURN;
+    // Otherwise it is a free choice, taken evenly between the options that
+    // exist: carry on, turn left, turn right.
+    //
+    // It used to be weighted heavily towards carrying on — a car turned at
+    // only one junction in three, a bus at one in six — and that quietly
+    // pushed the whole fleet onto the ring road. A vehicle that does not turn
+    // runs the length of the street, and the turn at the END of a street is
+    // compulsory; turning at the outermost junction is, by construction, what
+    // puts a vehicle ON the outermost road. The ring is then closed under
+    // those same compulsory turns, because the only legal turn at a corner is
+    // onto the other outer road. Easy to fall into, one chance in three per
+    // junction to leave: with 40 vehicles and no congestion at all, half of
+    // them ended up circling the edge of the city.
+    //
+    // An even choice means a vehicle almost never reaches the boundary by
+    // default — three junctions of carrying on is one chance in twenty-seven —
+    // and any that does has an even chance of turning back in at the next one.
+    const options = [0];
+    for (const t of legal) options.push(t);
+    v.turn = options[Math.floor(r * options.length) % options.length];
   }
 
   /// Sets up the quarter-circle a turning vehicle follows. The arc is tangent

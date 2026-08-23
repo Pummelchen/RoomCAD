@@ -136,6 +136,11 @@ check("headlights are running lamps, not something that switches on at dusk",
 // is a car vanishing from one street and appearing in another.
 check("the street grid is closed — nothing wraps",
   !/Wrap beyond the fog/.test(city) && /No wrapping, and nothing is ever removed/.test(city));
+// Carry on, turn left, turn right — evenly, among the options that exist.
+check("a junction is an even choice between carrying on and the turns available",
+  /const options = \[0\];[\s\S]{0,200}options\[Math\.floor\(r \* options\.length\)/.test(city));
+check("nothing weights it back towards carrying on",
+  !/appetite/.test(city), "a low turn rate pushes the whole fleet onto the ring road");
 check("a vehicle at the edge must turn, and takes the turn that needs no gap",
   /v\.mustTurn = true/.test(city) && /legal\.includes\(NEAR_SIDE_TURN\) \? NEAR_SIDE_TURN/.test(city));
 check("the turn arc starts under the wheels rather than snapping the vehicle to it",

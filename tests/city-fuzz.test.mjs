@@ -612,6 +612,58 @@ for (const [w, l, label] of [
   city.dispose();
 }
 
+// ── Where the traffic ends up ─────────────────────────────────────────────
+//
+// At every junction a vehicle chooses evenly between the options that exist:
+// carry on, turn left, turn right. On a closed grid that should scatter it
+// across every street, and the standing distribution should be roughly flat.
+//
+// It was not. Turning used to be weighted heavily towards carrying on — one
+// junction in three for a car — so most vehicles ran the whole length of a
+// street, and the turn at the END of a street is compulsory. Turning at the
+// outermost junction is by construction what puts a vehicle on the outermost
+// road, and the ring is closed under those same compulsory turns. Measured
+// with 40 vehicles and no congestion whatsoever, half the fleet ended up
+// circling the edge of the city.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const last = city.roadX.length - 1;
+  const occupancy = new Array(city.roadX.length).fill(0);
+  let sampled = 0;
+  let completedTurns = 0;
+  const turning = new Set();
+
+  for (let f = 0; f < 18000; f++) {
+    city.update(1 / 60, viewer);
+    for (const v of city.cars) {
+      if (v.arc) turning.add(v.id);
+      else if (turning.delete(v.id)) completedTurns++;
+    }
+    if (f % 300) continue;
+    for (const v of city.cars) occupancy[v.lane.roadIndex]++;
+    sampled++;
+  }
+
+  const total = occupancy.reduce((a, b) => a + b, 0);
+  const outerShare = (occupancy[0] + occupancy[last]) / total;
+  // Two road indices out of six, so an even spread is a third. The residue
+  // above that is dwell time: the ring is where compulsory turns happen, and
+  // waiting for one takes longer than driving past a junction.
+  check("the fleet does not pile onto the ring road",
+    outerShare < 0.48,
+    `${(outerShare * 100).toFixed(0)}% on the outer roads, even would be 33%`);
+  check("every street carries traffic",
+    occupancy.every(n => n / total > 0.06),
+    occupancy.map((n, i) => `${i}:${(n / total * 100).toFixed(0)}%`).join(" "));
+  // Two thirds of junctions are turned at, so a vehicle rarely runs a whole
+  // street. Under the old weighting this was about a third of that.
+  check("vehicles turn often enough to spread out",
+    completedTurns > 300, `${completedTurns} turns in five minutes`);
+  city.dispose();
+}
+
 // ── How fast each vehicle goes ────────────────────────────────────────────
 //
 // The kind sets a base speed — a bus is not a hatchback — and each driver has
