@@ -623,13 +623,29 @@ body.resizing-sidebars * {
   border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  padding: 14px 14px 12px;
+  /* No padding on the right edge. A scroll container puts its scrollbar at the
+     inside edge of its own padding box, so right padding out here lands to the
+     RIGHT of the scrollbar — it holds the scrollbar off the screen edge and
+     lets the text run straight into it. The gap belongs on the other side of
+     the bar, so it goes on the scrolling element instead. */
+  padding: 14px 0 12px 14px;
 }
 
 #inspector-content {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  /* Keeps the text clear of the scrollbar rather than the scrollbar clear of
+     the panel edge. */
+  padding-right: 14px;
+  /* Hold the same gap when there is nothing to scroll, so the column does not
+     shift sideways as content grows past the fold. */
+  scrollbar-gutter: stable;
+}
+
+/* The footer is outside the scrolling area, so it needs the inset itself. */
+#app-footer {
+  padding-right: 14px;
 }
 
 #app-version {
