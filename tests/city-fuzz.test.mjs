@@ -311,10 +311,12 @@ check("nothing lands far outside the neighbourhood",
     // floating point, not for slack — a real dip is metres, not nanometres.
     check("the land never drops below the level the streets sit on",
       lowest >= -1e-6 && lowest <= 1e-6, `lowest vertex ${lowest}`);
+    // High enough to be seen over the city's own rooflines from a window —
+    // the whole reason they exist — and not so high they read as a wall.
     check("there are actual hills, not a flat plane called terrain",
-      highest > 25, `highest ${highest.toFixed(1)} m`);
+      highest > 60, `highest ${highest.toFixed(1)} m`);
     check("the hills are not so tall they read as a wall",
-      highest < 120, `highest ${highest.toFixed(1)} m`);
+      highest < 150, `highest ${highest.toFixed(1)} m`);
     check("the terrain is coloured per vertex, so it is not one flat green",
       !!colour && coloured === colour.count, `${coloured} of ${colour ? colour.count : 0}`);
     // Two cities from the same seed must be identical, hills included.
@@ -488,14 +490,26 @@ for (const [w, l, label] of [
   check("and it covers real distance", distanceDriven > 100_000,
     `${(distanceDriven / 1000).toFixed(0)} km driven`);
 
-  // Headlights follow the time of day rather than being always on.
+  // The lamps a real car has, behaving the way real ones do.
   city.applyTimeOfDay(1);
   city.update(1 / 60, viewer);
   check("headlights are off in daylight", parts().head.count === 0, `${parts().head.count} lit`);
+  check("tail lights are off in daylight too", parts().tail.count === 0, `${parts().tail.count} lit`);
+  check("but brake lights still show by day, which is their whole point",
+    parts().brake.count === city.cars.filter(v => v.braking).length * 2,
+    `${parts().brake.count} for ${city.cars.filter(v => v.braking).length} braking`);
+
   city.applyTimeOfDay(0);
   city.update(1 / 60, viewer);
-  check("and on after dark", parts().head.count === city.cars.length * 2,
+  check("headlights come on after dark", parts().head.count === city.cars.length * 2,
     `${parts().head.count} of ${city.cars.length * 2}`);
+  // The tail light and the brake light are the same lamp at two brightnesses,
+  // so after dark every vehicle shows exactly one of them at the back — never
+  // both stacked in the same place, and never neither.
+  const lit = parts().tail.count / 2 + parts().brake.count / 2;
+  check("after dark every vehicle shows exactly one rear lamp",
+    lit === city.cars.length,
+    `${parts().tail.count / 2} tail + ${parts().brake.count / 2} brake = ${lit} of ${city.cars.length}`);
   city.dispose();
 }
 

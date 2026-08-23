@@ -112,7 +112,16 @@ check("vehicles keep their distance from the one in front",
 check("brake lights and indicators are driven by the model, not animated",
   /if \(v\.braking\)/.test(city) && /if \(v\.indicate !== 0 && blinkOn\)/.test(city));
 check("a lamp that is off is not drawn at all",
-  city.includes("head.count = heads") && city.includes("brake.count = brakes"));
+  city.includes("head.count = heads") && city.includes("brake.count = brakes")
+  && city.includes("tail.count = tails"));
+// Lamps are grouped the way a car's are: white or red on the corner, amber
+// tucked in beside it. Scattering them along the body reads as decoration.
+check("the lamps are arranged as corner clusters, not spread along the body",
+  /const outer = W \* 0\.36;/.test(city) && /const inner = W \* 0\.19;/.test(city));
+check("a car has tail lights, not just brake lights",
+  /tail: make\(/.test(city) && /tail\.setMatrixAt/.test(city));
+check("the tail light gives way to the brake light rather than being drawn under it",
+  /if \(!v\.braking\) \{[\s\S]{0,300}tail\.setMatrixAt/.test(city));
 
 check("weather is a state of the whole scene", city.includes("setWeather(kind)") &&
   city.includes("atmosphere()") && walk.includes("this.city.setWeather(store.weather)"));

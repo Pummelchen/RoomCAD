@@ -50,7 +50,11 @@ const TERRAIN_SEGMENTS = 168;
 // front of them. Push the ridge further out and it becomes flat fog-coloured
 // nothing, which is the problem it exists to solve.
 const HILL_REACH = 105;         // metres from the last street to the ridge
-const HILL_HEIGHT = 54;
+// Tall enough to clear the rooflines. A six-storey building 60 m away hides
+// everything below about 60 m at the far side of the city, so a ridge of half
+// that height is behind the skyline and might as well not be there — which is
+// exactly how the first attempt at this looked from a window.
+const HILL_HEIGHT = 100;
 export const TERRAIN_FLAT_MARGIN = 0.35;  // of one block span, kept level
 
 // A friendly, slightly sun-bleached palette. Saturated enough to read at a
@@ -506,8 +510,11 @@ export class City {
         // straight under the pavement through.
         const roll = fbm(wx / 90, wz / 90, seed);   // 0..1, never negative
         y += smoothstep(clamp01(t * 2.2)) * 9 * roll;
-        // The ridge itself: far enough out to sit behind the whole city.
-        const ridge = smootherstep(clamp01((t - 0.22) / 0.78));
+        // The ridge itself. It has to reach full height WELL before the edge
+        // of the mesh: ramping all the way out means the only part of it above
+        // the city's rooflines is its lowest shoulder, and from a window there
+        // is nothing to see. Full height by about 240 m, plateau beyond.
+        const ridge = smootherstep(clamp01((t - 0.10) / 0.50));
         y += ridge * HILL_HEIGHT * (0.45 + 0.55 * fbm(wx / 165 + 40, wz / 165 - 25, seed + 7));
         pos.setY(i, y);
       }
@@ -1061,9 +1068,14 @@ export class City {
         lamp(0xfff3d0, 0xffe9b8, 0),
         n * 2
       ),
+      tail: make(
+        new THREE.BoxGeometry(1, 1, 1),
+        lamp(0x4a1210, 0xd8241a, 1.1),
+        n * 2
+      ),
       brake: make(
         new THREE.BoxGeometry(1, 1, 1),
-        lamp(0x5a1512, 0xff2a18, 2.6),
+        lamp(0x5a1512, 0xff2a18, 3.0),
         n * 2
       ),
       indicator: make(
@@ -1460,11 +1472,12 @@ export class City {
 
   _writeCarMatrices() {
     if (!this.carParts) return;
-    const { body, box, wheel, head, brake, indicator } = this.carParts;
+    const { body, box, wheel, head, tail, brake, indicator } = this.carParts;
     const night = 1 - clamp01(this._dayAmount);
     const lightsOn = night > 0.25;
     const blinkOn = ((this._clock * BLINK_HZ) % 1) < 0.55;
     let heads = 0;
+    let tails = 0;
     let brakes = 0;
     let indicators = 0;
 
@@ -1523,52 +1536,77 @@ export class City {
         }
       }
 
-      // Lamps. Each is written only when it is actually lit, and the instance
-      // count is moved to match, so nothing is ever drawn at zero size.
+      // Lamps, arranged the way a real car's are: a cluster at each of the four
+      // corners. The white headlight and the red tail light sit outboard where
+      // the corner is, and the amber indicator sits immediately inboard of each
+      // — one housing, read as one unit. Nothing is drawn at zero size; a lamp
+      // that is off is simply not written, and the instance count moves.
       const nose = L / 2 + 0.02;
-      const tail = -L / 2 - 0.02;
+      const back = -L / 2 - 0.02;
       const lampY = floor + v.bodyH * 0.55;
-      const lampSide = W * 0.34;
+      const outer = W * 0.36;   // headlight / tail light, on the corner
+      const inner = W * 0.19;   // indicator, beside it in the same cluster
+
+      // Headlights and tail lights are position lamps: both come on after
+      // dark and stay on. The tail light shares its housing with the brake
+      // light, so it gives way to it rather than being drawn underneath.
       if (lightsOn) {
         for (const s of [-1, 1]) {
           head.setMatrixAt(heads++, boxMatrix(
-            v.x + fx * nose + rx * lampSide * s,
-            lampY, v.z + fz * nose + rz * lampSide * s,
-            0.16, 0.17, 0.3, rotY, _m
+            v.x + fx * nose + rx * outer * s,
+            lampY, v.z + fz * nose + rz * outer * s,
+            0.16, 0.17, 0.30, rotY, _m
           ));
         }
+        if (!v.braking) {
+          for (const s of [-1, 1]) {
+            tail.setMatrixAt(tails++, boxMatrix(
+              v.x + fx * back + rx * outer * s,
+              lampY, v.z + fz * back + rz * outer * s,
+              0.13, 0.19, 0.32, rotY, _m
+            ));
+          }
+        }
       }
+
+      // Brake lights are the same lamp lit hard, and are meant to be visible
+      // in daylight as well — that is the whole point of them.
       if (v.braking) {
         for (const s of [-1, 1]) {
           brake.setMatrixAt(brakes++, boxMatrix(
-            v.x + fx * tail + rx * lampSide * s,
-            lampY, v.z + fz * tail + rz * lampSide * s,
+            v.x + fx * back + rx * outer * s,
+            lampY, v.z + fz * back + rz * outer * s,
             0.13, 0.19, 0.34, rotY, _m
           ));
         }
       }
+
+      // Indicators: both lamps down the side being turned towards, front and
+      // rear, each one tucked in beside its cluster's main lamp.
       if (v.indicate !== 0 && blinkOn) {
-        const s = v.indicate;   // +1 right, -1 left
+        const s = v.indicate;   // +1 right-hand side, -1 left-hand side
         indicator.setMatrixAt(indicators++, boxMatrix(
-          v.x + fx * nose + rx * lampSide * s * 1.08,
-          lampY, v.z + fz * nose + rz * lampSide * s * 1.08,
-          0.12, 0.16, 0.22, rotY, _m
+          v.x + fx * nose + rx * inner * s,
+          lampY, v.z + fz * nose + rz * inner * s,
+          0.12, 0.16, 0.20, rotY, _m
         ));
         indicator.setMatrixAt(indicators++, boxMatrix(
-          v.x + fx * tail + rx * lampSide * s * 1.08,
-          lampY, v.z + fz * tail + rz * lampSide * s * 1.08,
-          0.12, 0.16, 0.22, rotY, _m
+          v.x + fx * back + rx * inner * s,
+          lampY, v.z + fz * back + rz * inner * s,
+          0.12, 0.16, 0.20, rotY, _m
         ));
       }
     }
 
     head.count = heads;
+    tail.count = tails;
     brake.count = brakes;
     indicator.count = indicators;
     body.instanceMatrix.needsUpdate = true;
     box.instanceMatrix.needsUpdate = true;
     wheel.instanceMatrix.needsUpdate = true;
     head.instanceMatrix.needsUpdate = true;
+    tail.instanceMatrix.needsUpdate = true;
     brake.instanceMatrix.needsUpdate = true;
     indicator.instanceMatrix.needsUpdate = true;
   }
