@@ -37,6 +37,7 @@ SESSION_TTL_SECONDS = 31536000
 # A request body is read into memory, so it has to be bounded: without this a
 # client could announce a huge Content-Length and exhaust the process. Rooms
 # are JSON documents of a few hundred kB at most.
+MAX_CHUNK_LINE = 65536      # longest chunk-size or trailer line accepted
 MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # Failed-login throttle. One shared password is brute-forceable otherwise.
@@ -412,6 +413,64 @@ def expire_live_drafts():
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle_one_request(self):
+        # One handler instance serves EVERY request on a keep-alive connection,
+        # so per-request state has to be reset here — __init__ runs once per
+        # connection, not once per request. Leaving _body_done set from the
+        # previous request made _drain() a no-op for the next one, which put
+        # that request's body back into the stream. It only showed up behind a
+        # proxy, because a proxy is what reuses upstream connections.
+        self._body_done = False
+        return super().handle_one_request()
+
+    def _body_bytes(self):
+        """Reads the request body under either framing.
+
+        Returns (status, data) where status is "ok", "none", "too_large" or
+        "bad". http.server does not decode chunked bodies, and a body arrives
+        chunked whenever a proxy re-frames it — which is exactly what happens
+        in production, where nginx and Caddy sit in front. Handling only
+        Content-Length here meant a chunked body was left in the socket
+        entirely.
+        """
+        encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in encoding:
+            data = bytearray()
+            while True:
+                line = self.rfile.readline(MAX_CHUNK_LINE)
+                if not line:
+                    return ("bad", None)
+                try:
+                    size = int(line.split(b";", 1)[0].strip(), 16)
+                except ValueError:
+                    return ("bad", None)
+                if size == 0:
+                    # Trailing headers, if any, then the blank line that ends them.
+                    while True:
+                        trailer = self.rfile.readline(MAX_CHUNK_LINE)
+                        if not trailer or trailer in (b"\r\n", b"\n"):
+                            break
+                    return ("ok", bytes(data))
+                if len(data) + size > MAX_BODY_BYTES:
+                    return ("too_large", None)
+                chunk = self.rfile.read(size)
+                if len(chunk) != size:
+                    return ("bad", None)
+                data.extend(chunk)
+                self.rfile.read(2)          # the CRLF that closes the chunk
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            return ("bad", None)
+        if length <= 0:
+            return ("none", b"")
+        if length > MAX_BODY_BYTES:
+            return ("too_large", None)
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return ("bad", None)
+        return ("ok", body)
+
     def _drain(self):
         """Swallows an unread request body.
 
@@ -419,31 +478,19 @@ class Handler(BaseHTTPRequestHandler):
         path, a throttled login, a rejected name — used to leave those bytes in
         the socket. On a keep-alive connection the next request is then parsed
         starting in the middle of the previous body, so a client that merely
-        POSTs to the wrong URL breaks its *following* request too. Oversized
-        bodies are not drained; the connection is closed instead of reading
-        megabytes only to discard them.
+        POSTs to the wrong URL breaks its *following* request too. An oversized
+        or malformed body is not drained; the connection is closed instead of
+        reading megabytes only to discard them.
         """
         if getattr(self, "_body_done", False):
             return
         self._body_done = True
         try:
-            length = int(self.headers.get("Content-Length", 0))
-        except (TypeError, ValueError):
-            self.close_connection = True
-            return
-        if length <= 0:
-            return
-        if length > MAX_BODY_BYTES:
-            self.close_connection = True
-            return
-        try:
-            remaining = length
-            while remaining > 0:
-                chunk = self.rfile.read(min(remaining, 65536))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
+            status, _ = self._body_bytes()
         except Exception:
+            self.close_connection = True
+            return
+        if status in ("too_large", "bad"):
             self.close_connection = True
 
     def _send(self, obj, code=200):
@@ -507,24 +554,19 @@ class Handler(BaseHTTPRequestHandler):
         """Reads a bounded JSON body. Sends the error response and returns None
         if the body is missing, oversized or malformed."""
         try:
-            length = int(self.headers.get("Content-Length", 0))
-        except (TypeError, ValueError):
-            self._send({"error": "bad request"}, 400)
-            return None
-        if length <= 0:
-            self._send({"error": "bad request"}, 400)
-            return None
-        if length > MAX_BODY_BYTES:
+            status, raw = self._body_bytes()
+        except Exception:
+            status, raw = "bad", None
+        self._body_done = True
+        if status == "too_large":
+            self.close_connection = True
             self._send({"error": "payload too large"}, 413)
             return None
-        try:
-            raw = self.rfile.read(length)
-        except Exception:
-            self.close_connection = True
-            self._body_done = True
+        if status != "ok" or not raw:
+            if status == "bad":
+                self.close_connection = True
             self._send({"error": "bad request"}, 400)
             return None
-        self._body_done = True
         try:
             return json.loads(raw.decode("utf-8"))
         except Exception:

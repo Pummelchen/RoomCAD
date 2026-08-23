@@ -397,6 +397,75 @@ def main():
     check("both requests on the connection get a response",
           text.count("HTTP/1.1 ") >= 2, f"{text.count('HTTP/1.1 ')} responses")
 
+    # SEVERAL bodied requests down one connection. http.server reuses a single
+    # handler instance for every request on a connection, so per-request state
+    # set while handling the first is still there for the second. That made the
+    # drain a no-op for every request after the first, and only showed up
+    # through a proxy, because a proxy is what reuses upstream connections.
+    sock = _socket.create_connection(("127.0.0.1", port))
+    sock.settimeout(4)
+    for _ in range(3):
+        sock.sendall(b"POST /api/nope HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                     + str(len(junk)).encode() + b"\r\n\r\n" + junk)
+    sock.sendall(b"GET /api/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    raw = b""
+    try:
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except _socket.timeout:
+        pass
+    sock.close()
+    text = raw.decode("latin1")
+    check("repeated bodied requests on one connection stay in sync",
+          "Bad request syntax" not in text, text[:200])
+    check("every request on a reused connection is answered",
+          text.count("HTTP/1.1 ") >= 4, f"{text.count('HTTP/1.1 ')} responses for 4 requests")
+
+    # A body may arrive chunked rather than with a Content-Length — that is how
+    # a proxy re-frames one. http.server does not decode chunked itself.
+    sock = _socket.create_connection(("127.0.0.1", port))
+    sock.settimeout(4)
+    sock.sendall(b"POST /api/nope HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                 + hex(len(junk))[2:].encode() + b"\r\n" + junk + b"\r\n0\r\n\r\n")
+    sock.sendall(b"GET /api/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    raw = b""
+    try:
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except _socket.timeout:
+        pass
+    sock.close()
+    text = raw.decode("latin1")
+    check("a chunked body is drained too, not left in the stream",
+          "Bad request syntax" not in text, text[:200])
+
+    # And a chunked body must actually be readable, not rejected outright.
+    sock = _socket.create_connection(("127.0.0.1", port))
+    sock.settimeout(4)
+    creds = json.dumps({"password": "testpass"}).encode()
+    sock.sendall(b"POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                 b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                 + hex(len(creds))[2:].encode() + b"\r\n" + creds + b"\r\n0\r\n\r\n")
+    raw = b""
+    try:
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except _socket.timeout:
+        pass
+    sock.close()
+    check("a chunked request body is accepted, not answered with 400",
+          raw.decode("latin1").startswith("HTTP/1.1 200"),
+          raw.decode("latin1").split("\r\n")[0])
+
     # Empty watcher sets are removed rather than accumulating per room name.
     reader.stop()
     reader2.stop()
