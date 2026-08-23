@@ -56,15 +56,21 @@ for (const [label, src] of [["production", prod], ["local dev", dev]]) {
 check("production serves the app with no-cache", /Cache-Control\s+"no-cache"/.test(prod));
 check("local dev matches production on caching", /Cache-Control\s+"no-cache"/.test(dev));
 
-// Caddy serves RoomCAD end to end now. Nothing is in front of it, so its own
-// view of the request is the truth — copying X-Forwarded-* from a header that
-// is no longer sent would tell the API the request came in over plain HTTP and
-// drop the Secure flag from the session cookie.
-check("production does not copy X-Forwarded-* from a proxy that is gone",
-  !/header_up\s+X-Forwarded-/.test(prod));
-check("production terminates TLS itself", /^\s*tls\s+\S+fullchain\.pem\s+\S+privkey\.pem/m.test(prod));
-check("production serves RoomCAD on its own host and port",
-  /roomcad\.[\d.]+\.nip\.io:\d+\s*\{/.test(prod));
+// The master in /var/caddy terminates TLS and routes to here; RoomCAD's own
+// server does no TLS at all and is reachable only on loopback.
+check("RoomCAD's own server does no TLS — the master owns certificates",
+  !/^\s*tls\s+\S*fullchain\.pem/m.test(prod) && /auto_https off/.test(prod));
+check("it binds loopback only, so nothing reaches it around the TLS hop",
+  /^\s*bind 127\.0\.0\.1/m.test(prod));
+check("its site block matches any host, since the master forwards the real one",
+  /^:8081 \{/m.test(prod),
+  "a block keyed on an address matches nothing and answers an empty 200");
+// The scheme now has to be carried across a plain-HTTP hop. Caddy sets
+// X-Forwarded-Proto from the connection IT received, which is loopback HTTP —
+// so left alone the API would think the request was insecure and drop the
+// Secure flag from the session cookie.
+check("the original scheme is passed through to the API",
+  /header_up X-Forwarded-Proto \{header\.X-Forwarded-Proto\}/.test(prod));
 
 // — Nothing outside /var/roomcad ————————————————————————————————
 {
@@ -84,8 +90,22 @@ check("production serves RoomCAD on its own host and port",
     /\/var\/roomcad\/caddy\/Caddyfile/.test(deploy));
   check("deploy validates with RoomCAD's own copy of the binary",
     /\/var\/roomcad\/bin\/caddy validate/.test(deploy));
-  check("deploy drives RoomCAD's own unit, not the shared one",
-    /systemctl reload roomcad-caddy/.test(deploy) && !/systemctl reload caddy\b/.test(commands));
+  check("deploy drives RoomCAD's own unit", /systemctl reload roomcad-caddy/.test(deploy));
+  // It does reload the master, because that is how its own route takes effect
+  // — but the master's WHOLE config is validated first. An invalid route here
+  // would take down every project on the host, which is the exact coupling
+  // this arrangement exists to prevent.
+  check("deploy validates the master's config before reloading it",
+    /caddy validate --config \/var\/caddy\/Caddyfile[\s\S]{0,400}systemctl reload caddy/.test(deploy));
+  check("and fails loudly if the master does not come back",
+    /every project on this host is down/.test(deploy));
+  const copiesElsewhere = deploy.split("\n")
+    .filter(l => !/^\s*#/.test(l))
+    .filter(l => /\bscp\b/.test(l) && /\$HOST:\/var\//.test(l))
+    .filter(l => !/\$HOST:\/var\/roomcad\//.test(l));
+  check("the only thing it writes outside /var/roomcad is its own route",
+    copiesElsewhere.every(l => /\/var\/caddy\/projects\/roomcad\.caddy/.test(l)),
+    copiesElsewhere.join(" ; "));
   // Directives only: the comments explain what used to share this file.
   const prodDirectives = prod.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
   check("the config carries no other project's site",
@@ -112,45 +132,71 @@ check("production serves RoomCAD on its own host and port",
     /ExecReload=[^\n]*--address unix\/\/var\/roomcad\/caddy\/admin\.sock/.test(unit));
 }
 
-// — The migration that separated them ———————————————————————————
+// — RoomCAD's route in the master —————————————————————————————
+//
+// The host runs a master Caddy in /var/caddy that owns 80 and 443, terminates
+// TLS and routes each hostname to the project that serves it. Every project
+// owns exactly one file in /var/caddy/projects/ and nothing else there. That
+// boundary is the point: the arrangement before it had one Caddyfile holding
+// every project's real configuration, so each deploy overwrote the others'.
 {
-  const splitPath = join(root, "roomcad", "server", "split-caddy-instances.sh");
-  check("the migration that split the instances is in the repository", existsSync(splitPath));
-  const split = existsSync(splitPath) ? readFileSync(splitPath, "utf8") : "";
-  check("it gives the other project its own instance too, rather than leaving it homeless",
-    /xaios-caddy\.service/.test(split) && /\/var\/xaios_updater\/bin\/caddy/.test(split));
-  check("it validates both configs before switching anything",
-    /validate --config \/var\/roomcad\/caddy\/Caddyfile/.test(split)
-    && /validate --config \/var\/xaios_updater\/caddy\/Caddyfile/.test(split));
-  check("it puts the old server back if either new one fails to start",
-    /Rolling back to the shared instance/.test(split) && /systemctl start caddy/.test(split));
-  check("it hides the server's own files from the directory it serves",
-    /hide \/var\/xaios_updater\/caddy/.test(split),
-    "the config sits inside the web root");
-  check("it disables the shared unit rather than deleting anyone's files",
-    /systemctl disable caddy/.test(split) && !/rm -rf \/etc\/caddy/.test(split));
+  const routePath = join(root, "roomcad", "server", "roomcad.caddy");
+  check("RoomCAD ships a route for the master", existsSync(routePath));
+  const route = existsSync(routePath) ? readFileSync(routePath, "utf8") : "";
+  check("the route names only RoomCAD's own hostname",
+    /roomcad\.[\d.]+\.nip\.io/.test(route)
+    && !/minecraft|xaios/.test(route.split("\n").filter(l => !/^\s*#/.test(l)).join("\n")));
+  check("it forwards to RoomCAD's loopback server", /reverse_proxy [^\n]*127\.0\.0\.1:8081/.test(route));
+  check("it keeps the old :8443 links working", /:8443/.test(route));
+  check("it preserves the client's Host, or the backend matches nothing",
+    /header_up Host \{host\}/.test(route));
+  check("it does not buffer server-sent events", /flush_interval -1/.test(route));
+  check("deploy installs it into the master's projects directory",
+    /\/var\/caddy\/projects\/roomcad\.caddy/.test(deploy));
 }
 
-// — Renewing the certificate without borrowing anyone's directories ————
+// — No certificate handling left in this project ————————————————
 {
-  const renewPath = join(root, "roomcad", "server", "renew-certificate.sh");
-  check("a self-contained renewal script ships", existsSync(renewPath));
-  const renew = existsSync(renewPath) ? readFileSync(renewPath, "utf8") : "";
-  check("it keeps its certbot state under /var/roomcad",
-    /STORE=\/var\/roomcad\/letsencrypt/.test(renew));
-  check("it will not stop another project's web server on its own",
-    /Not renewing/.test(renew) && /--take-port-80/.test(renew));
-  check("and it warns that nginx cannot currently restart before offering to",
-    /currently FAILS/.test(renew) && /would not come back/.test(renew));
-  check("it installs the result for RoomCAD's own user only",
-    /-o root -g roomcadweb \/var\/roomcad\/tls/.test(renew));
-  check("the old shared-store hook is gone for good",
+  // The master owns port 80, so it answers the ACME challenge itself. There is
+  // no certbot, no store to borrow from and no hook to copy anything — which
+  // is what the previous two arrangements were, and both broke when a
+  // directory belonging to another project moved.
+  const commands = deploy.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+  check("the deploy has no certificate handling at all",
+    !/certbot|fullchain\.pem|renewal-hooks/.test(commands));
+  check("the renewal script is gone with it",
+    !existsSync(join(root, "roomcad", "server", "renew-certificate.sh")));
+  check("and so is the hook it replaced",
     !existsSync(join(root, "roomcad", "server", "certbot-deploy-hook.sh")));
-  check("deploy reports how long the certificate has left",
-    /openssl x509 -checkend/.test(deploy));
 }
 
-// HSTS, on the host Caddy now owns end to end.
+// — Two proxies now sit in front of the API —————————————————————
+{
+  // client -> master -> RoomCAD's Caddy -> the API. The real client address is
+  // one entry further from the end of X-Forwarded-For than it used to be; left
+  // unset, every request throttles as 127.0.0.1.
+  check("deploy sets the proxy hop count to match the chain",
+    /ROOMCAD_PROXY_HOPS=1/.test(deploy));
+}
+
+// — The Caddy binary each project runs ——————————————————————————
+{
+  const instPath = join(root, "roomcad", "server", "install-caddy.sh");
+  check("there is a way to install the official Caddy release", existsSync(instPath));
+  const inst = existsSync(instPath) ? readFileSync(instPath, "utf8") : "";
+  check("it takes the binary from upstream, not from the distribution",
+    /github\.com\/caddyserver\/caddy\/releases/.test(inst));
+  check("it gives each project its own copy", /\$dir\/bin\/caddy/.test(inst));
+  check("it replaces the binary via a temporary name, since a running server holds it open",
+    /caddy\.new/.test(inst));
+  // Both of these cost a silent failure once: an early-exiting reader closes
+  // the pipe, the writer takes SIGPIPE, and pipefail turns a successful
+  // download into a fatal error that printed nothing at all.
+  check("it does not pipe a download into an early-exiting reader",
+    !/curl[^\n|]*\|[^\n]*(grep -m1|head -)/.test(inst));
+}
+
+// HSTS, on the host Caddy now owns end to end.// HSTS, on the host Caddy now owns end to end.
 check("production sends HSTS", /Strict-Transport-Security\s+"max-age=\d+/.test(prod));
 check("HSTS is not preloaded and does not claim subdomains",
   !/Strict-Transport-Security[^"]*"[^"]*(preload|includeSubDomains)/.test(prod));
@@ -180,10 +226,12 @@ check("the policy blocks framing and plugins",
 // HTTP/3. It is Caddy's default, but a default is a quiet thing to lose on an
 // upgrade, and QUIC needs a UDP firewall rule that opening the TCP port does
 // not give you — so the deploy has to check reachability rather than assume it.
-check("HTTP/3 is enabled explicitly, not left to the default",
-  /servers\s*\{[\s\S]*?protocols[^\n]*\bh3\b/.test(prod));
-check("HTTP/1.1 and HTTP/2 are kept alongside it",
-  /protocols[^\n]*\bh1\b/.test(prod) && /protocols[^\n]*\bh2\b/.test(prod));
+// HTTP/3 belongs to whichever server terminates TLS, which is now the master.
+// RoomCAD's own server speaks plain HTTP on loopback and cannot advertise it,
+// so there is nothing to assert in this config — but the deploy still checks
+// the live site, which is the only thing that actually proves it.
+check("RoomCAD's own config does not try to own HTTP/3 any more",
+  !/protocols[^\n]*\bh3\b/.test(prod));
 check("deploy checks HTTP/3 actually connects", /--http3-only/.test(deploy));
 check("deploy reads the Alt-Svc advertisement", /alt-svc/i.test(deploy));
 // A failed HTTP/3 test from the deploying machine does not mean HTTP/3 is
@@ -217,7 +265,8 @@ check("deploy fails loudly when it is not running",
 check("deploy will not claim success until the site actually answers",
   /curl[^\n]*%\{http_code\}[\s\S]{0,600}FAILED:/.test(deploy));
 check("the check uses the real public URL over TLS",
-  /SITE="https:\/\/roomcad\.[\d.]+\.nip\.io:\d+"/.test(deploy));
+  /SITE="https:\/\/roomcad\.[\d.]+\.nip\.io"/.test(deploy));
+check("and the old :8443 links are checked too", /:8443\//.test(deploy));
 
 console.log(`${passed} passed, ${failed} failed — deployment config contracts`);
 if (failed) process.exit(1);

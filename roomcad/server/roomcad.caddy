@@ -1,0 +1,30 @@
+# RoomCAD — https://roomcad.91.99.176.243.nip.io
+# Own web server: /var/roomcad/caddy, roomcad-caddy.service
+#
+# RoomCAD's own Caddy listens on plain HTTP on loopback. The master terminates
+# TLS for this hostname and obtains the certificate itself, so there is no
+# second TLS hop, no certificate for RoomCAD to keep, and nothing to renew.
+#
+# 8443 is kept alongside 443 because links to it were handed out while RoomCAD
+# served that port directly. It is now the master answering both.
+#
+# This file is RoomCAD's, installed by its deploy. No other project touches it,
+# and it touches no other project.
+
+{$ROOMCAD_SITE_ADDRESS:roomcad.91.99.176.243.nip.io}, {$ROOMCAD_ALT_ADDRESS:roomcad.91.99.176.243.nip.io:8443} {
+	reverse_proxy {$ROOMCAD_UPSTREAM:127.0.0.1:8081} {
+		# Server-sent events for live collaboration must not be buffered.
+		flush_interval -1
+		# Preserve the client's Host, matching the other projects here.
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output file {$CADDY_LOG_DIR:/var/log/caddy}/roomcad.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+}

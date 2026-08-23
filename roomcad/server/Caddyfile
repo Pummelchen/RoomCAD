@@ -5,44 +5,40 @@
 # and its own systemd unit (roomcad-caddy.service). It shares nothing with any
 # other web server on the host.
 #
-# It used to be a site block inside the system-wide /etc/caddy/Caddyfile, which
-# also served an unrelated project on :8090 — so RoomCAD's deploy overwrote
-# that project's configuration on every release, and that project's changes
-# would have been lost on the next one. Two projects in one config file is one
-# project's outage away from being the other project's problem.
+# It listens on LOOPBACK ONLY. The host's master Caddy in /var/caddy owns ports
+# 80 and 443, terminates TLS and routes this hostname here:
 #
-# Nothing here reads a path belonging to anything else. In particular the
-# certificate lives in /var/roomcad/tls, which is RoomCAD's own directory: the
-# old arrangement copied it out of certbot's store through a hook, and when
-# that store turned out to be a symlink into a third project's tree — a tree
-# that was later restructured — the link dangled and deploys began failing.
+#   client ─443─> master (/var/caddy) ─> here (127.0.0.1:8081) ─> API (:8078)
+#
+# So this instance does no TLS at all. Certificates are the master's job, and
+# because the master owns port 80 it answers the ACME challenge itself — no
+# certbot, no store to borrow from, no hook to copy anything. The arrangement
+# before this one borrowed a certificate out of certbot's store, which was a
+# symlink into an unrelated project's tree; when that tree was restructured the
+# link dangled and deploys began failing.
+#
+# RoomCAD's route into the master is the single file roomcad.caddy, installed
+# into /var/caddy/sites/. No project edits another's routes.
 
 {
-	auto_https disable_redirects
-	# This instance's own admin socket. Two Caddy processes cannot both hold
-	# the default admin endpoint on 127.0.0.1:2019, and whichever started
-	# second would fail.
+	# Nothing here is reached from outside, so there is no TLS and no automatic
+	# HTTPS to arrange. HTTP/3 is the master's business now — it is the server
+	# clients actually connect to.
+	auto_https off
+	# This instance's own admin socket. Several Caddy processes run on this
+	# host and they cannot share the default admin endpoint on 127.0.0.1:2019.
 	admin unix//var/roomcad/caddy/admin.sock
-	servers {
-		# HTTP/3 is on by default in this Caddy, but say so explicitly: it is a
-		# property of the deployment we care about, and a default is a quiet
-		# thing to lose on an upgrade. Caddy then listens on UDP as well as TCP
-		# for every TLS site and advertises h3 via Alt-Svc.
-		#
-		# QUIC is UDP, and a firewall that allows TCP on a port does not allow
-		# UDP on it — the two are separate rules. If HTTP/3 is not reachable
-		# from outside while it works on the host itself, that is where to look;
-		# deploy.sh checks and says so.
-		protocols h1 h2 h3
-	}
 }
 
-# The port is 8443 rather than 443 because an unrelated service already holds 80
-# and 443 on this host. That also rules out Caddy running ACME for itself —
-# HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443 — so it serves a
-# certificate kept in RoomCAD's own directory (see renew-certificate.sh).
-roomcad.91.99.176.243.nip.io:8443 {
-	tls /var/roomcad/tls/fullchain.pem /var/roomcad/tls/privkey.pem
+# Loopback only: the master is the only way in, and binding this to a public
+# interface would let someone reach the app around the TLS termination.
+#
+# The block matches ANY host, and binds to 127.0.0.1. It cannot be keyed on the
+# public hostname: the master forwards the client's Host header unchanged, so a
+# block keyed on an address would match nothing and Caddy would answer an empty
+# 200 — a success with no body, and no error logged anywhere.
+:8081 {
+	bind 127.0.0.1
 	encode gzip
 
 	header {
@@ -64,12 +60,17 @@ roomcad.91.99.176.243.nip.io:8443 {
 	}
 
 	handle /api/* {
-		# No X-Forwarded-* overrides here, deliberately. They existed to stop
-		# Caddy replacing nginx's view of the request. With nothing in front,
-		# Caddy's own values ARE the truth, and copying a header that is no
-		# longer sent would tell the API the request arrived over plain HTTP and
-		# drop the Secure flag from the session cookie.
+		# Pass the ORIGINAL scheme through. Caddy sets X-Forwarded-Proto from
+		# the connection it received, and the connection from the master is
+		# plain HTTP over loopback — so left alone it would tell the API the
+		# request arrived over HTTP, and the API would drop the Secure flag
+		# from the session cookie. What matters is the scheme the user used,
+		# which is what the master put in the header.
+		#
+		# Empty when nothing is in front (local development), in which case the
+		# API falls back to judging by hostname, and loopback stays insecure.
 		reverse_proxy 127.0.0.1:8078 {
+			header_up X-Forwarded-Proto {header.X-Forwarded-Proto}
 			flush_interval -1
 		}
 	}

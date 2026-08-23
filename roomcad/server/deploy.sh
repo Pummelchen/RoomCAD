@@ -23,30 +23,16 @@ ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
   chmod 755 '$REMOTE_ROOT/server.py' && \
   find '$REMOTE_ROOT/web' -name '._*' -delete"
 
-# RoomCAD keeps its own certificate in its own directory. It used to be copied
-# out of certbot's store by a renewal hook — but that store is a symlink into a
-# third project's tree on this host, and when that tree was restructured the
-# link dangled and the deploy started failing halfway. Nothing in this script
-# reads a path belonging to another project any more; the certificate is simply
-# checked, and its expiry reported.
-echo "Checking RoomCAD's certificate …"
-if ! ssh "$HOST" "test -r /var/roomcad/tls/fullchain.pem && test -r /var/roomcad/tls/privkey.pem"; then
-  echo "ABORTED: /var/roomcad/tls is missing its certificate or key." >&2
-  echo "Nothing was installed. The running site is untouched." >&2
-  exit 1
-fi
-CERT_END=$(ssh "$HOST" "openssl x509 -enddate -noout -in /var/roomcad/tls/fullchain.pem" 2>/dev/null | cut -d= -f2)
-CERT_DAYS=$(ssh "$HOST" "openssl x509 -checkend 2592000 -noout -in /var/roomcad/tls/fullchain.pem >/dev/null 2>&1 && echo ok || echo soon")
-echo "  valid until $CERT_END"
-if [ "$CERT_DAYS" = "soon" ]; then
-  echo "  WARNING: that is less than 30 days away. See renew-certificate.sh." >&2
-fi
-
 # RoomCAD runs its OWN Caddy: its own binary under /var/roomcad/bin, its own
-# config, its own storage, its own unix user and its own unit. It used to be a
-# site block inside the system-wide /etc/caddy/Caddyfile, which also served an
-# unrelated project — so this deploy overwrote that project's configuration on
-# every release. See split-caddy-instances.sh for the migration.
+# config, its own storage, its own unix user and its own unit. It listens on
+# plain HTTP on loopback; the host's master server in /var/caddy owns 80 and
+# 443, terminates TLS and routes this hostname here.
+#
+# RoomCAD's route into the master is one file, /var/caddy/projects/roomcad.caddy,
+# installed below. That is the ONLY thing this deploy writes outside
+# /var/roomcad, and no other project's route is touched — which is the whole
+# arrangement: one shared Caddyfile holding every project's real config is what
+# made each deploy overwrite the others'.
 #
 # Validate with the binary that will actually run it. Directives come and go
 # between Caddy versions, so validating with some other copy proves nothing —
@@ -65,14 +51,26 @@ if ! ssh "$HOST" "/var/roomcad/bin/caddy validate --config /tmp/Caddyfile.candid
 fi
 ssh "$HOST" "rm -f /tmp/Caddyfile.candidate"
 
-echo "Installing RoomCAD's units and its own Caddyfile …"
+echo "Installing RoomCAD's units, its Caddyfile and its route in the master …"
 scp -q "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
 scp -q "$SERVER_DIR/roomcad-caddy.service" "$HOST:/etc/systemd/system/roomcad-caddy.service"
 scp -q "$SERVER_DIR/Caddyfile" "$HOST:/var/roomcad/caddy/Caddyfile"
+scp -q "$SERVER_DIR/roomcad.caddy" "$HOST:/var/caddy/projects/roomcad.caddy"
 ssh "$HOST" "chown root:roomcadweb /var/roomcad/caddy/Caddyfile && \
   chmod 640 /var/roomcad/caddy/Caddyfile && \
-  systemctl daemon-reload && \
-  systemctl restart roomcad"
+  chown caddy:caddy /var/caddy/projects/roomcad.caddy && \
+  chmod 644 /var/caddy/projects/roomcad.caddy && \
+  install -d -o caddy -g caddy /var/log/caddy && \
+  systemctl daemon-reload"
+
+# Two proxies now sit in front of the API — the master, then RoomCAD's own —
+# so the real client address is one entry further from the end of
+# X-Forwarded-For. Left at zero, every request throttles as 127.0.0.1.
+ssh "$HOST" "touch /var/roomcad/roomcad.env && chmod 600 /var/roomcad/roomcad.env && \
+  if grep -q '^ROOMCAD_PROXY_HOPS=' /var/roomcad/roomcad.env; then \
+    sed -i 's/^ROOMCAD_PROXY_HOPS=.*/ROOMCAD_PROXY_HOPS=1/' /var/roomcad/roomcad.env; \
+  else echo 'ROOMCAD_PROXY_HOPS=1' >> /var/roomcad/roomcad.env; fi"
+ssh "$HOST" "systemctl restart roomcad"
 
 # Reload, then check it is actually still running. Caddy can panic while
 # swapping a config in — a Go runtime bug, not a bad config — and the process
@@ -91,6 +89,23 @@ if ! ssh "$HOST" "systemctl is-active --quiet roomcad-caddy"; then
   exit 1
 fi
 
+# The master has to re-read its routes for a changed one to take effect. Its
+# whole config is validated first — an invalid route here would take down every
+# other project on the host, which is exactly the coupling this arrangement is
+# meant to prevent, so it is worth a check rather than a hope.
+echo "Reloading the master so it picks up the route …"
+if ! ssh "$HOST" "/usr/bin/caddy validate --config /var/caddy/Caddyfile --adapter caddyfile" >/dev/null 2>&1; then
+  echo "FAILED: RoomCAD's route makes the master's config invalid. Not reloading." >&2
+  ssh "$HOST" "/usr/bin/caddy validate --config /var/caddy/Caddyfile --adapter caddyfile" 2>&1 | grep -i error >&2 || true
+  exit 1
+fi
+ssh "$HOST" "systemctl reload caddy" 2>/dev/null || ssh "$HOST" "systemctl restart caddy"
+if ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
+  echo "FAILED: the master server is not running — every project on this host is down." >&2
+  ssh "$HOST" "journalctl -u caddy -n 20 --no-pager" >&2 || true
+  exit 1
+fi
+
 # The shared password lives in a host-local env file, never in git.
 if ! ssh "$HOST" "test -f /var/roomcad/roomcad.env"; then
   echo "WARNING: /var/roomcad/roomcad.env is missing — logins are disabled until you create it with ROOMCAD_PASSWORD=… (see README)."
@@ -98,7 +113,7 @@ fi
 
 # A deploy that cannot be reached is not a deploy. Check the real URL, over
 # TLS, before saying anything reassuring.
-SITE="https://roomcad.91.99.176.243.nip.io:8443"
+SITE="https://roomcad.91.99.176.243.nip.io"
 echo "Checking $SITE …"
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/" || echo 000)"
 api="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/api/rooms" || echo 000)"
@@ -138,18 +153,15 @@ else
   echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."
 fi
 
-# The old :443 address used to be forwarded here by nginx. nginx has since been
-# stopped — its config directory was a dangling symlink into a third project's
-# tree and could not be rebuilt — so ports 80 and 443 are now unserved and the
-# old address simply does not answer. That is a fact about the host, not a
-# failure of this deploy, so it is reported and nothing more.
-legacy="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \
-  https://roomcad.91.99.176.243.nip.io/ || echo "000")"
-case "$legacy" in
-  30*) echo "Old URL still redirects here ($legacy) — something is serving :443 again." ;;
-  000) echo "Old URL (:443) does not answer: nothing serves port 443 on this host." ;;
-  *) echo "NOTE: the old URL answered '$legacy' — something else now serves :443." ;;
-esac
+# 8443 was RoomCAD's public port while it terminated TLS itself. The master
+# answers there too, so links handed out then still work.
+legacy="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+  https://roomcad.91.99.176.243.nip.io:8443/ || echo "000")"
+if [ "$legacy" = "200" ]; then
+  echo "The old :8443 links still work (the master answers there too)."
+else
+  echo "NOTE: :8443 answered '$legacy' — old links to that port are broken." >&2
+fi
 
-echo "Deployed. RoomCAD runs its own web server (roomcad-caddy) on its own port."
+echo "Deployed. The master terminates TLS; RoomCAD serves it on loopback."
 echo "RoomCAD: $SITE/"
