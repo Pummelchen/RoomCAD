@@ -515,5 +515,49 @@ function areaOf(r) { return r.w * r.l; }
       .every(rc => !rectsOverlap(rc, room.publicAreas[0])));
 }
 
+// ── A wall that already carries openings ──────────────────────────────────
+//
+// The template's outer wall is 4.87 m with three windows on it and metres to
+// spare. Refusing it a door because it had anything on it left rooms with no
+// way in; then allowing one without checking put doors straight on top of the
+// windows — a door re-homed onto a wall the user drew was only clamped into
+// range, not fitted into a gap.
+{
+  const room = P.freshRoom("Windowed", 8, 6, 2.6);
+  P.centerRoom(room);
+  const top = room.walls[0];
+  room.windows = [0.5, 3.0, 5.5].map((offset, i) => ({
+    id: "w" + i, wallID: top.id, offset, width: 1.2, open: true, swingInside: true,
+  }));
+  P.sanitize(room);
+
+  const r = P.autoLayoutRooms(room, { count: 3, area: 12, windows: false, seed: 1 });
+  check("a wall with windows on it still lays out", !!r);
+  check("its windows are all still there",
+    r.windows.filter(w => w.wallID === top.id).length === 3,
+    `${r.windows.filter(w => w.wallID === top.id).length} of 3`);
+  check("and it can still take a door",
+    r.doors.some(d => d.wallID === top.id), "the wall was refused a door");
+
+  const clashes = [];
+  const byWall = new Map();
+  for (const o of [...r.doors, ...r.windows]) {
+    if (!byWall.has(o.wallID)) byWall.set(o.wallID, []);
+    byWall.get(o.wallID).push(o);
+  }
+  for (const [, list] of byWall) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        if (a.offset < b.offset + b.width - 1e-9 && b.offset < a.offset + a.width - 1e-9) {
+          clashes.push(`${a.offset.toFixed(2)} vs ${b.offset.toFixed(2)}`);
+        }
+      }
+    }
+  }
+  check("no opening is laid on top of another", clashes.length === 0, clashes.join("; "));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

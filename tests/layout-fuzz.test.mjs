@@ -125,6 +125,26 @@ for (const step of GRIDS) {
     }
     if (new Set(result.walls.map(w => w.id)).size !== result.walls.length) note("duplicate wall ids", "");
 
+    // Two openings on the same wall must not sit on top of each other. This is
+    // the invariant that was missing when a door re-homed onto a wall the user
+    // drew landed straight on one of its windows.
+    const byWall = new Map();
+    for (const o of [...result.doors, ...result.windows]) {
+      if (!byWall.has(o.wallID)) byWall.set(o.wallID, []);
+      byWall.get(o.wallID).push(o);
+    }
+    for (const [, list] of byWall) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          if (a.offset < b.offset + b.width - 1e-9 && b.offset < a.offset + a.width - 1e-9) {
+            note("two openings on the same wall overlap", `${a.width} at ${a.offset} vs ${b.width} at ${b.offset}`);
+          }
+        }
+      }
+    }
+
     const wallIDs = new Set(result.walls.map(w => w.id));
     for (const o of [...result.doors, ...result.windows]) {
       if (!wallIDs.has(o.wallID)) note("an opening on a wall that is not there", "");
@@ -154,6 +174,7 @@ const EXPECTED = [
   "an opening on a wall that is not there",
   "an opening past the end of its wall",
   "a negative opening offset",
+  "two openings on the same wall overlap",
 ];
 for (const name of EXPECTED) {
   const v = violations.get(name);

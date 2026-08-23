@@ -2309,22 +2309,35 @@ export function autoLayoutRooms(room, opts = {}) {
     occupy(o.wallID, o.offset, o.offset + o.width);
   }
 
-  /// Puts an opening in the widest clear stretch of a wall, or null if there is
-  /// none wide enough.
-  const opening = (wall, width) => {
+  /// Where an opening of `width` can sit on this wall without landing on
+  /// anything already there. `preferred`, when given, is the offset it would
+  /// like; the nearest clear gap to it wins. Returns null if nothing fits.
+  const gapOn = (wall, width, preferred = null) => {
     const len = wallLength(wall);
-    const need = width + 0.20;
-    if (len < need) return null;
+    if (len < width + 0.20) return null;
     const taken = (occupied.get(wall.id) || []).slice().sort((a, b) => a.from - b.from);
+    const gaps = [];
     let cursor = 0.10;
-    let best = null;
     for (const span of [...taken, { from: len - 0.10, to: len - 0.10 }]) {
-      const gap = span.from - cursor;
-      if (gap >= width && (!best || gap > best.gap)) best = { at: cursor, gap };
+      if (span.from - cursor >= width) gaps.push({ from: cursor, to: span.from });
       cursor = Math.max(cursor, span.to);
     }
-    if (!best) return null;
-    const offset = clamp(clean(best.at + (best.gap - width) / 2), 0.10, len - width - 0.10);
+    if (gaps.length === 0) return null;
+    let best = null;
+    for (const g of gaps) {
+      const lo = g.from;
+      const hi = g.to - width;
+      const at = preferred === null ? lo + (g.to - g.from - width) / 2 : clamp(preferred, lo, hi);
+      const away = preferred === null ? -(g.to - g.from) : Math.abs(at - preferred);
+      if (!best || away < best.away) best = { at: clean(at), away };
+    }
+    return best.at;
+  };
+
+  /// Puts an opening in a clear stretch of a wall, or null if there is none.
+  const opening = (wall, width) => {
+    const offset = gapOn(wall, width);
+    if (offset === null) return null;
     occupy(wall.id, offset, offset + width);
     return { id: uid(), wallID: wall.id, offset, width, open: true, swingInside: true, generated: true };
   };
@@ -2401,22 +2414,30 @@ export function autoLayoutRooms(room, opts = {}) {
     if (!target) return o;
     const src = sourceByID.get(o.wallID);
     if (!src) return null;
+    // Where it sat in the world, so it lands as close to that as it can.
     const len = wallLength(src) || 1;
     const t = (o.offset + o.width / 2) / len;
     const mid = {
       x: src.start.x + (src.end.x - src.start.x) * t,
       z: src.start.z + (src.end.z - src.start.z) * t,
     };
-    const hostLen = wallLength(target);
-    const hi = hostLen - o.width - 0.10;
-    if (hi < 0.10) return null;
-    return {
-      ...o,
-      wallID: target.id,
-      offset: clamp(clean(wallProjection(target, mid).offset - o.width / 2), 0.10, hi),
-    };
+    const preferred = wallProjection(target, mid).offset - o.width / 2;
+    // The host wall has its own openings — the template's outer wall carries
+    // three windows — so this has to find a clear stretch there, not merely
+    // clamp into range. Clamping put doors straight on top of windows.
+    const offset = gapOn(target, o.width, preferred);
+    if (offset === null) return null;
+    occupy(target.id, offset, offset + o.width);
+    return { ...o, wallID: target.id, offset };
   };
   const live = new Set(walls.map(w => w.id));
+
+  // Windows are re-homed first: a door that has to move can then find a gap
+  // around them rather than the other way round.
+  const finalWindows = [...keptWindows, ...winList.map(rehome).filter(Boolean)]
+    .filter(w => live.has(w.wallID));
+  const finalDoors = [...keptDoors, ...doors.map(rehome).filter(Boolean)]
+    .filter(d => live.has(d.wallID));
 
   const rooms = kept.map(r => ({
     rects: r.rects,
@@ -2431,10 +2452,8 @@ export function autoLayoutRooms(room, opts = {}) {
 
   return {
     walls,
-    doors: [...keptDoors, ...doors.map(rehome).filter(Boolean)]
-      .filter(d => live.has(d.wallID)),
-    windows: [...keptWindows, ...winList.map(rehome).filter(Boolean)]
-      .filter(w => live.has(w.wallID)),
+    doors: finalDoors,
+    windows: finalWindows,
     rooms,
     // Only floor that was genuinely left over once every room had its area —
     // never a path cut to reach somewhere. The old engine carved a corridor for
