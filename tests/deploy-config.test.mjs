@@ -103,5 +103,19 @@ check("the API proxy flushes immediately", /flush_interval\s+-1/.test(prod));
 check("deploy validates the Caddyfile on the target before installing it",
   /caddy\s+validate/.test(deploy));
 
+// Caddy 2.6.2 can panic while swapping a config in — a Go runtime bug, not a
+// bad config — and die. systemctl reported that as a non-fatal message, so a
+// deploy once printed "Deployed." while the site was down.
+check("deploy checks Caddy survived the reload",
+  /is-active --quiet caddy/.test(deploy));
+check("deploy falls back to a restart if the reload killed it",
+  /reload caddy[\s\S]{0,400}systemctl restart caddy/.test(deploy));
+check("deploy fails loudly when Caddy is not running",
+  /FAILED: Caddy is not running/.test(deploy) && /exit 1/.test(deploy));
+check("deploy will not claim success until the site actually answers",
+  /curl[^\n]*%\{http_code\}[\s\S]{0,600}FAILED:/.test(deploy));
+check("the check uses the real public URL over TLS",
+  /SITE="https:\/\/roomcad\.[\d.]+\.nip\.io:\d+"/.test(deploy));
+
 console.log(`${passed} passed, ${failed} failed — deployment config contracts`);
 if (failed) process.exit(1);

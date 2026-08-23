@@ -57,8 +57,24 @@ scp "$SERVER_DIR/Caddyfile" "$HOST:/etc/caddy/Caddyfile"
 ssh "$HOST" "chown root:caddy /etc/caddy/Caddyfile && \
   chmod 644 /etc/caddy/Caddyfile && \
   systemctl daemon-reload && \
-  systemctl restart roomcad && \
-  systemctl reload caddy"
+  systemctl restart roomcad"
+
+# Reload Caddy, then check it is actually still running. Caddy 2.6.2 can panic
+# while swapping a config in — a Go runtime bug, not a bad config — and the
+# process dies. `systemctl reload` reported that as a non-fatal message, so a
+# deploy once finished with "Deployed." while the site was down. Fall back to a
+# hard restart, and refuse to claim success until the site answers.
+echo "Reloading Caddy …"
+if ! ssh "$HOST" "systemctl reload caddy" 2>/dev/null || \
+   ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
+  echo "  reload did not leave Caddy running — restarting it."
+  ssh "$HOST" "systemctl restart caddy"
+fi
+if ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
+  echo "FAILED: Caddy is not running on $HOST." >&2
+  ssh "$HOST" "journalctl -u caddy -n 15 --no-pager" >&2 || true
+  exit 1
+fi
 
 # RoomCAD used to be published through an nginx site that proxied to Caddy.
 # Caddy now terminates TLS itself, so that site is dead weight — and it is the
@@ -78,5 +94,21 @@ if ! ssh "$HOST" "test -f /var/roomcad/roomcad.env"; then
   echo "WARNING: /var/roomcad/roomcad.env is missing — logins are disabled until you create it with ROOMCAD_PASSWORD=… (see README)."
 fi
 
-echo "Deployed. roomcad and caddy are restarted; nginx is not involved."
-echo "RoomCAD: https://roomcad.91.99.176.243.nip.io:8443/"
+# A deploy that cannot be reached is not a deploy. Check the real URL, over
+# TLS, before saying anything reassuring.
+SITE="https://roomcad.91.99.176.243.nip.io:8443"
+echo "Checking $SITE …"
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/" || echo 000)"
+api="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/api/rooms" || echo 000)"
+if [ "$code" != "200" ]; then
+  echo "FAILED: $SITE/ answered $code (expected 200)." >&2
+  exit 1
+fi
+# Unauthenticated, so 401 is the healthy answer from the API.
+if [ "$api" != "401" ] && [ "$api" != "200" ]; then
+  echo "FAILED: $SITE/api/rooms answered $api (expected 401)." >&2
+  exit 1
+fi
+
+echo "Deployed. roomcad and caddy are running; nginx is not involved."
+echo "RoomCAD: $SITE/"
