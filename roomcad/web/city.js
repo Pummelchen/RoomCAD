@@ -133,7 +133,12 @@ const GLASS_COLOR = 0x2a3038;
 
 // Traffic.
 const LANE_OFFSET = 3.1;        // lane centre from the road centreline
-const LIGHT_CYCLE = 30;         // seconds for a full two-phase cycle
+const LIGHT_CYCLE = 30;         // the nominal cycle, and what a balanced junction still runs
+const GREEN_MIN = 6;            // never shorter, however empty the approach
+const GREEN_MAX = 26;           // never longer, however long the queue
+const GREEN_EXTEND = 2;         // held on, while vehicles are still coming through
+const QUEUE_REACH = 45;         // how far back from a junction a vehicle counts as queueing
+const QUEUE_SLOW = 1.5;         // ... and how slow it has to be to count as waiting rather than arriving
 const LIGHT_AMBER = 2.0;
 // All-red after the amber. A bus entering on the last of the green needs
 // several seconds to drag twelve metres of itself out of a thirteen-metre
@@ -147,6 +152,7 @@ const LIGHT_AMBER = 2.0;
 const LIGHT_CLEAR = 2.0;
 const TURN_RADIUS = 5.4;
 const INDICATE_FROM = 24;       // metres before a junction the indicator starts
+const TURN_REVIEW_FROM = 14;    // ... and the last point one can be reconsidered
 // Which way round a turn is, given traffic keeps right: turning right stays on
 // your own side of the road, turning left cuts across the oncoming lane and has
 // to give way to it. Reversed from what these were when traffic kept left.
@@ -200,6 +206,19 @@ const STOP_LINE_W = 0.35;
 // Where a vehicle's nose comes to rest, measured out from the junction centre:
 // the far side of the crossing, which is what the stop line is painted on.
 const STOP_LINE_AT = ROAD_WIDTH / 2 + CROSS_GAP + CROSS_DEPTH + STOP_LINE_W;
+// ── Turn control ──────────────────────────────────────────────────────────
+// Each approach carries three turn arrows on top of its main signal, and the
+// manager reds out the ones that would feed a street which is already full.
+// This is what keeps the grid from seizing: the jam is not caused by too many
+// vehicles but by spillback — a vehicle waiting at the line for room in the
+// lane it wants to turn into blocks everyone behind it, including the ones
+// who were going somewhere empty. Measured at 240 vehicles, 26 were held at
+// stop lines with nowhere to turn into and 129 more were queued behind them.
+export const TURN_CONTROL_PERIOD = 2;   // seconds between reviews
+const TURN_SLOT = 8;            // road length one vehicle and its gap occupy
+const TURN_LOAD_FLOOR = 0.5;    // never red-out a street emptier than this
+const TURN_LOAD_FACTOR = 1.35;  // ... nor one within this much of the average
+
 const SIGNAL_HEIGHT = 3.4;
 const SIGNAL_HEAD_H = 0.86;
 const SIGNAL_POLE_COLOR = 0x33363b;
@@ -208,6 +227,9 @@ const SIGNAL_DARK = 0x15171a;
 const SIGNAL_RED = 0xff2a1e;
 const SIGNAL_AMBER = 0xffa617;
 const SIGNAL_GREEN = 0x2ce05a;
+const ARROW_PITCH = 0.17;       // sideways spacing of the three turn arrows
+const ARROW_DROP = 0.11;        // how far the arrow bar hangs below the main head
+const ARROW_SIZE = 0.115;
 // The hardest any vehicle on these streets can brake. A follower has to assume
 // the one in front might stop as fast as that, which is what keeps a truck —
 // which cannot — far enough back from a car that can.
@@ -374,6 +396,9 @@ class InstanceSet {
 }
 
 const _m = new THREE.Matrix4();
+const _arrowFace = new THREE.Matrix4();
+const _arrowRoll = new THREE.Matrix4();
+const _arrowScale = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _pos = new THREE.Vector3();
 const _scale = new THREE.Vector3();
@@ -640,11 +665,15 @@ export class City {
     this.precipitation = null;
     this.drops = [];
     this.junctions = [];
+    this.turnControl = new Map();
+    this._turnControlAt = 0;
+    this._turnLookahead = 0;
     this.strays = 0;
     this._parkedCars = 0;
     this._parkingSoon = 0;
     this.signals = [];
     this.signalLamps = null;
+    this.turnArrows = null;
     this.roadX = [];
     this.roadZ = [];
     this.key = null;
@@ -814,6 +843,7 @@ export class City {
     this._buildTraffic(cx, cz, span, reach, rnd);
     this._layoutParking(cx, cz, span, block, rnd);
     this._buildSignalLamps();
+    this._buildTurnArrows();
     this._buildPrecipitation(rnd);
 
     sets.facades.build(this.group, "city-facades");
@@ -1505,7 +1535,26 @@ export class City {
             darkLamps.add(boxMatrix(px + fx * faceOut, ly, pz + fz * faceOut, 0.15, 0.15, 0.15, -heading));
             lamps.push({ x: px + fx * (faceOut + 0.03), y: ly, z: pz + fz * (faceOut + 0.03) });
           }
-          this.signals.push({ axis, ix, iz, heading, lamps });
+          // The three turn arrows, on a bar under the main head: left, straight
+          // and right as the driver sees them. The signal's heading IS the
+          // direction of travel, so the across-the-face direction is the
+          // near-side turn — which makes the arrow for turn t sit at t * pitch
+          // along it, right-hand turn to the right, with no separate table of
+          // which way round the face is.
+          const across = { x: -fz, z: fx };
+          const armY = headY - SIGNAL_HEAD_H / 2 - ARROW_DROP;
+          const arrows = [];
+          for (const turn of [CROSSING_TURN, 0, NEAR_SIDE_TURN]) {
+            arrows.push({
+              turn,
+              x: px + fx * faceOut + across.x * turn * ARROW_PITCH,
+              y: armY,
+              z: pz + fz * faceOut + across.z * turn * ARROW_PITCH,
+            });
+          }
+          housings.add(boxMatrix(px + fx * (faceOut - 0.06), armY, pz + fz * (faceOut - 0.06),
+            ARROW_PITCH * 2 + 0.16, 0.2, 0.1, -heading));
+          this.signals.push({ axis, dir, ix, iz, heading, lamps, arrows });
         }
       }
     }
@@ -1537,11 +1586,11 @@ export class City {
   /// What one approach's signal is showing. Derived from the same phase the
   /// vehicles read, so the two cannot disagree.
   _signalState(axis, ix, iz, t) {
-    if (this._isGreen(axis, ix, iz, t)) return "green";
-    const local = (((t + this._junctionOffset(ix, iz)) % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
-    const half = LIGHT_CYCLE / 2;
-    const amberFrom = axis === "x" ? half - LIGHT_AMBER - LIGHT_CLEAR : LIGHT_CYCLE - LIGHT_AMBER - LIGHT_CLEAR;
-    if (local >= amberFrom && local < amberFrom + LIGHT_AMBER) return "amber";
+    void t;
+    const phase = this._phaseAt(ix, iz);
+    if (!phase || phase.axis !== axis) return "red";
+    if (phase.state === "green") return "green";
+    if (phase.state === "amber") return "amber";
     return "red";
   }
 
@@ -1599,6 +1648,14 @@ export class City {
   }
 
   _buildTraffic(cx, cz, span, reach, rnd) {
+    // How far beyond a junction the manager looks when judging whether the
+    // street a turn feeds is full: one block and its road, which is exactly
+    // the stretch a vehicle taking that turn commits itself to.
+    this._turnLookahead = span;
+    this.turnControl = new Map();
+    this._turnControlAt = 0;
+    this._demand = new Map();
+    this._startSignals();
     // A lane object per road per direction. Every lane exists even where no
     // vehicle starts, because a turn has to have somewhere to turn into.
     this.lanes = new Map();
@@ -1829,6 +1886,86 @@ export class City {
     this._writeSignalLamps();
   }
 
+  /// The turn arrows: one mesh per colour, each big enough for every arrow in
+  /// the city, since nothing stops them all showing the same thing at once.
+  ///
+  /// An arrow is drawn pointing up and rolled about the face normal to point
+  /// left or right, so there is one shape rather than three that could disagree
+  /// about size or weight.
+  _buildTurnArrows() {
+    const n = this.signals.length * 3;
+    if (!n) { this.turnArrows = null; return; }
+
+    const shape = new THREE.Shape();
+    shape.moveTo(-0.22, -1);
+    shape.lineTo(0.22, -1);
+    shape.lineTo(0.22, 0.05);
+    shape.lineTo(0.62, 0.05);
+    shape.lineTo(0, 1);
+    shape.lineTo(-0.62, 0.05);
+    shape.lineTo(-0.22, 0.05);
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.12, bevelEnabled: false });
+    geo.translate(0, 0, -0.06);
+
+    const make = (color) => {
+      const mat = new THREE.MeshStandardMaterial({
+        color, emissive: color, emissiveIntensity: 1.5, roughness: 0.4,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+      mesh.count = 0;
+      this.group.add(mesh);
+      this._disposables.push(mat);
+      return mesh;
+    };
+    this._disposables.push(geo);
+    this.turnArrows = { green: make(SIGNAL_GREEN), red: make(SIGNAL_RED) };
+    this.turnArrows.green.name = "city-turn-arrows-green";
+    this.turnArrows.red.name = "city-turn-arrows-red";
+    this._writeTurnArrows();
+  }
+
+  /// Shows what the manager has decided, on the pole. Read from the same map
+  /// the drivers read, so an arrow cannot show green for a turn the junction is
+  /// refusing — the failure that would make the whole thing decoration.
+  _writeTurnArrows() {
+    const parts = this.turnArrows;
+    if (!parts || !this.signals.length) return;
+    let green = 0;
+    let red = 0;
+    for (const s of this.signals) {
+      const allow = this.turnsAllowedAt(s.axis, s.dir, s.ix, s.iz);
+      for (const arrow of s.arrows) {
+        // A turn that leads nowhere at all — off the edge of the grid — has no
+        // arrow lit rather than a red one: there is no such movement to forbid.
+        if (allow && !allow.has(arrow.turn)) continue;
+        const on = !allow || allow.get(arrow.turn) === true;
+        const mesh = on ? parts.green : parts.red;
+        const slot = on ? green++ : red++;
+        mesh.setMatrixAt(slot, this._arrowMatrix(s, arrow, _m));
+      }
+    }
+    parts.green.count = green;
+    parts.red.count = red;
+    parts.green.instanceMatrix.needsUpdate = true;
+    parts.red.instanceMatrix.needsUpdate = true;
+  }
+
+  /// One arrow's transform: sized, rolled to point its way, turned to face the
+  /// traffic, and put on its mount.
+  _arrowMatrix(signal, arrow, into) {
+    const roll = arrow.turn * Math.PI / 2;
+    const face = Math.PI / 2 - signal.heading;
+    return into
+      .makeTranslation(arrow.x, arrow.y, arrow.z)
+      .multiply(_arrowFace.makeRotationY(face))
+      .multiply(_arrowRoll.makeRotationZ(roll))
+      .multiply(_arrowScale.makeScale(ARROW_SIZE, ARROW_SIZE, 1));
+  }
+
   /// Junction timing. The offset is derived from the road indices so that
   /// neighbouring junctions run out of phase, which is what produces the
   /// stop-start rhythm rather than the whole grid moving as one.
@@ -1836,25 +1973,151 @@ export class City {
     return (((ix * 5 + iz * 3) % 4) + 4) % 4 / 4 * LIGHT_CYCLE;
   }
 
+  // MARK: - Signal timing
+
+  /// Every junction's own phase, started out of step with its neighbours.
+  ///
+  /// The timings used to be a pure function of the clock: a fixed thirty second
+  /// cycle, split evenly, the same at every junction forever. That is a
+  /// timetable rather than a controller, and it showed — measured at 240
+  /// vehicles, EIGHTY PER CENT of green phases had nobody passing through them
+  /// at all, while the queue on the cross street sat at red. Green given to an
+  /// empty approach is throughput taken from a full one.
+  _startSignals() {
+    this.phases = new Map();
+    for (let ix = 0; ix < this.roadX.length; ix++) {
+      for (let iz = 0; iz < this.roadZ.length; iz++) {
+        const offset = this._junctionOffset(ix, iz);
+        this.phases.set(`${ix}|${iz}`, {
+          ix, iz,
+          axis: offset < LIGHT_CYCLE / 2 ? "x" : "z",
+          state: "green",
+          // Staggered, so neighbours do not all change together on the first
+          // cycle before demand has had a chance to pull them apart.
+          until: this._clock + GREEN_MIN * (0.4 + (offset / LIGHT_CYCLE)),
+          greenFrom: this._clock,
+        });
+      }
+    }
+  }
+
+  _phaseAt(ix, iz) {
+    return this.phases ? this.phases.get(`${ix}|${iz}`) : null;
+  }
+
+  /// Who is waiting at each junction, and on which side.
+  ///
+  /// This is the realtime picture the controller runs on: every vehicle,
+  /// which junction it is coming up to, which of the four sides it is on, and
+  /// whether it is sitting in the queue or already coming through. Gathered
+  /// once a frame, before anybody drives, so all four sides of a junction are
+  /// judged from the same instant.
+  _collectDemand() {
+    if (!this._demand) this._demand = new Map();
+    for (const cell of this._demand.values()) {
+      cell.x.queue = 0; cell.x.moving = 0;
+      cell.z.queue = 0; cell.z.moving = 0;
+    }
+    for (const v of this.cars) {
+      if (v.arc || v.stop) continue;
+      const junction = this._nextJunction(v);
+      if (!junction || junction.distance > QUEUE_REACH) continue;
+      const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
+      const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+      const key = `${ix}|${iz}`;
+      let cell = this._demand.get(key);
+      if (!cell) {
+        cell = { x: { queue: 0, moving: 0 }, z: { queue: 0, moving: 0 } };
+        this._demand.set(key, cell);
+      }
+      const side = cell[v.axis];
+      if (v.speed < QUEUE_SLOW) side.queue++;
+      else if (junction.distance < ROAD_WIDTH) side.moving++;
+    }
+  }
+
+  /// Runs each junction's phase, giving green to whoever is actually waiting.
+  ///
+  /// A minimum green, extended a couple of seconds at a time for as long as the
+  /// traffic keeps coming, up to a maximum. That is what a real vehicle-actuated
+  /// controller does, and the maximum is what keeps it fair: a green cannot
+  /// outrun it, so the cross street never waits longer than one of those plus
+  /// the changeover either side.
+  ///
+  /// Two more mechanisms lived here — a green sized up front from the queue, and
+  /// a rule cutting a green short once its side had emptied — and measurement
+  /// said neither was doing anything. Replacing the sizing with a flat constant
+  /// left greens after a queue of five averaging 24.3 s against 24.7, because
+  /// the extension had already been doing that work; disabling the early cut
+  /// moved the share of greens running empty from 12% to 10%. What is left is
+  /// what earns its place.
+  _updateSignals(dt) {
+    if (!this.phases) return;
+    void dt;
+    const demand = this._demand;
+    for (const phase of this.phases.values()) {
+      if (this._clock < phase.until) continue;
+      const here = demand ? demand.get(`${phase.ix}|${phase.iz}`) : null;
+      const other = phase.axis === "x" ? "z" : "x";
+      const mine = here ? here[phase.axis] : { queue: 0, moving: 0 };
+      const theirs = here ? here[other] : { queue: 0, moving: 0 };
+
+      if (phase.state === "green") {
+        // Worth holding? Either somebody is coming through right now, or the
+        // queue on this side is longer than the one being kept waiting.
+        const running = this._clock - phase.greenFrom;
+        if ((mine.moving > 0 || mine.queue > theirs.queue) && running < GREEN_MAX) {
+          phase.until = this._clock + GREEN_EXTEND;
+          continue;
+        }
+        phase.state = "amber";
+        phase.until = this._clock + LIGHT_AMBER;
+        continue;
+      }
+
+      if (phase.state === "amber") {
+        phase.state = "clear";
+        phase.until = this._clock + LIGHT_CLEAR;
+        continue;
+      }
+
+      phase.axis = other;
+      phase.state = "green";
+      phase.greenFrom = this._clock;
+      phase.until = this._clock + GREEN_MIN;
+    }
+  }
+
   /// True while the light lets `axis` through. Amber counts as stop: a vehicle
   /// too close to pull up is carried through by its own braking distance
   /// rather than by permission.
+  ///
+  /// The time argument is no longer used — the phase is a state the controller
+  /// advances, not a position in a timetable — but every caller passes the
+  /// current clock and reads "is it green NOW", which is exactly what this
+  /// still answers.
   _isGreen(axis, ix, iz, t) {
-    const local = (((t + this._junctionOffset(ix, iz)) % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
-    const half = LIGHT_CYCLE / 2;
-    return axis === "x"
-      ? local < half - LIGHT_AMBER - LIGHT_CLEAR
-      : local >= half && local < LIGHT_CYCLE - LIGHT_AMBER - LIGHT_CLEAR;
+    void t;
+    const phase = this._phaseAt(ix, iz);
+    if (!phase) return false;
+    return phase.axis === axis && phase.state === "green";
   }
 
   /// How long until the CROSSING direction gets its green. A vehicle that
   /// cannot be clear of the junction by then does not enter it, which is both
   /// what a driver does and what keeps the box empty at the changeover.
   _timeToCrossGreen(axis, ix, iz, t) {
-    const local = (((t + this._junctionOffset(ix, iz)) % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
-    const half = LIGHT_CYCLE / 2;
-    const until = axis === "x" ? half - local : LIGHT_CYCLE - local;
-    return ((until % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
+    void t;
+    const phase = this._phaseAt(ix, iz);
+    if (!phase) return 0;
+    if (phase.axis !== axis) return 0;
+    // Amber and the all-red gap are still time to finish crossing in — that is
+    // what they are for — so they count towards the room a vehicle has.
+    if (phase.state === "green") {
+      return (phase.until - this._clock) + LIGHT_AMBER + LIGHT_CLEAR;
+    }
+    if (phase.state === "amber") return (phase.until - this._clock) + LIGHT_CLEAR;
+    return Math.max(0, phase.until - this._clock);
   }
 
   /// How far the vehicle has travelled along its lane, measured so that larger
@@ -1936,6 +2199,207 @@ export class City {
     };
   }
 
+  // MARK: - Turn control
+
+  /// Which turns each approach is currently allowing.
+  ///
+  /// The point is not to ration the traffic but to spread it: a turn is only
+  /// forbidden when the stretch of road it feeds is markedly fuller than the
+  /// city's average, so vehicles are steered off the streets that are filling
+  /// and onto the ones that are not. Reviewed a few times a minute rather than
+  /// every frame — a vehicle picks its turn two junctions in advance, so an
+  /// arrow that flickered would decide nothing.
+  _updateTurnControl() {
+    if (!this.lanes || !this.lanes.size || this._clock < this._turnControlAt) return;
+    this._turnControlAt = this._clock + TURN_CONTROL_PERIOD;
+
+    const room = this._turnLookahead / TURN_SLOT;
+    const last = this.roadX.length - 1;
+    const laneKey = lane => `${lane.axis}|${lane.dir}|${lane.roadIndex}`;
+
+    // ── 1. Where every vehicle is, right now ──────────────────────────────
+    const positions = new Map();
+    let standing = 0;
+    let capacity = 0;
+    for (const [key, lane] of this.lanes) {
+      const at = [];
+      for (const v of lane.members) {
+        if (v.arc || !City.blocksLane(v)) continue;
+        at.push(City.progressOf(v));
+      }
+      at.sort((a, b) => a - b);
+      positions.set(key, at);
+      standing += at.length;
+      capacity += (lane.reach * 2) / TURN_SLOT;
+    }
+    const average = capacity > 0 ? standing / capacity : 0;
+    const limit = Math.max(TURN_LOAD_FLOOR, average * TURN_LOAD_FACTOR);
+
+    const countBeyond = (lane, from) => {
+      const at = positions.get(laneKey(lane));
+      if (!at) return 0;
+      let n = 0;
+      for (const p of at) {
+        if (p < from) continue;
+        if (p >= from + this._turnLookahead) break;
+        n++;
+      }
+      return n;
+    };
+
+    // ── 2. Every junction, every approach, and where each turn leads ──────
+    //
+    // A segment is one stretch of one lane beyond one junction, and it is what
+    // the manager actually protects. Two different approaches can pour into
+    // the same stretch — the traffic going straight through, and the traffic
+    // turning in off the cross street — so they have to be recognised as the
+    // same place or each would be judged as though the other were not there.
+    const segments = new Map();
+    const segmentFor = (lane, from, entryIndex) => {
+      const key = `${laneKey(lane)}@${entryIndex}`;
+      let seg = segments.get(key);
+      if (!seg) {
+        seg = { key, standing: countBeyond(lane, from), inbound: 0 };
+        segments.set(key, seg);
+      }
+      return seg;
+    };
+
+    const approaches = new Map();
+    for (let ix = 0; ix < this.roadX.length; ix++) {
+      for (let iz = 0; iz < this.roadZ.length; iz++) {
+        for (const axis of ["x", "z"]) {
+          for (const dir of [1, -1]) {
+            const roadIndex = axis === "x" ? iz : ix;
+            const index = axis === "x" ? ix : iz;
+            const lane = this.lanes.get(`${axis}|${dir}|${roadIndex}`);
+            if (!lane) continue;
+            const coord = axis === "x" ? this.roadX[ix] : this.roadZ[iz];
+
+            const moves = [];
+            if (index + dir >= 0 && index + dir <= last) {
+              // Carrying on enters this same lane's next stretch.
+              moves.push({ turn: 0, demand: 0, seg: segmentFor(lane, coord * dir, index) });
+            }
+            for (const turn of [NEAR_SIDE_TURN, CROSSING_TURN]) {
+              const target = this._turnTarget({ axis, dir, fixed: lane.fixed, turn },
+                                              { index, coord });
+              if (!target) continue;
+              if (roadIndex + target.newDir < 0 || roadIndex + target.newDir > last) continue;
+              // Turning enters the new lane at the road it is turning off, so
+              // along THAT lane the entry is at this approach's road index.
+              moves.push({
+                turn, demand: 0,
+                seg: segmentFor(target.lane, target.exitProgress, roadIndex),
+              });
+            }
+            if (!moves.length) continue;
+            approaches.set(`${axis}|${dir}|${ix}|${iz}`, { axis, dir, ix, iz, moves });
+          }
+        }
+      }
+    }
+
+    // ── 3. What every vehicle intends to do next ─────────────────────────
+    //
+    // The occupancy above is where the traffic IS; this is where it is about
+    // to be, which is the half that matters. A stretch with room for three
+    // more vehicles and eleven already committed to entering it is full, and
+    // waiting until they arrive to notice is waiting until the approach behind
+    // them has already backed up.
+    for (const v of this.cars) {
+      if (v.arc || v.stop) continue;
+      const junction = this._nextJunction(v);
+      if (!junction) continue;
+      const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
+      const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+      const approach = approaches.get(`${v.axis}|${v.dir}|${ix}|${iz}`);
+      if (!approach) continue;
+      if (v.turnDecidedAt === junction.index) {
+        const move = approach.moves.find(m => m.turn === v.turn);
+        if (move) { move.demand++; move.seg.inbound++; }
+        continue;
+      }
+      // Undecided. It will choose among whatever is green when it decides, so
+      // it is counted as a share of each rather than not at all.
+      const open = approach.moves.filter(m => this._permits(approach, m.turn));
+      const spread = open.length ? open : approach.moves;
+      for (const m of spread) {
+        m.demand += 1 / spread.length;
+        m.seg.inbound += 1 / spread.length;
+      }
+    }
+
+    // ── 4. The decision, for all four sides of every junction ────────────
+    const projected = seg => (seg.standing + seg.inbound) / room;
+    let forbidden = 0;
+
+    const settle = approach => {
+      const allow = new Map();
+      for (const m of approach.moves) allow.set(m.turn, projected(m.seg) <= limit);
+      // Never all four sides of a junction closed to a vehicle at once: an
+      // approach showing nothing but red is a deadlock the manager caused
+      // rather than one it prevented. The emptiest way out always stays open.
+      if (![...allow.values()].some(Boolean)) {
+        let best = approach.moves[0];
+        for (const m of approach.moves) if (projected(m.seg) < projected(best.seg)) best = m;
+        allow.set(best.turn, true);
+      }
+      return allow;
+    };
+
+    for (const approach of approaches.values()) approach.allow = settle(approach);
+
+    // Traffic turned away from a full stretch does not evaporate — it takes
+    // one of the other exits from the same approach. Crediting it there before
+    // deciding is what stops the manager solving one street by filling its
+    // neighbour and only noticing at the next review.
+    for (const approach of approaches.values()) {
+      const shed = approach.moves.filter(m => approach.allow.get(m.turn) === false);
+      const open = approach.moves.filter(m => approach.allow.get(m.turn) === true);
+      if (!shed.length || !open.length) continue;
+      let moved = 0;
+      for (const m of shed) { moved += m.demand; m.seg.inbound -= m.demand; }
+      for (const m of open) m.seg.inbound += moved / open.length;
+    }
+
+    for (const [key, approach] of approaches) {
+      const allow = settle(approach);
+      for (const [, ok] of allow) if (!ok) forbidden++;
+      this.turnControl.set(key, allow);
+    }
+
+    this.turnStats = {
+      average, limit, forbidden,
+      approaches: approaches.size,
+      busiest: Math.max(0, ...[...segments.values()].map(projected)),
+    };
+  }
+
+  /// Whether an approach was allowing a turn at the last review. Used while
+  /// building the next one, so an undecided vehicle is credited to the turns it
+  /// could actually take.
+  _permits(approach, turn) {
+    const allow = this.turnControl.get(`${approach.axis}|${approach.dir}|${approach.ix}|${approach.iz}`);
+    if (!allow || !allow.has(turn)) return true;
+    return allow.get(turn) === true;
+  }
+
+  /// What the arrows are showing one approach. Vehicles and the arrows on the
+  /// pole both read this, so what a driver is allowed to do and what the
+  /// signal says cannot drift apart.
+  turnsAllowedAt(axis, dir, ix, iz) {
+    return this.turnControl.get(`${axis}|${dir}|${ix}|${iz}`) || null;
+  }
+
+  _turnPermitted(v, junction, turn) {
+    const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
+    const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+    const allow = this.turnsAllowedAt(v.axis, v.dir, ix, iz);
+    if (!allow || !allow.has(turn)) return true;
+    return allow.get(turn) === true;
+  }
+
   /// Chooses whether this vehicle turns at the junction it is approaching.
   /// Decided once, well before the junction, so the indicator has time to run
   /// before anything actually happens — which is the whole point of one.
@@ -1947,7 +2411,16 @@ export class City {
   /// to the edge and was wrapped round to the far side, which is a car
   /// vanishing from one street and appearing in another.
   _decideTurn(v, junction) {
-    if (v.turnDecidedAt === junction.index) return;
+    if (v.turnDecidedAt === junction.index) {
+      // Already chosen — but the arrows are reviewed while it approaches, and a
+      // driver whose exit has gone red picks another rather than queueing for a
+      // turn they are not going to be allowed to make. Only while there is
+      // still room to line up: changing your mind on the line is how a vehicle
+      // ends up committed to a turn it has already driven past.
+      if (junction.distance < TURN_REVIEW_FROM) return;
+      if (this._turnPermitted(v, junction, v.turn)) return;
+      v.turnDecidedAt = -1;
+    }
     v.turnDecidedAt = junction.index;
     v.turn = 0;
     v.mustTurn = false;
@@ -1982,6 +2455,11 @@ export class City {
       // move that can be blocked is one the vehicle can be carried past while
       // it waits, leaving it driving away from the last junction it will ever
       // meet. Free choices further in are where the variety comes from.
+      // The arrows deliberately do not apply here. This turn is compulsory, and
+      // the near-side one is the only one that needs no gap in oncoming traffic
+      // — sending a vehicle across the far side because an arrow was red is
+      // sending it into a move it can be held out of indefinitely, at the last
+      // junction it will ever meet.
       v.turn = legal.includes(NEAR_SIDE_TURN) ? NEAR_SIDE_TURN : legal[0];
       v.mustTurn = true;
       return;
@@ -2006,7 +2484,11 @@ export class City {
     // and any that does has an even chance of turning back in at the next one.
     const options = [0];
     for (const t of legal) options.push(t);
-    v.turn = options[Math.floor(r * options.length) % options.length];
+    // ... and only among the ones the junction is currently allowing. The
+    // manager guarantees at least one, so this never empties the list.
+    const green = options.filter(t => this._turnPermitted(v, junction, t));
+    const from = green.length ? green : options;
+    v.turn = from[Math.floor(r * from.length) % from.length];
   }
 
   /// Sets up the quarter-circle a turning vehicle follows. The arc is tangent
@@ -2391,7 +2873,32 @@ export class City {
         // junction, where waiting blocks the traffic crossing it.
         if (mayEnter && v.turn !== 0 && junction.distance > -0.5
           && !this._turnExitClear(v, junction)) {
-          mayEnter = false;
+          // Rather than sit on the line holding up everyone behind, go straight
+          // on if that way is open — which is what a driver does when the turn
+          // they wanted is plainly not happening this phase. Measured at 240
+          // vehicles, queue heads waiting for a turn that had nowhere to go
+          // were 17% of everything stopped at a junction, and each one was a
+          // whole approach at a standstill behind it.
+          //
+          // Only ever onto the straight-ahead: it needs no arc and no room in
+          // another lane, so it cannot fail halfway. Changing to the OTHER
+          // turn at the line is the move that used to strand vehicles part-way
+          // round a manoeuvre they had already driven past the start of.
+          const last = this.roadX.length - 1;
+          const onwards = junction.index + v.dir >= 0 && junction.index + v.dir <= last;
+          const room = ahead ? ahead.gap : Infinity;
+          const needed = junction.distance + ROAD_WIDTH + v.length + SAFE_GAP;
+          // Deliberately NOT gated on the arrows. This is the escape valve for
+          // a vehicle that is already at the line and stuck; closing it because
+          // the street ahead is busy trades one blocked approach for another,
+          // and measured at 240 vehicles it cost more than the whole manager
+          // gained — throughput in the eighth minute fell from 5.4 to 1.0.
+          if (!v.mustTurn && onwards && room >= needed) {
+            v.turn = 0;
+            v.indicate = 0;
+          } else {
+            mayEnter = false;
+          }
         }
       }
       if (!mayEnter && junction.distance > -0.5) {
@@ -2814,7 +3321,14 @@ export class City {
     this._clock += step;
     if (viewer) this._viewer.copy(viewer);
 
+    // The lights run whether or not anybody is driving, but what they run ON
+    // is who is waiting — so the picture is taken first, then the signals, then
+    // the turn arrows, and only then does anyone move.
+    this._collectDemand();
+    this._updateSignals(step);
+
     if (this.cars.length) {
+      this._updateTurnControl();
       // Who is part-way round a turn. They belong to no lane while they are
       // crossing, so everyone else has to be told about them explicitly.
       this._turning.length = 0;
@@ -2823,6 +3337,7 @@ export class City {
       this._writeCarMatrices();
     }
     this._writeSignalLamps();
+    this._writeTurnArrows();
     this._updatePrecipitation(step);
   }
 
@@ -2956,11 +3471,13 @@ export class City {
     this._parkingSoon = 0;
     this.signals = [];
     this.signalLamps = null;
+    this.turnArrows = null;
     this.roadX = [];
     this.roadZ = [];
     this.drops = [];
     this.signals = [];
     this.signalLamps = null;
+    this.turnArrows = null;
     this._turning = [];
     this.precipitation = null;
     this.terrain = null;

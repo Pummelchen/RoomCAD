@@ -153,9 +153,15 @@ check("headlights are running lamps, not something that switches on at dusk",
 // is a car vanishing from one street and appearing in another.
 check("the street grid is closed — nothing wraps",
   !/Wrap beyond the fog/.test(city) && /No wrapping, and nothing is ever removed/.test(city));
-// Carry on, turn left, turn right — evenly, among the options that exist.
-check("a junction is an even choice between carrying on and the turns available",
-  /const options = \[0\];[\s\S]{0,200}options\[Math\.floor\(r \* options\.length\)/.test(city));
+// Carry on, turn left, turn right — evenly, among the options that exist AND
+// are being allowed. The junction's turn arrows narrow the choice; nothing
+// weights what is left of it.
+check("a junction is an even choice between the turns it is allowing",
+  /const options = \[0\];[\s\S]{0,400}from\[Math\.floor\(r \* from\.length\)/.test(city));
+check("the choice is taken from the movements showing green",
+  /const green = options\.filter\(t => this\._turnPermitted\(/.test(city));
+check("and it never empties the list — an approach always has one way out",
+  /const from = green\.length \? green : options;/.test(city));
 check("nothing weights it back towards carrying on",
   !/appetite/.test(city), "a low turn rate pushes the whole fleet onto the ring road");
 check("a vehicle at the edge must turn, and takes the turn that needs no gap",

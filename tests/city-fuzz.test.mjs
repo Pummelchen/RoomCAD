@@ -19,6 +19,11 @@
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
 import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
+import { readFileSync } from "node:fs";
+
+// The same Three.js the city itself builds with, so a matrix composed here is
+// composed the way the renderer will compose it.
+const THREE = await import(new URL("../roomcad/web/lib/three.webgpu.js", import.meta.url).href);
 
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
@@ -828,10 +833,20 @@ for (const [w, l, label] of [
     const key = x + "/" + z;
     if (key !== last) { seen.push({ t: city._clock, x, z }); last = key; }
   }
+  // The cycle used to be exactly thirty seconds, always, everywhere. It is now
+  // set by the controller from the queues actually waiting, so what can be
+  // asserted is the envelope rather than a single number: every cycle is a real
+  // cycle, none is so short it cannot clear anybody, and none so long that the
+  // cross street is abandoned.
   const starts = seen.filter(e => e.x === "green");
-  check("the cycle is 30 seconds, as asked",
-    starts.length >= 2 && Math.abs((starts[1].t - starts[0].t) - 30) < 0.1,
-    starts.length >= 2 ? `${(starts[1].t - starts[0].t).toFixed(2)} s` : "never went green");
+  const cycles = starts.slice(1).map((e, i) => e.t - starts[i].t);
+  check("the junction keeps cycling", cycles.length >= 1, `${starts.length} greens in 70 s`);
+  check("no cycle is too short to clear a queue",
+    cycles.every(c => c >= 2 * (6 + 2 + 2) - 0.1),
+    cycles.length ? `shortest ${Math.min(...cycles).toFixed(1)} s` : "");
+  check("no cycle starves the cross street",
+    cycles.every(c => c <= 2 * (26 + 2 + 2) + 0.1),
+    cycles.length ? `longest ${Math.max(...cycles).toFixed(1)} s` : "");
   check("green gives way to amber before red, never straight to it",
     seen.every((e, i) => !(i > 0 && seen[i - 1].x === "green" && e.x === "red")));
   check("there is an all-red gap between the two directions",
@@ -1078,7 +1093,6 @@ for (const [w, l, label] of [
 // frame, and this test would still be passing on assumptions that no longer
 // hold.
 {
-  const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
   const web = join(dirname(fileURLToPath(import.meta.url)), "..", "roomcad", "web");
@@ -1340,6 +1354,266 @@ for (const [w, l, label] of [
       "it stayed put with 90 m of clear road behind");
   }
 
+  city.dispose();
+}
+
+// ── The traffic controller ────────────────────────────────────────────────
+//
+// Two controllers share one realtime picture of the city: who is waiting at
+// each junction and on which side, and where every vehicle intends to go next.
+// One sets the green times from the queues, the other reds out the turn arrows
+// that would feed a street already full.
+//
+// The numbers each of these guards is one that was measured wrong first:
+//
+//   - the lights ran a fixed thirty second timetable, and EIGHTY PER CENT of
+//     green phases had nobody passing through them while the cross street
+//     queued at red;
+//   - a junction with four vehicles queued at it passed a median of ONE per
+//     green, a seventh of what a real junction manages;
+//   - queue heads waiting for a turn that had nowhere to go were 17% of
+//     everything stopped at a junction, each one holding a whole approach;
+//   - and the turn manager, when it was allowed to veto a stuck vehicle's way
+//     out, cost more than it gained — throughput in the eighth minute fell
+//     from 5.4 crossings a second to 1.0.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  for (let f = 0; f < 60 * 60; f++) city.update(1 / 60, viewer);
+
+  check("every junction is running a phase",
+    city.phases.size === city.roadX.length * city.roadZ.length,
+    `${city.phases.size} phases`);
+  check("every approach has its turn arrows decided",
+    city.turnControl.size > 0 && city.turnStats.approaches === city.turnControl.size,
+    `${city.turnControl.size} approaches`);
+
+  // ── The arrows are not decoration ──────────────────────────────────────
+  //
+  // The one failure that would make the whole thing a lie: an arrow showing
+  // green for a movement the junction is actually refusing, or red for one it
+  // allows. Checked against the map the drivers themselves read.
+  let arrowLies = 0;
+  let litGreen = 0;
+  let litRed = 0;
+  for (const sig of city.signals) {
+    const allow = city.turnsAllowedAt(sig.axis, sig.dir, sig.ix, sig.iz);
+    for (const arrow of sig.arrows) {
+      if (allow && !allow.has(arrow.turn)) continue;
+      const shown = !allow || allow.get(arrow.turn) === true;
+      if (shown) litGreen++; else litRed++;
+      const driver = city._turnPermitted(
+        { axis: sig.axis, dir: sig.dir, lane: { roadIndex: sig.axis === "x" ? sig.iz : sig.ix } },
+        { index: sig.axis === "x" ? sig.ix : sig.iz }, arrow.turn);
+      if (driver !== shown) arrowLies++;
+    }
+  }
+  check("what a turn arrow shows is what the junction actually allows",
+    arrowLies === 0, `${arrowLies} arrows disagreed with the drivers`);
+  check("the arrows drawn are the arrows lit",
+    city.turnArrows.green.count === litGreen && city.turnArrows.red.count === litRed,
+    `drawn ${city.turnArrows.green.count}/${city.turnArrows.red.count}, expected ${litGreen}/${litRed}`);
+  check("a movement that leads off the edge of the grid gets no arrow at all",
+    litGreen + litRed < city.signals.length * 3,
+    "every mount was lit, including ones with nowhere to go");
+
+  // An arrow has to point where it means. Straight ahead points up; the
+  // near-side arrow points to the driver's near side.
+  let misaimed = 0;
+  for (const sig of city.signals) {
+    const forward = City.forwardOf(sig.axis, sig.dir);
+    const near = { x: -forward.z, y: 0, z: forward.x };
+    for (const arrow of sig.arrows) {
+      const e = city._arrowMatrix(sig, arrow, new THREE.Matrix4()).elements;
+      const tip = { x: e[4], y: e[5], z: e[6] };          // where local +Y went
+      const len = Math.hypot(tip.x, tip.y, tip.z) || 1;
+      const want = arrow.turn === 0
+        ? { x: 0, y: 1, z: 0 }
+        : { x: near.x * arrow.turn, y: 0, z: near.z * arrow.turn };
+      const dot = (tip.x * want.x + tip.y * want.y + tip.z * want.z) / len;
+      if (dot < 0.95) misaimed++;
+    }
+  }
+  check("every turn arrow points the way it means", misaimed === 0, `${misaimed} of ${city.signals.length * 3}`);
+
+  // ── No approach is ever shut out ───────────────────────────────────────
+  let deadEnds = 0;
+  for (const [, allow] of city.turnControl) {
+    if (allow.size && ![...allow.values()].some(Boolean)) deadEnds++;
+  }
+  check("no approach is ever left with every arrow red",
+    deadEnds === 0, `${deadEnds} approaches with nowhere legal to go`);
+
+  // ── The lights follow the queues ───────────────────────────────────────
+  //
+  // Sampled over five minutes: how long each green ran, and whether the side
+  // it was given to had anybody on it.
+  const greens = [];
+  const open = new Map();
+  // Only greens whose START was seen. A phase already running when sampling
+  // began yields a partial length — a 1.2 s "green" that never happened.
+  const started = new Set();
+  const paired = [];
+  let emptyGreen = 0;
+  let anyGreen = 0;
+  let longestRed = 0;
+  const redSince = new Map();
+  for (let f = 0; f < 5 * 60 * 60; f++) {
+    city.update(1 / 60, viewer);
+    for (const phase of city.phases.values()) {
+      for (const axis of ["x", "z"]) {
+        const key = `${phase.ix}|${phase.iz}|${axis}`;
+        const green = phase.axis === axis && phase.state === "green";
+        if (green) {
+          if (!open.has(key)) {
+            open.set(key, city._clock);
+            const cell = city._demand.get(`${phase.ix}|${phase.iz}`);
+            open.set(key + "!q", cell ? cell[axis].queue : 0);
+          }
+          if (redSince.has(key)) {
+            if (started.has(key)) longestRed = Math.max(longestRed, city._clock - redSince.get(key));
+            redSince.delete(key);
+            started.add(key);
+          }
+        } else {
+          if (!redSince.has(key)) redSince.set(key, city._clock);
+          if (open.has(key)) {
+            if (started.has(key)) {
+              const len = city._clock - open.get(key);
+              greens.push(len);
+              paired.push({ len, queue: open.get(key + "!q") || 0 });
+            }
+            open.delete(key);
+            open.delete(key + "!q");
+          }
+        }
+      }
+    }
+    if (f % 60) continue;
+    for (const phase of city.phases.values()) {
+      if (phase.state !== "green") continue;
+      anyGreen++;
+      const cell = city._demand.get(`${phase.ix}|${phase.iz}`);
+      const side = cell ? cell[phase.axis] : null;
+      if (!side || (side.queue === 0 && side.moving === 0)) emptyGreen++;
+    }
+  }
+  greens.sort((a, b) => a - b);
+  check("the lights are still running", greens.length > 100, `${greens.length} greens in 5 min`);
+  // Stated outright rather than read from the code, so widening the bounds is
+  // a failure and not a new expectation.
+  check("no green is shorter than six seconds",
+    greens[0] >= 6 - 0.2, `shortest ${greens[0].toFixed(1)} s`);
+  check("no green runs longer than half a minute",
+    greens[greens.length - 1] <= 30, `longest ${greens[greens.length - 1].toFixed(1)} s`);
+  check("green times vary rather than being a fixed slot",
+    greens[greens.length - 1] - greens[0] > 4,
+    `every green was ${greens[0].toFixed(1)}-${greens[greens.length - 1].toFixed(1)} s`);
+  // Varying is not enough — they have to vary WITH THE QUEUE. A fixed slot plus
+  // a rule that cuts empty greens short also produces a spread of lengths, and
+  // that spread passed the check above while the timing was back on a timetable.
+  {
+    const busy = paired.filter(x => x.queue >= 5).map(x => x.len);
+    const idle = paired.filter(x => x.queue === 0).map(x => x.len);
+    const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+    check("both busy and empty approaches were observed",
+      busy.length > 5 && idle.length > 5, `${busy.length} busy, ${idle.length} empty`);
+    // Stated as an absolute rather than as a margin over the empty case. A
+    // green sized up front from the queue and then never extended clears the
+    // margin easily and still gives a long queue a short green, which is the
+    // failure that matters — measured, an approach with five or more waiting
+    // runs about 24 s against the 6 s minimum.
+    check("a queue of five or more is held green for at least fifteen seconds",
+      mean(busy) >= 15,
+      `${mean(busy).toFixed(1)} s with a queue of 5+, ${mean(idle).toFixed(1)} s with none`);
+  }
+  // Bounded by the maximum green rather than by a rule of its own: a green
+  // cannot outrun GREEN_MAX, so the cross street waits at most one of those
+  // plus the changeover.
+  // The bound follows from the greens themselves: the longest possible green
+  // (26 s, plus one 2 s extension) and the two changeovers around it, so
+  // 28 + 2 x (2 + 2) = 36.
+  check("no approach waits more than 36 seconds for its green",
+    longestRed <= 36.5, `longest red ${longestRed.toFixed(1)} s`);
+  // The headline number this was all built for.
+  check("greens are mostly given to a side that has somebody on it",
+    emptyGreen / anyGreen < 0.35,
+    `${(emptyGreen / anyGreen * 100).toFixed(0)}% ran empty (was 80% on a fixed timetable)`);
+
+  city.dispose();
+}
+
+// A vehicle held at the line for a turn that has nowhere to go blocks the whole
+// approach behind it. A driver in that position goes straight on instead, and
+// that escape is deliberately NOT subject to the turn arrows — vetoing it cost
+// more throughput than the entire turn manager gained, so the case that matters
+// is a blocked turn with the straight-ahead arrow ALSO red.
+//
+// Put to the model rather than grepped for. The grep version of this passed
+// against a build with the veto restored, because what it matched was the
+// comment explaining why the veto was gone.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  for (let f = 0; f < 30 * 60; f++) city.update(1 / 60, viewer);
+
+  // A vehicle at the line, wanting to turn, with the turn's exit lane blocked.
+  let probe = null;
+  for (const v of city.cars) {
+    if (v.arc || v.stop || v.kind !== "car") continue;
+    const junction = city._nextJunction(v);
+    if (!junction || junction.index + v.dir < 0 || junction.index + v.dir > city.roadX.length - 1) continue;
+    const target = city._turnTarget({ ...v, turn: NEAR_SIDE_TURN }, junction);
+    if (!target) continue;
+    probe = { v, junction, target };
+    break;
+  }
+  check("a vehicle to test the escape with was found", !!probe);
+  if (probe) {
+    const { v, junction, target } = probe;
+    // Put it on the line, indicating, with the lane it wants blocked solid.
+    // Placed BY MEASURED DISTANCE rather than by a guess at where the stop line
+    // is: at six metres from the road centre the vehicle is already past it,
+    // and the escape only applies to one still short of it.
+    const coord = v.axis === "x" ? city.roadX[junction.index] : city.roadZ[junction.index];
+    if (v.axis === "x") v.x = coord - v.dir * 30; else v.z = coord - v.dir * 30;
+    const shift = city._nextJunction(v).distance - 1;
+    if (v.axis === "x") v.x += v.dir * shift; else v.z += v.dir * shift;
+    check("the probe is stopped just short of the line",
+      Math.abs(city._nextJunction(v).distance - 1) < 0.01,
+      `${city._nextJunction(v).distance.toFixed(2)} m from the line`);
+    v.speed = 0;
+    v.turn = NEAR_SIDE_TURN;
+    v.mustTurn = false;
+    v.turnDecidedAt = junction.index;
+    const blocker = { ...v, id: "blocker", arc: null, speed: 0, length: 4.4, stop: null };
+    if (target.newAxis === "x") blocker.x = target.exitProgress * target.newDir;
+    else blocker.z = target.exitProgress * target.newDir;
+    blocker.axis = target.newAxis;
+    blocker.dir = target.newDir;
+    target.lane.members = [blocker];
+    check("the turn really is blocked",
+      !city._turnExitClear(v, junction), "the probe did not set up the case");
+
+    // Straight ahead is red too — the case the veto used to catch.
+    const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
+    const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+    const key = `${v.axis}|${v.dir}|${ix}|${iz}`;
+    city.turnControl.set(key, new Map([[0, false], [NEAR_SIDE_TURN, true], [CROSSING_TURN, true]]));
+    // Green, so the light is not what is holding it.
+    const phase = city._phaseAt(ix, iz);
+    phase.axis = v.axis;
+    phase.state = "green";
+    phase.until = city._clock + 20;
+
+    v.lane.members = [v];      // nothing in front of it in its own lane
+    city._driveVehicle(v, 1 / 60);
+    check("a vehicle whose turn is blocked goes straight on instead of holding up the queue",
+      v.turn === 0,
+      "it kept indicating for a turn it could not make, with the whole approach behind it");
+  }
   city.dispose();
 }
 
