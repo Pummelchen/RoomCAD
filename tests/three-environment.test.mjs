@@ -140,6 +140,18 @@ check("a vehicle at the edge must turn, and takes the turn that needs no gap",
   /v\.mustTurn = true/.test(city) && /legal\.includes\(NEAR_SIDE_TURN\) \? NEAR_SIDE_TURN/.test(city));
 check("the turn arc starts under the wheels rather than snapping the vehicle to it",
   /const R = Math\.min\(TURN_RADIUS, toCrossing\)/.test(city));
+// A vehicle decides whether it can get OUT of a junction before it goes in.
+// Deciding from inside means waiting inside, and a vehicle stopped in the box
+// is blocking the traffic crossing it — which is waiting for the same kind of
+// gap somewhere else. That is a deadlock rather than a queue.
+// Matched on the CALL. A regex that also matches the method's own definition
+// passes happily when nothing calls it — this has caught me out three times in
+// this file now, so: `this.` prefix, always.
+check("a turning vehicle checks its exit before entering the junction",
+  /!this\._turnExitClear\(v, junction\)/.test(city) && /junction\.distance > -0\.5/.test(city));
+check("the entry decision and the turn itself agree about where the turn goes",
+  /_turnTarget\(v, junction\)/.test(city)
+  && (city.match(/this\._turnTarget\(v, junction\)/g) || []).length >= 2);
 check("a turn missed by the time it is due is abandoned, not taken late",
   /if \(!v\.mustTurn\) v\.turn = 0;/.test(city));
 

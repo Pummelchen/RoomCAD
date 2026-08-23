@@ -1919,7 +1919,12 @@ export class City {
   /// Sets up the quarter-circle a turning vehicle follows. The arc is tangent
   /// to both lane centrelines, so the vehicle leaves its lane and joins the
   /// next one without a kink at either end.
-  _beginTurn(v, junction) {
+  /// Where a turn at this junction would put the vehicle: which lane, where
+  /// the two lane centrelines cross, and where on the new lane it would come
+  /// out. Shared, because the decision to ENTER the junction and the act of
+  /// turning inside it must agree about the answer — the first is made at the
+  /// stop line and the second several metres later.
+  _turnTarget(v, junction) {
     const forward = City.forwardOf(v.axis, v.dir);
     // right(ax, az) = (-az, ax); left is its negative.
     const side = v.turn === 1
@@ -1929,14 +1934,43 @@ export class City {
     const newDir = newAxis === "x" ? Math.sign(side.x) : Math.sign(side.z);
     // The road being turned onto is the one that makes this junction, so its
     // index is the junction's own index.
-    const newIndex = junction.index;
-    const lane = this.lanes.get(`${newAxis}|${newDir}|${newIndex}`);
-    if (!lane) { v.turn = 0; return; }
-
+    const lane = this.lanes.get(`${newAxis}|${newDir}|${junction.index}`);
+    if (!lane) return null;
     // The two lane centrelines cross here.
     const P = newAxis === "z"
       ? { x: lane.fixed, z: v.fixed }
       : { x: v.fixed, z: lane.fixed };
+    const exitProgress = newAxis === "x"
+      ? (P.x + TURN_RADIUS * side.x) * newDir
+      : (P.z + TURN_RADIUS * side.z) * newDir;
+    return { forward, side, newAxis, newDir, lane, P, exitProgress };
+  }
+
+  /// Is there somewhere to come OUT into? Asked at the stop line, before the
+  /// vehicle commits to entering the junction.
+  ///
+  /// This is the difference between a queue and a deadlock. Held inside the
+  /// box, a vehicle waiting for a gap blocks the traffic crossing it, which is
+  /// waiting for the same kind of gap somewhere else — and at 240 vehicles the
+  /// whole grid stopped, permanently, with 24 held mid-turn and 184 queued
+  /// behind them. A driver decides before entering, and waits on the line,
+  /// where waiting costs nobody else their right of way.
+  _turnExitClear(v, junction) {
+    const target = this._turnTarget(v, junction);
+    if (!target) return true;
+    const need = v.length / 2 + SAFE_GAP + 2.5;
+    for (const other of target.lane.members) {
+      if (other === v || other.arc) continue;
+      const gap = Math.abs(City.progressOf(other) - target.exitProgress);
+      if (gap < need + other.length / 2) return false;
+    }
+    return true;
+  }
+
+  _beginTurn(v, junction) {
+    const target = this._turnTarget(v, junction);
+    if (!target) { v.turn = 0; return; }
+    const { forward, side, newAxis, newDir, lane, P } = target;
 
     // The arc is sized so that it STARTS where the vehicle already is. A fixed
     // radius means a fixed tangent point, and a vehicle that is past it —
@@ -2012,6 +2046,12 @@ export class City {
     // The gap has to be clear when the vehicle ARRIVES, not when it sets off:
     // a quarter circle takes over a second, and a car fifteen metres back down
     // the new road is exactly where the turn ends by the time it gets there.
+    //
+    // Inside the junction this is a safety check rather than a fresh decision
+    // — the same question was answered at the line — so the margin is the room
+    // actually needed rather than a comfortable one. Refusing generously from
+    // in here strands the vehicle in the box; refusing not at all drives it
+    // into the side of whatever is there.
     const turnTime = (R * Math.abs(sweep)) / Math.max(2, v.speed);
     for (const other of lane.members) {
       if (other.arc) continue;
@@ -2199,6 +2239,13 @@ export class City {
           const needed = junction.distance + ROAD_WIDTH + v.length + SAFE_GAP;
           if (ahead.gap < needed) mayEnter = false;
         }
+        // A vehicle that means to turn asks the same question of the lane it
+        // is turning INTO, and asks it here, at the line — not from inside the
+        // junction, where waiting blocks the traffic crossing it.
+        if (mayEnter && v.turn !== 0 && junction.distance > -0.5
+          && !this._turnExitClear(v, junction)) {
+          mayEnter = false;
+        }
       }
       if (!mayEnter && junction.distance > -0.5) {
         // The speed it could still be doing here and stop by the line.
@@ -2218,12 +2265,12 @@ export class City {
         desired = Math.min(desired, 6.5);   // slow down into the corner
         this._beginTurn(v, junction);
         if (v.arc) return;
-        // A turn it MUST take, that it cannot take yet — waiting for a gap in
-        // the oncoming lane, or for room in the lane it is joining. It holds
-        // AT the point the turn starts from, not at the stop line: the stop
-        // line is several metres further back than the tangent point, so
-        // holding there means never reaching the place the turn begins, and
-        // the whole grid deadlocks behind it.
+        // A wait inside the junction is bounded. Standing still in the box is
+        // what turns a queue into a deadlock — the traffic crossing it is
+        // waiting for a gap that this vehicle is the reason nobody has — so
+        // after a few seconds it stops waiting and creeps out instead. Under
+        // that it holds, which is the safe thing and almost always enough: the
+        // decision not to be here at all was made back at the line.
         if (v.mustTurn && v.atTurnPoint) desired = 0;
       }
     } else {
