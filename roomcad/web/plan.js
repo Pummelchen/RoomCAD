@@ -1750,6 +1750,9 @@ const LAYOUT_TARGET_CELL = 0.35;   // metres; refined per plan, see layoutGrid
 // of existing obstacles are still honoured exactly, so a genuinely short jog in
 // the geometry is still reproduced faithfully.
 const LAYOUT_MIN_CELL = MIN_WALL_LENGTH;
+// The closest two grid lines may sit. Below this a boundary becomes a wall that
+// sanitize discards on load, which turns it into a hole.
+const LAYOUT_MIN_LINE_GAP = 0.15;
 
 /// Cuts `layout` into a grid fine enough to shape rooms with.
 ///
@@ -1761,7 +1764,28 @@ function layoutGrid(layout, obstacles) {
   const lines = (lo, hi, edges) => {
     const set = new Set([clean(lo), clean(hi)]);
     for (const v of edges) if (v > lo + 1e-9 && v < hi - 1e-9) set.add(clean(v));
-    const sorted = [...set].sort((a, b) => a - b);
+    let sorted = [...set].sort((a, b) => a - b);
+    // Two obstacle edges a few millimetres apart would give a cell that thin,
+    // and a boundary that thin becomes a wall shorter than sanitize keeps —
+    // dropped on the next load, leaving a hole that merges two rooms into one.
+    // Lines closer together than that are collapsed.
+    //
+    // The threshold is deliberately the smallest that works. Using the minimum
+    // CELL size here instead discarded obstacle edges up to 30 cm apart, and a
+    // cell then straddled the edge of a walkway: rooms ended up overlapping the
+    // circulation by as much as 0.63 m², which is the very thing the grid is
+    // built to prevent.
+    const spaced = [sorted[0]];
+    for (const v of sorted.slice(1)) {
+      if (v - spaced[spaced.length - 1] >= LAYOUT_MIN_LINE_GAP) spaced.push(v);
+    }
+    const last = sorted[sorted.length - 1];
+    if (spaced[spaced.length - 1] !== last) {
+      // Make room for the boundary rather than sitting just short of it.
+      if (spaced.length > 1 && last - spaced[spaced.length - 2] < LAYOUT_MIN_LINE_GAP) spaced.pop();
+      spaced[spaced.length - 1] = last;
+    }
+    sorted = spaced;
     // Subdivide any span that is coarser than the target cell.
     const out = [sorted[0]];
     for (let i = 1; i < sorted.length; i++) {
@@ -1790,13 +1814,22 @@ function layoutGrid(layout, obstacles) {
   const blocked = new Uint8Array(nx * nz);
   const area = new Float64Array(nx * nz);
   for (let i = 0; i < nx; i++) {
-    const cx = (xs[i] + xs[i + 1]) / 2;
+    const x0 = xs[i];
+    const x1 = xs[i + 1];
     for (let j = 0; j < nz; j++) {
-      const cz = (zs[j] + zs[j + 1]) / 2;
+      const z0 = zs[j];
+      const z1 = zs[j + 1];
       const at = i * nz + j;
-      area[at] = (xs[i + 1] - xs[i]) * (zs[j + 1] - zs[j]);
+      area[at] = (x1 - x0) * (z1 - z0);
       for (const o of obstacles) {
-        if (cx > o.x && cx < o.x + o.w && cz > o.z && cz < o.z + o.l) { blocked[at] = 1; break; }
+        // A cell that OVERLAPS an obstacle is blocked, not one whose centre
+        // happens to fall inside it. Testing the centre leaves a cell that
+        // straddles the edge of a walkway looking free, and a room then takes
+        // it: rooms were overlapping the circulation by up to 0.63 m² wherever
+        // two grid lines had been collapsed together.
+        const ox = Math.min(x1, o.x + o.w) - Math.max(x0, o.x);
+        const oz = Math.min(z1, o.z + o.l) - Math.max(z0, o.z);
+        if (ox > 1e-9 && oz > 1e-9) { blocked[at] = 1; break; }
       }
     }
   }
@@ -2150,7 +2183,12 @@ export function autoLayoutRooms(room, opts = {}) {
     if (z2 < lz2 && lz2 - z2 <= WALL_THICKNESS) l += lz2 - z2;
     return { x, z, w: clean(w), l: clean(l) };
   };
-  const blockers = [...publics, ...built].map(toEdge);
+  // Rounded to the same precision the grid lines use, so a cell edge placed at
+  // an obstacle edge lands exactly on it rather than a fraction of a millimetre
+  // inside it.
+  const blockers = [...publics, ...built].map(toEdge).map(r => ({
+    x: clean(r.x), z: clean(r.z), w: clean(r.w), l: clean(r.l),
+  }));
 
   const grid = layoutGrid(layout, blockers);
   let freeArea = 0;
