@@ -154,6 +154,30 @@ check("broken glass leaves falling shards", /this\.updateShards\(dt\);/.test(wal
   && /this\.shards\.push\(/.test(walkCode));
 check("the shared glass material is never disposed with a pane",
   /the material is shared; only the pane is ours/.test(walk));
+// — Paint on a moving car —————————————————————————————————
+//
+// A vehicle is one instance of an instanced mesh and moves every frame, so a
+// splat recorded in world space is only correct for the instant it was placed:
+// the car drives out from under its own paint.
+// Matched on the CALL, not the definition. A check that greps for the method
+// name passes just as happily when nothing calls it.
+check("a hit on a vehicle is recorded in that vehicle's own frame",
+  /this\.carrierFor\(hit\)/.test(walkCode) && /applyMatrix4\(toLocal\)/.test(walkCode));
+check("the city can say which vehicle an instance is",
+  /vehicleForInstance\(meshName, instanceId\)/.test(city));
+check("and hands out the same transform it draws that vehicle with",
+  /vehicleMatrix\(v, into = null\)/.test(city));
+check("carried splats are put back on their vehicle every frame",
+  /this\.updateSplats\(\);/.test(walkCode)
+  && /if \(!carrier\) continue;[\s\S]{0,600}this\.positionSplat\(splat\);/.test(walkCode));
+check("a shot leads a moving target rather than aiming where it was",
+  /if \(ball\.carrier\) \{[\s\S]{0,200}ball\.to\.copy/.test(walkCode));
+check("paint is dropped when the city it was stuck to is rebuilt",
+  /carrier\.key !== this\.city\.key/.test(walkCode));
+check("the per-frame carry allocates nothing",
+  /const _carrierMatrix = new THREE\.Matrix4\(\);/.test(walk)
+  && !/positionSplat\(splat\) \{[\s\S]{0,400}new THREE\./.test(walk));
+
 check("the city is already in range of a shot, so nothing special is needed to hit it",
   /shootableMeshes\(\)/.test(walk) && /this\.scene\.traverse/.test(walk));
 

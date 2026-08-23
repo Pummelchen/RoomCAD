@@ -2278,6 +2278,30 @@ export class City {
     // leaves a street is by turning into another one.
   }
 
+  /// Which vehicle a particular instance of a vehicle mesh is. A raycast
+  /// against an InstancedMesh reports the instance it hit but nothing about
+  /// what that instance MEANS, so this is the translation — without it a
+  /// paintball can tell it hit a car but not which car, and the splat has
+  /// nowhere to live except world space, where the car promptly drives out
+  /// from under it.
+  vehicleForInstance(meshName, instanceId) {
+    if (!this.vehicleMeshes || instanceId === undefined || instanceId === null) return null;
+    const kind = String(meshName).replace("city-vehicles-", "");
+    if (!this.vehicleMeshes[kind]) return null;
+    for (const v of this.cars) {
+      if (v.kind === kind && v.slot === instanceId) return v;
+    }
+    return null;
+  }
+
+  /// The world transform of one vehicle — the same one its body is drawn with,
+  /// composed here rather than reconstructed by the caller so the two cannot
+  /// drift apart.
+  vehicleMatrix(v, into = null) {
+    const ref = VEHICLE_REF[v.kind];
+    return boxMatrix(v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1, -v.heading, into || new THREE.Matrix4());
+  }
+
   _writeCarMatrices() {
     if (!this.carParts || !this.vehicleMeshes) return;
     const { head, tail, brake, indicator } = this.carParts;

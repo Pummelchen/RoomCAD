@@ -74,6 +74,11 @@ const SUN_SHADOW_NORMAL_BIAS = 0.002;
 
 // Scratch vector for the viewmodel, which is positioned every frame.
 const _gunOffset = new THREE.Vector3();
+// Scratch for putting paint back onto a moving vehicle. Reused because it runs
+// once per carried splat per frame.
+const _carrierMatrix = new THREE.Matrix4();
+const _carrierNormal = new THREE.Vector3();
+const _carrierPoint = new THREE.Vector3();
 
 // Singapore solar position. In the 2D editor the top of the plan is North (0°),
 // so azimuth is measured clockwise from North: 0=N, 90=E, 180=S, 270=W.
@@ -1747,7 +1752,34 @@ export class Walk3D {
       ? hit.point.clone()
       : origin.clone().add(direction.clone().multiplyScalar(range));
     const from = origin.clone().add(direction.clone().multiplyScalar(0.35));
-    this.spawnPaintball(from, to, hit);
+    this.spawnPaintball(from, to, hit, this.carrierFor(hit));
+  }
+
+  /// If a shot hit a vehicle, work out WHERE on that vehicle — the hit point
+  /// and normal in its own frame, rather than in the world. A vehicle is one
+  /// instance of an instanced mesh and moves every frame, so a world position
+  /// is only true for the instant it was measured: paint recorded that way
+  /// hangs in the air while the car drives out from under it.
+  carrierFor(hit) {
+    if (!hit || !hit.object || !hit.object.name) return null;
+    if (!hit.object.name.startsWith("city-vehicles-")) return null;
+    const vehicle = this.city.vehicleForInstance(hit.object.name, hit.instanceId);
+    if (!vehicle) return null;
+
+    const toWorld = this.city.vehicleMatrix(vehicle);
+    const toLocal = toWorld.clone().invert();
+    const normal = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
+    normal.transformDirection(toWorld);   // instance space to world
+    return {
+      vehicle,
+      // Which city this vehicle belongs to. Rebuilding the neighbourhood
+      // replaces the whole fleet, and paint left pointing at a vehicle from
+      // the previous one would hang in mid-air on an object nothing is
+      // driving any more.
+      key: this.city.key,
+      point: hit.point.clone().applyMatrix4(toLocal),
+      normal: normal.applyMatrix4(new THREE.Matrix4().extractRotation(toLocal)).normalize(),
+    };
   }
 
   shootableMeshes() {
@@ -1760,7 +1792,7 @@ export class Walk3D {
     return meshes;
   }
 
-  spawnPaintball(from, to, hit) {
+  spawnPaintball(from, to, hit, carrier = null) {
     const geometry = new THREE.SphereGeometry(0.045, 16, 16);
     const material = new THREE.MeshStandardMaterial({ color: 0x2ecc40, roughness: 0.35, emissive: 0x14a828, emissiveIntensity: 0.6 });
     const ball = new THREE.Mesh(geometry, material);
@@ -1773,6 +1805,7 @@ export class Walk3D {
       from,
       to,
       hit,
+      carrier,
       t: 0,
       duration: 0.12 + Math.random() * 0.05,
     });
@@ -1784,6 +1817,13 @@ export class Walk3D {
       const ball = this.paintballs[i];
       ball.t += dt / ball.duration;
       const t = Math.min(ball.t, 1);
+      // A shot at a moving car has to lead it. The flight is short, but at
+      // thirteen metres a second the target is a metre away by the time the
+      // ball arrives, and the splat would land in the road behind it.
+      if (ball.carrier) {
+        this.city.vehicleMatrix(ball.carrier.vehicle, _carrierMatrix);
+        ball.to.copy(ball.carrier.point).applyMatrix4(_carrierMatrix);
+      }
       ball.mesh.position.lerpVectors(ball.from, ball.to, t);
       // A little arc so the shot has some life.
       ball.mesh.position.y += Math.sin(Math.PI * t) * 0.06;
@@ -1791,24 +1831,32 @@ export class Walk3D {
         this.scene.remove(ball.mesh);
         ball.mesh.geometry.dispose();
         ball.mesh.material.dispose();
-        if (ball.hit) this.placeSplat(ball.hit);
+        if (ball.hit) this.placeSplat(ball.hit, ball.carrier);
         this.paintballs.splice(i, 1);
       }
     }
   }
 
-  placeSplat(hit) {
+  placeSplat(hit, carrier = null) {
     const radius = 0.05 + Math.random() * 0.04;
     const geometry = new THREE.CircleGeometry(radius, 16);
     const material = new THREE.MeshBasicMaterial({ color: 0x2ecc40 });
     const splat = new THREE.Mesh(geometry, material);
     splat.userData.splat = true;
+    splat.userData.spin = Math.random() * Math.PI * 2;
 
-    const normal = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
-    if (hit.object) normal.transformDirection(hit.object.matrixWorld);
-    splat.position.copy(hit.point).add(normal.clone().multiplyScalar(0.006));
-    splat.lookAt(hit.point.clone().add(normal));
-    splat.rotateZ(Math.random() * Math.PI * 2);
+    if (carrier) {
+      // Paint on a vehicle is stored in that vehicle's frame and put back into
+      // the world every frame, so it travels with the car it landed on.
+      splat.userData.carrier = carrier;
+      this.positionSplat(splat);
+    } else {
+      const normal = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
+      if (hit.object) normal.transformDirection(hit.object.matrixWorld);
+      splat.position.copy(hit.point).add(normal.clone().multiplyScalar(0.006));
+      splat.lookAt(hit.point.clone().add(normal));
+      splat.rotateZ(splat.userData.spin);
+    }
 
     this.scene.add(splat);
     this.splats.push(splat);
@@ -1817,6 +1865,37 @@ export class Walk3D {
       this.scene.remove(old);
       old.geometry.dispose();
       old.material.dispose();
+    }
+  }
+
+  /// Puts one carried splat back where it belongs on its vehicle.
+  positionSplat(splat) {
+    const carrier = splat.userData.carrier;
+    if (!carrier) return;
+    this.city.vehicleMatrix(carrier.vehicle, _carrierMatrix);
+    splat.position.copy(carrier.point).applyMatrix4(_carrierMatrix);
+    _carrierNormal.copy(carrier.normal).transformDirection(_carrierMatrix);
+    splat.position.addScaledVector(_carrierNormal, 0.006);
+    splat.lookAt(_carrierPoint.copy(splat.position).add(_carrierNormal));
+    splat.rotateZ(splat.userData.spin);
+  }
+
+  /// Splats on moving vehicles, carried along with them. The rest are on walls
+  /// and roads and never move, so they are left alone.
+  updateSplats() {
+    for (let i = this.splats.length - 1; i >= 0; i--) {
+      const splat = this.splats[i];
+      const carrier = splat.userData.carrier;
+      if (!carrier) continue;
+      if (carrier.key !== this.city.key) {
+        // Its vehicle belongs to a city that no longer exists.
+        this.scene.remove(splat);
+        splat.geometry.dispose();
+        splat.material.dispose();
+        this.splats.splice(i, 1);
+        continue;
+      }
+      this.positionSplat(splat);
     }
   }
 
@@ -1896,6 +1975,7 @@ export class Walk3D {
     this.tick(dt);
     this.updatePaintballs(dt);
     this.updateShards(dt);
+    this.updateSplats();
     this.city.update(dt, this.camera.position);
     this.updateClouds(dt);
 
