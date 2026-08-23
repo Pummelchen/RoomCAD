@@ -1293,30 +1293,38 @@ for (const [w, l, label] of [
     probe.dispose();
   }
 
-  // A bus standing at a stop must make the kerb either side of it unavailable.
-  // Waiting for the situation to arise in a ten-minute run does not test it —
-  // it needs a car to choose the neighbouring bay during the fifteen to forty
-  // five seconds a bus is there — so the decision is put to the model directly.
+  // A long vehicle must make the kerb either side of it unavailable, because a
+  // bay is 7 m and plenty of vehicles are longer. Put to the model directly:
+  // waiting for two of them to want adjacent spaces in a ten-minute run does
+  // not test it.
+  //
+  // This used to be asked of a bus at its stop. It is asked of a van now,
+  // because a bus stop has the whole block side to itself — there is no
+  // neighbouring bay left to claim, which is a stronger guarantee than
+  // claiming one and is checked separately.
   {
-    const bus = city.cars.find(v => v.kind === "bus");
+    const van = city.cars.find(v => v.kind === "van");
     const car = city.cars.find(v => v.kind === "car");
-    const lane = [...city.lanes.values()].find(l => (l.bays || []).some(b => b.busStop));
-    const stop = lane.bays.find(b => b.busStop);
+    const lane = [...city.lanes.values()].find(l => (l.bays || []).length >= 4);
+    const target = lane.bays[Math.floor(lane.bays.length / 2)];
+    // The bays immediately either side — one pitch away, stated from the pitch
+    // rather than from the clearance the model happens to use.
     const near = lane.bays
-      .filter(b => b !== stop && Math.abs(b.at - stop.at) <= bus.length / 2 + car.length / 2)
-      .sort((a, b) => Math.abs(a.at - stop.at) - Math.abs(b.at - stop.at));
+      .filter(b => b !== target && Math.abs(Math.abs(b.at - target.at) - BAY_PITCH) < 0.5);
 
-    check("a bus is longer than the space it stops in",
-      near.length > 0, `bus ${bus.length.toFixed(1)} m, bays every ${BAY_PITCH} m`);
+    check("the test found the spaces either side of the one it is using",
+      near.length > 0, `van ${van.length.toFixed(1)} m, bays every ${BAY_PITCH} m`);
+    check("a van very nearly fills a single space on its own",
+      van.length > BAY_PITCH - 1.5,
+      `${van.length.toFixed(1)} m in a ${BAY_PITCH} m space leaves too much room to matter`);
 
-    const busLane = { ...lane, members: [] };
-    const standing = { ...bus, lane: busLane };
-    const arriving = { ...car, lane: busLane };
+    const spare = { ...lane, members: [] };
+    const standing = { ...van, lane: spare };
+    const arriving = { ...car, lane: spare };
     for (const b of lane.bays) b.taken = null;
-    city._takeBay(standing, stop);
-    const refused = near.every(b => !city._bayFree(arriving, b));
-    check("a bus at a stop blocks the kerb its body covers",
-      refused,
+    city._takeBay(standing, target);
+    check("a stopped van blocks the kerb its body covers",
+      near.every(b => !city._bayFree(arriving, b)),
       `${near.filter(b => city._bayFree(arriving, b)).length} of ${near.length} neighbouring bays still offered`);
     check("and it does not block the whole street",
       lane.bays.some(b => city._bayFree(arriving, b)),
@@ -1324,9 +1332,6 @@ for (const [w, l, label] of [
     for (const b of lane.bays) b.taken = null;
   }
 
-  // A parked car rejoining traffic must look behind it, not only ahead: it
-  // eases off the kerb from a standstill and takes about a second and a half
-  // to clear, into whatever was already coming.
   // Put to the model rather than grepped for: a call can be left in place and
   // disabled, and three earlier source-matching contracts here passed against
   // exactly that. A car whose time is up, with traffic bearing down on it, must
@@ -1765,6 +1770,87 @@ for (const [w, l, label] of [
   check("it never swings further out than a driver would",
     REVERSE_ANGLE < Math.PI / 4, `${(REVERSE_ANGLE * 180 / Math.PI).toFixed(0)} deg`);
   city.dispose();
+}
+
+// ── What a parking space is allowed to have next to it ────────────────────
+//
+// Two rules, both of which the layout broke before they were written:
+//
+//   - trees stood in the middle of the pavement, and the widest canopy reached
+//     20 cm past the kerb — over the parking space beyond it, so a tree grew
+//     through a parked car;
+//   - a block side chosen for a bus stop kept its parking, leaving a row of
+//     cars up to the mouth of the layby for the bus to get in and out around.
+{
+  for (const seed of [2718, 4242, 31337]) {
+    const city = new City();
+    city.build(boundsFor(0, 0, 9, 7), seed, 0);
+    const lanes = [...city.lanes.values()];
+    const bays = lanes.flatMap(l => l.bays);
+    const stops = bays.filter(b => b.busStop);
+    const spaces = bays.filter(b => !b.busStop);
+
+    // The flat list cars choose destinations from must hold only spaces that
+    // still exist. Built before the bus-stop sides are cleared it keeps the
+    // ones that were removed, and cars set off for spaces that were never
+    // painted and can never be parked in.
+    const live = new Set(bays);
+    check(`every destination on offer is a space that exists (seed ${seed})`,
+      city.bayIndex.length > 0 && city.bayIndex.every(b => live.has(b)),
+      `${city.bayIndex.filter(b => !live.has(b)).length} of ${city.bayIndex.length} no longer exist`);
+
+    check(`there are still parking spaces (seed ${seed})`,
+      spaces.length > 150, `${spaces.length} spaces, ${stops.length} stops`);
+    check(`a block still has two bus stops (seed ${seed})`,
+      stops.length === (GRID_RADIUS * 2 + 1) ** 2 * 2, `${stops.length} stops`);
+
+    // A block side is the stretch of one lane running past one block, which is
+    // one block and one road wide. Nothing may be parked along a side that has
+    // a stop on it — so the nearest space on that lane is a whole side away.
+    const sideLength = BLOCK_SIZE + ROAD_WIDTH;
+    let tooClose = 0;
+    let nearest = Infinity;
+    for (const lane of lanes) {
+      for (const stop of lane.bays.filter(b => b.busStop)) {
+        for (const other of lane.bays) {
+          if (other === stop || other.busStop) continue;
+          const gap = Math.abs(other.at - stop.at);
+          nearest = Math.min(nearest, gap);
+          if (gap <= sideLength / 2) tooClose++;
+        }
+      }
+    }
+    check(`a block side with a bus stop has no parking on it (seed ${seed})`,
+      tooClose === 0,
+      `${tooClose} spaces within half a side; nearest is ${nearest.toFixed(1)} m from a stop`);
+
+    // And nothing hangs over a space. Measured from the drawn canopies rather
+    // than from where the code says it puts them.
+    const canopies = city.group.children.find(n => n.name === "city-tree-canopies");
+    check(`the city has trees (seed ${seed})`, !!canopies && canopies.count > 50,
+      canopies ? `${canopies.count} canopies` : "no canopy mesh");
+    if (canopies) {
+      const m = canopies.instanceMatrix.array;
+      let overRoad = 0;
+      let overSpace = 0;
+      const spaceAt = spaces.map(b => ({ x: b.x, z: b.z }));
+      for (let i = 0; i < canopies.count; i++) {
+        const e = m.slice(i * 16, i * 16 + 16);
+        const x = e[12];
+        const z = e[14];
+        const r = Math.max(Math.hypot(e[0], e[1], e[2]), Math.hypot(e[8], e[9], e[10]));
+        const dx = Math.min(...city.roadX.map(v => Math.abs(x - v)));
+        const dz = Math.min(...city.roadZ.map(v => Math.abs(z - v)));
+        if (r > dx - ROAD_WIDTH / 2 || r > dz - ROAD_WIDTH / 2) overRoad++;
+        if (spaceAt.some(b => Math.hypot(b.x - x, b.z - z) < r)) overSpace++;
+      }
+      check(`no tree reaches out over the carriageway (seed ${seed})`,
+        overRoad === 0, `${overRoad} of ${canopies.count}`);
+      check(`no tree stands over a parking space (seed ${seed})`,
+        overSpace === 0, `${overSpace} of ${canopies.count}`);
+    }
+    city.dispose();
+  }
 }
 
 const EXPECTED = [

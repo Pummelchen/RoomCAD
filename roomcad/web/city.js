@@ -73,6 +73,8 @@ const BAY_LINE_COLOR = 0xd8d3c2;    // the box a car parks inside
 const BUS_BOX_COLOR = 0xb8452f;     // bus stops are painted, and only for buses
 const BUS_LETTER_COLOR = 0xefe9dc;
 const TRUNK_COLOR = 0x6b4f36;
+const TREE_MAX_RADIUS = 1.8;    // the biggest canopy _blockTrees will draw
+const TREE_KERB_CLEAR = 0.3;    // ... and how far short of the kerb it must stop
 const CANOPY_COLORS = [0x5c8a45, 0x6f9c52, 0x4e7a3b];
 const LAMP_POLE_COLOR = 0x4a4d53;
 const WINDOW_DARK = 0x2d3a4a;
@@ -1505,7 +1507,15 @@ export class City {
   }
 
   _blockTrees(sets, bx, bz, block, rnd) {
-    const ring = block / 2 - SIDEWALK / 2;
+    // Far enough in that the widest canopy still stops short of the kerb. On
+    // the middle of the pavement a big one reached 20 cm past it and hung over
+    // the parking space beyond — a tree growing through a parked car.
+    //
+    // Clamped against the LARGEST canopy rather than each tree's own, so the
+    // radius is still drawn in the same order as before and the seed still
+    // builds the same city.
+    const ring = Math.min(block / 2 - SIDEWALK / 2,
+                          block / 2 - (TREE_MAX_RADIUS + TREE_KERB_CLEAR));
     const perSide = 3;
     for (const side of [0, 1, 2, 3]) {
       for (let i = 0; i < perSide; i++) {
@@ -3244,18 +3254,6 @@ export class City {
       }
     }
 
-    // Every bay in one flat list, so choosing a destination is a pick from a
-    // list rather than a walk of every lane.
-    this.bayIndex = [];
-    for (const [, lane] of this.lanes) {
-      for (const bay of lane.bays) {
-        bay.lane = lane;
-        bay.x = lane.axis === "x" ? bay.at : lane.fixed;
-        bay.z = lane.axis === "x" ? lane.fixed : bay.at;
-        this.bayIndex.push(bay);
-      }
-    }
-
     // Which lane runs along a given side of a block with its KERB facing it.
     // Traffic keeps right, so the near-side lane is the one whose lane offset
     // points back towards the block.
@@ -3292,8 +3290,29 @@ export class City {
             if (bay.busStop) continue;
             if (!best || Math.abs(bay.at - found.along) < Math.abs(best.at - found.along)) best = bay;
           }
-          if (best) best.busStop = true;
+          if (!best) continue;
+          best.busStop = true;
+          // The whole side is given over to the stop. A bus pulling into a
+          // layby needs the kerb either side of it kept clear to get in and out
+          // of, and a row of parked cars up to the mouth of one is the thing
+          // that stops it — so a side with a stop on it has no parking at all,
+          // rather than parking with a gap in it.
+          found.lane.bays = found.lane.bays.filter(bay =>
+            bay.busStop || Math.abs(bay.at - found.along) > span / 2);
         }
+      }
+    }
+
+    // The flat list of every bay, built LAST — after the stops are chosen and
+    // the sides they are on have been cleared. Built before that it holds bays
+    // that no longer exist, and cars drive to spaces that were never painted.
+    this.bayIndex = [];
+    for (const [, lane] of this.lanes) {
+      for (const bay of lane.bays) {
+        bay.lane = lane;
+        bay.x = lane.axis === "x" ? bay.at : lane.fixed;
+        bay.z = lane.axis === "x" ? lane.fixed : bay.at;
+        this.bayIndex.push(bay);
       }
     }
   }
