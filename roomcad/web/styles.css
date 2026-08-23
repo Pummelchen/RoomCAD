@@ -636,11 +636,10 @@ body.resizing-sidebars * {
   overflow-y: auto;
   min-height: 0;
   /* Keeps the text clear of the scrollbar rather than the scrollbar clear of
-     the panel edge. */
+     the panel edge. Moving the gap from one side of the bar to the other costs
+     no width — the same 14 px, just on the other side. Reserving a gutter as
+     well DOES cost width, and took enough of it to clip the labels. */
   padding-right: 14px;
-  /* Hold the same gap when there is nothing to scroll, so the column does not
-     shift sideways as content grows past the fold. */
-  scrollbar-gutter: stable;
 }
 
 /* The footer is outside the scrolling area, so it needs the inset itself. */
