@@ -161,7 +161,7 @@ const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
 const PACE_SLOWEST = 0.90;
 const PACE_FASTEST = 1.20;
 // How many vehicles are on the streets altogether, spread over every lane.
-const FLEET_SIZE = 80;
+const FLEET_SIZE = 240;
 // Junction furniture. A driver meets the stop line, then the crossing, then
 // the carriageway, so the crossing sits between the line and the junction.
 const CROSS_GAP = 0.6;          // carriageway edge to the near edge of the crossing
