@@ -1,0 +1,528 @@
+// Behavioural stress test for the 2D editor.
+//
+// editor2d.js is 2000 lines of pointer handling, and until now it was checked
+// by reading its own source: a test asserted the file still mentioned a
+// function. That catches a deleted line and nothing else — it cannot tell you
+// what happens when someone drags a wall onto another one, or lets go outside
+// the canvas, or draws with two fingers.
+//
+// So this constructs the real Editor2D against a stub DOM and drives it with
+// synthetic pointer, wheel and keyboard input across every tool, then checks
+// the things that must hold of the plan no matter what was done to it:
+//
+//   - nothing in the plan is NaN, and nothing is shorter than a wall may be;
+//   - every door and window is on a wall that exists, and within its ends;
+//   - the plan can still be saved and reopened, with everything still there;
+//   - undo genuinely goes back, and never throws;
+//   - the view stays somewhere a person can see.
+//
+// Run:  node tests/editor-fuzz.test.mjs
+
+import { installDOM } from "./harness/dom-stub.mjs";
+import { loadWebModule } from "./harness/load-web-module.mjs";
+
+const dom = installDOM();
+const P = await loadWebModule("plan.js");
+const { store } = await loadWebModule("store.js");
+const { Editor2D } = await loadWebModule("editor2d.js");
+
+let passed = 0;
+let failed = 0;
+function check(name, condition, detail = "") {
+  if (condition) { passed++; return; }
+  failed++;
+  console.error("FAIL: " + name + (detail ? " — " + detail : ""));
+}
+
+const violations = new Map();
+const note = (what, detail) => {
+  if (!violations.has(what)) violations.set(what, { count: 0, first: detail });
+  violations.get(what).count++;
+};
+
+const TOOLS = ["select", "wall", "door", "window", "furniture", "erase", "measure", "public", "label", "rooms"];
+const FURNITURE = ["bed", "table", "chair", "sofa", "desk", "wardrobe"];
+
+let seed = 991117;
+const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+const pick = list => list[Math.floor(rnd() * list.length)];
+
+const editor = new Editor2D(dom.canvas);
+
+/// Where the plan currently sits on screen, so a gesture can be aimed at it.
+function planBox() {
+  const b = editor.contentBounds();
+  if (!b || !Number.isFinite(b.minX)) return null;
+  const a = editor.screen({ x: b.minX, z: b.minZ });
+  const c = editor.screen({ x: b.maxX, z: b.maxZ });
+  return {
+    x0: Math.min(a.x, c.x), x1: Math.max(a.x, c.x),
+    y0: Math.min(a.y, c.y), y1: Math.max(a.y, c.y),
+  };
+}
+
+/// The screen point for a spot a given fraction across the plan.
+function atPlan(fx, fz) {
+  const b = editor.contentBounds();
+  return editor.screen({
+    x: b.minX + (b.maxX - b.minX) * fx,
+    z: b.minZ + (b.maxZ - b.minZ) * fz,
+  });
+}
+
+/// One complete gesture: press, some number of moves, release. Returns the
+/// number of handlers that ran, so a gesture nothing listened to is visible.
+function gesture(x0, y0, steps, opts = {}) {
+  const mods = {
+    shiftKey: opts.shift || false, altKey: opts.alt || false,
+    ctrlKey: opts.ctrl || false, metaKey: opts.meta || false,
+    button: opts.button || 0, buttons: 1, pointerId: opts.pointerId || 1,
+    pointerType: opts.pointerType || "mouse",
+  };
+  let ran = 0;
+  ran += dom.canvas.dispatch("pointerdown", { clientX: x0, clientY: y0, ...mods });
+  let x = x0;
+  let y = y0;
+  for (const [dx, dy] of steps) {
+    x += dx; y += dy;
+    ran += dom.canvas.dispatch("pointermove", { clientX: x, clientY: y, ...mods });
+  }
+  ran += dom.canvas.dispatch("pointerup", { clientX: x, clientY: y, ...mods, buttons: 0 });
+  return { ran, end: { x, y } };
+}
+
+/// Everything that must be true of the plan, whatever was just done to it.
+function inspect(room, where) {
+  const ids = new Set();
+  const seeID = (id, kind) => {
+    if (id === undefined || id === null || id === "") { note("something with no id", kind); return; }
+    if (ids.has(id)) note("two things sharing an id", `${kind} ${id}`);
+    ids.add(id);
+  };
+  const num = (v, what) => {
+    if (!Number.isFinite(v)) { note("a non-finite number in the plan", `${what} in ${where}`); return false; }
+    if (Math.abs(v) > 1e5) { note("a coordinate impossibly far out", `${what}=${v}`); return false; }
+    return true;
+  };
+
+  for (const w of room.walls) {
+    seeID(w.id, "wall");
+    num(w.start.x, "wall.start.x"); num(w.start.z, "wall.start.z");
+    num(w.end.x, "wall.end.x"); num(w.end.z, "wall.end.z");
+    const len = P.wallLength(w);
+    // Below this the wall does not survive a reload: sanitize drops it, and a
+    // boundary silently becomes a doorway-sized hole.
+    if (len < P.MIN_WALL_LENGTH - 1e-9) {
+      note("a wall too short to survive a reload", `${len.toFixed(3)} m in ${where}`);
+    }
+  }
+
+  const wallByID = new Map(room.walls.map(w => [w.id, w]));
+  for (const [kind, list] of [["door", room.doors], ["window", room.windows]]) {
+    for (const o of list) {
+      seeID(o.id, kind);
+      if (!num(o.offset, `${kind}.offset`) || !num(o.width, `${kind}.width`)) continue;
+      if (!(o.width > 0)) note("an opening with no width", `${kind} ${o.width}`);
+      if (o.offset < -1e-6) note("an opening before the start of its wall", `${kind} ${o.offset}`);
+      const w = wallByID.get(o.wallID);
+      if (!w) { note("an opening on a wall that is not there", kind); continue; }
+      if (o.offset + o.width > P.wallLength(w) + 1e-6) {
+        note("an opening past the end of its wall", `${kind} ${(o.offset + o.width).toFixed(3)} > ${P.wallLength(w).toFixed(3)}`);
+      }
+    }
+  }
+
+  // Two openings on one wall must not sit on top of each other.
+  const byWall = new Map();
+  for (const o of [...room.doors, ...room.windows]) {
+    if (!byWall.has(o.wallID)) byWall.set(o.wallID, []);
+    byWall.get(o.wallID).push(o);
+  }
+  for (const [, list] of byWall) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        if (a.offset < b.offset + b.width - 1e-6 && b.offset < a.offset + a.width - 1e-6) {
+          note("two openings on the same wall overlap", where);
+        }
+      }
+    }
+  }
+
+  for (const f of room.furniture || []) {
+    seeID(f.id, "furniture");
+    num(f.center.x, "furniture.center.x"); num(f.center.z, "furniture.center.z");
+    if (!Number.isFinite(f.rotationDegrees)) {
+      note("furniture with a non-finite angle", String(f.rotationDegrees));
+    }
+  }
+  for (const l of room.labels || []) {
+    seeID(l.id, "label");
+    num(l.center.x, "label.center.x"); num(l.center.z, "label.center.z");
+    if (!Number.isFinite(l.rotationDegrees)) note("a label at a non-finite angle", String(l.rotationDegrees));
+    if (!(l.size > 0)) note("a label with no size", String(l.size));
+  }
+  for (const a of room.publicAreas || []) {
+    seeID(a.id, "public area");
+    num(a.x, "public.x"); num(a.z, "public.z");
+    if (!(a.w > 0) || !(a.l > 0)) note("a public area with no size", `${a.w}×${a.l}`);
+  }
+
+  // A plan that cannot be reopened is a plan that has been lost.
+  try {
+    const reopened = P.parseRoom(P.serializeRoom(room));
+    if (!reopened) note("a plan that will not reopen", where);
+    else if (reopened.walls.length !== room.walls.length) {
+      note("walls disappear when the plan is reopened",
+        `${room.walls.length} saved, ${reopened.walls.length} came back`);
+    }
+  } catch (err) {
+    note("saving the plan threw", `${where}: ${err.message}`);
+  }
+}
+
+/// The view must stay somewhere a person can actually see.
+function inspectView(where) {
+  if (!Number.isFinite(editor.scale) || editor.scale <= 0) {
+    note("a zoom level that shows nothing", `${editor.scale} in ${where}`);
+  } else if (editor.scale < 1 || editor.scale > 100000) {
+    note("a zoom level far outside anything usable", String(editor.scale));
+  }
+  if (!Number.isFinite(editor.origin.x) || !Number.isFinite(editor.origin.y)) {
+    note("a non-finite view origin", where);
+  }
+}
+
+// ── The sweep ─────────────────────────────────────────────────────────────
+const startingRoom = store.room;
+const startingCount = startingRoom.walls.length + startingRoom.doors.length
+  + startingRoom.windows.length + (startingRoom.furniture || []).length
+  + (startingRoom.labels || []).length + (startingRoom.publicAreas || []).length;
+
+const W = dom.canvas.clientWidth;
+const H = dom.canvas.clientHeight;
+let gestures = 0;
+let handled = 0;
+
+for (let trial = 0; trial < 600; trial++) {
+  const tool = pick(TOOLS);
+  store.chooseTool(tool);
+  if (tool === "furniture") store.beginFurniturePlacement(pick(FURNITURE));
+
+  // Aim at where the plan actually is on screen. The room occupies a few
+  // hundred pixels of a 1200×800 canvas, so uniformly random points would
+  // spend the whole sweep dragging empty space and never touch a wall. A fifth
+  // of gestures are still deliberately thrown outside it, since letting go off
+  // the edge of the plan is a real thing people do.
+  const box = planBox();
+  let x0, y0;
+  if (rnd() < 0.8 && box) {
+    x0 = Math.round(box.x0 - 30 + rnd() * (box.x1 - box.x0 + 60));
+    y0 = Math.round(box.y0 - 30 + rnd() * (box.y1 - box.y0 + 60));
+  } else {
+    x0 = Math.round((rnd() * 1.2 - 0.1) * W);
+    y0 = Math.round((rnd() * 1.2 - 0.1) * H);
+  }
+  const moves = [];
+  const n = Math.floor(rnd() * 6);
+  for (let i = 0; i < n; i++) {
+    moves.push([Math.round((rnd() - 0.5) * 300), Math.round((rnd() - 0.5) * 300)]);
+  }
+
+  try {
+    const g = gesture(x0, y0, moves, {
+      shift: rnd() < 0.2, alt: rnd() < 0.1, ctrl: rnd() < 0.1,
+      button: rnd() < 0.05 ? 2 : 0,
+    });
+    gestures++;
+    handled += g.ran;
+  } catch (err) {
+    note("a gesture threw", `${tool}: ${err.message}`);
+    continue;
+  }
+
+  // Occasionally the other things a person does mid-edit.
+  if (rnd() < 0.15) {
+    try {
+      dom.canvas.dispatch("wheel", {
+        clientX: rnd() * W, clientY: rnd() * H,
+        deltaY: (rnd() - 0.5) * 2000, ctrlKey: rnd() < 0.3,
+      });
+    } catch (err) { note("the wheel threw", err.message); }
+  }
+  if (rnd() < 0.1) {
+    try { dom.canvas.dispatch("dblclick", { clientX: rnd() * W, clientY: rnd() * H }); }
+    catch (err) { note("a double click threw", err.message); }
+  }
+  if (rnd() < 0.08) {
+    try { dom.canvas.dispatch("contextmenu", { clientX: rnd() * W, clientY: rnd() * H }); }
+    catch (err) { note("the context menu threw", err.message); }
+  }
+  if (rnd() < 0.2) {
+    const key = pick(["Escape", "Delete", "Backspace", " ", "Shift", "r", "z", "ArrowLeft", "ArrowUp"]);
+    try {
+      dom.window.dispatch("keydown", { key, ctrlKey: key === "z", metaKey: false });
+      dom.window.dispatch("keyup", { key });
+    } catch (err) { note("a key threw", `${key}: ${err.message}`); }
+  }
+  // Losing the window mid-drag: the drag must not be left half-finished.
+  if (rnd() < 0.05) {
+    try { dom.window.dispatch("blur", {}); } catch (err) { note("blur threw", err.message); }
+  }
+
+  // Redrawing must survive whatever state the gesture left behind.
+  try { dom.flushFrames(); }
+  catch (err) { note("drawing threw", `after ${tool}: ${err.message}`); }
+
+  inspect(store.room, tool);
+  inspectView(tool);
+}
+
+check("every gesture was handled by the editor", handled >= gestures * 2,
+  `${handled} handlers ran over ${gestures} gestures`);
+check("the sweep actually ran", gestures >= 590, `${gestures} gestures`);
+
+// A sweep that changes nothing proves nothing: if the gestures all miss, every
+// invariant below holds trivially. So the sweep has to have moved the plan.
+const r = store.room;
+const touched = r.walls.length + r.doors.length + r.windows.length
+  + (r.furniture || []).length + (r.labels || []).length + (r.publicAreas || []).length;
+check("the sweep actually changed the plan", touched !== startingCount,
+  `${startingCount} things before, ${touched} after`);
+check("the sweep reached the undo history", store.undoStack.length > 5,
+  `${store.undoStack.length} undoable steps recorded`);
+console.log(`  sweep left: ${r.walls.length} walls, ${r.doors.length} doors, `
+  + `${r.windows.length} windows, ${(r.furniture || []).length} furniture, `
+  + `${(r.labels || []).length} labels, ${(r.publicAreas || []).length} public areas, `
+  + `${store.undoStack.length} undo steps`);
+
+// ── A click is not a drag ─────────────────────────────────────────────────
+//
+// Pressing and releasing without moving must never leave a wall behind: a
+// zero-length wall is dropped on reload, and the boundary becomes a hole.
+{
+  store.chooseTool("wall");
+  const before = store.room.walls.length;
+  for (let i = 0; i < 30; i++) {
+    const at = atPlan(0.2 + i * 0.02, 0.2 + i * 0.02);
+    gesture(Math.round(at.x), Math.round(at.y), []);
+  }
+  check("clicking with the wall tool does not leave stray walls behind",
+    store.room.walls.length === before,
+    `${store.room.walls.length - before} walls appeared from clicks`);
+}
+
+// ── Drawing a wall actually draws one ─────────────────────────────────────
+{
+  store.chooseTool("wall");
+  const before = store.room.walls.length;
+  const from = atPlan(0.25, 0.4);
+  const to = atPlan(0.75, 0.4);
+  const dx = Math.round((to.x - from.x) / 2);
+  const dy = Math.round((to.y - from.y) / 2);
+  gesture(Math.round(from.x), Math.round(from.y), [[dx, dy], [dx, dy]]);
+  const after = store.room.walls.length;
+  check("dragging with the wall tool draws a wall", after === before + 1,
+    `${before} became ${after}`);
+  if (after > before) {
+    const w = store.room.walls[store.room.walls.length - 1];
+    check("the wall it drew is long enough to survive a reload",
+      P.wallLength(w) >= P.MIN_WALL_LENGTH, `${P.wallLength(w).toFixed(3)} m`);
+    check("the wall it drew has finite ends",
+      [w.start.x, w.start.z, w.end.x, w.end.z].every(Number.isFinite));
+  }
+}
+
+// ── A drag too short to be a wall ─────────────────────────────────────────
+//
+// Below 30 cm a wall does not survive sanitize on reload: it is dropped, and
+// the boundary it formed becomes a hole that merges two rooms into one. So a
+// short drag must be refused at the point of drawing, not saved and lost later.
+{
+  store.chooseTool("wall");
+  const before = store.room.walls.length;
+  const a = atPlan(0.4, 0.5);
+  // A hair under the minimum, in pixels at the current zoom.
+  const px = (P.MIN_WALL_LENGTH * 0.6) * editor.scale;
+  for (let i = 0; i < 12; i++) {
+    gesture(Math.round(a.x) + i * 3, Math.round(a.y) + i * 3, [[Math.round(px), 0]]);
+  }
+  // A short drag does not always mean no wall: the end snaps to nearby
+  // geometry, so a 18 cm pull next to an existing wall can legitimately reach
+  // far enough to be one. What must never happen is a wall being committed
+  // that is still under the minimum — that one is dropped on the next load.
+  const added = store.room.walls.slice(before);
+  const unsavable = added.filter(w => P.wallLength(w) < P.MIN_WALL_LENGTH - 1e-9);
+  check("a drag shorter than the minimum never commits an unsavable wall",
+    unsavable.length === 0,
+    unsavable.map(w => P.wallLength(w).toFixed(3) + " m").join(", "));
+  check("either the drag was refused, or snapping made it a real wall",
+    added.length === 0 ? /30 cm/.test(store.status || "") : true,
+    added.length === 0 ? (store.status || "(no status)") : `${added.length} snapped out to full length`);
+}
+
+// ── Undo goes back ────────────────────────────────────────────────────────
+{
+  store.chooseTool("wall");
+  const before = store.room.walls.length;
+  const a = atPlan(0.3, 0.6);
+  const b = atPlan(0.7, 0.6);
+  gesture(Math.round(a.x), Math.round(a.y), [[Math.round(b.x - a.x), Math.round(b.y - a.y)]]);
+  const drawn = store.room.walls.length;
+  check("the wall for the undo test was drawn", drawn === before + 1, `${before} → ${drawn}`);
+  let threw = null;
+  try { if (store.canUndo()) store.undo(); } catch (err) { threw = err.message; }
+  check("undo does not throw", threw === null, threw || "");
+  check("undo removes the wall that was just drawn",
+    store.room.walls.length === before, `${store.room.walls.length} left, expected ${before}`);
+  inspect(store.room, "after undo");
+}
+
+// ── A drag interrupted by losing the window ───────────────────────────────
+//
+// Alt-tabbing mid-drag fires blur with no pointerup. The editor must not be
+// left believing a drag is still in progress, or the next click continues it.
+{
+  store.chooseTool("wall");
+  const before = store.room.walls.length;
+  const p1 = atPlan(0.2, 0.25);
+  const p2 = atPlan(0.6, 0.25);
+  const p3 = atPlan(0.4, 0.8);
+  dom.canvas.dispatch("pointerdown", { clientX: Math.round(p1.x), clientY: Math.round(p1.y) });
+  dom.canvas.dispatch("pointermove", { clientX: Math.round(p2.x), clientY: Math.round(p2.y) });
+  dom.window.dispatch("blur", {});
+  // Now a completely separate click somewhere else.
+  dom.canvas.dispatch("pointerdown", { clientX: Math.round(p3.x), clientY: Math.round(p3.y) });
+  dom.canvas.dispatch("pointerup", { clientX: Math.round(p3.x), clientY: Math.round(p3.y), buttons: 0 });
+  const after = store.room.walls.length;
+  check("a drag abandoned by leaving the window does not run into the next click",
+    after - before <= 1, `${after - before} walls appeared`);
+  inspect(store.room, "after an interrupted drag");
+
+  // The contract behind that: losing the window ends the drag outright. If it
+  // did not, the editor would still believe a wall was being drawn, and the
+  // next release anywhere on the plan would commit one between two points the
+  // user never meant to connect.
+  dom.canvas.dispatch("pointerdown", { clientX: Math.round(p1.x), clientY: Math.round(p1.y) });
+  dom.canvas.dispatch("pointermove", { clientX: Math.round(p2.x), clientY: Math.round(p2.y) });
+  check("a drag is in progress before the window is lost", editor.drag !== null);
+  dom.window.dispatch("blur", {});
+  check("losing the window ends the drag", editor.drag === null,
+    JSON.stringify(editor.drag));
+  check("and forgets the pointers that were down", editor.pointers.size === 0,
+    `${editor.pointers.size} still tracked`);
+}
+
+// ── The two ways in that pointer input cannot reach ───────────────────────
+//
+// The editor refuses a too-short drag before it ever calls the store, so the
+// store's own length guard is a second line of defence that no gesture can
+// exercise — and a second line of defence nobody tests is one that can be
+// removed without anything noticing. The sidebar's offset field is the other:
+// it sets an opening's position by number, bypassing the drag handler
+// entirely, so it needs its own check that the opening stays on its wall.
+{
+  const wall = store.room.walls[0];
+  const before = store.room.walls.length;
+  const along = P.MIN_WALL_LENGTH / 3;
+  const dir = { x: (wall.end.x - wall.start.x), z: (wall.end.z - wall.start.z) };
+  const len = Math.hypot(dir.x, dir.z) || 1;
+  const from = { x: wall.start.x + 1, z: wall.start.z + 1 };
+  const to = { x: from.x + (dir.x / len) * along, z: from.z + (dir.z / len) * along };
+  const ok = store.addWall(from, to);
+  const added = store.room.walls.slice(before);
+  check("the store refuses a wall under the minimum even when asked directly",
+    added.every(w => P.wallLength(w) >= P.MIN_WALL_LENGTH - 1e-9),
+    added.map(w => P.wallLength(w).toFixed(3)).join(", ") || "none added");
+  // Without the guard the wall is still not added — sanitize drops it during
+  // the commit — but the call reports success, so the caller believes a wall
+  // was drawn and the user is told nothing at all. Saying "done" while doing
+  // nothing is the failure here, not a corrupt plan.
+  check("refusing a too-short wall is reported, not silent",
+    added.length > 0 ? ok !== false : (ok === false && /30 cm/.test(store.status || "")),
+    `returned ${ok}, added ${added.length}, status "${store.status || ""}"`);
+}
+{
+  // Both kinds, because they are two separate code paths in the store and a
+  // fix applied to one has been left off the other before.
+  let checked = 0;
+  let escaped = 0;
+  for (const [kind, list] of [["door", store.room.doors], ["window", store.room.windows]]) {
+    for (const opening of list.slice(0, 4)) {
+      const wall = store.room.walls.find(w => w.id === opening.wallID);
+      if (!wall) continue;
+      for (const asked of [-1e9, -500, -1, 0, 0.5, 999, 1e9, NaN]) {
+        store.slideOpeningToOffset(kind, opening.id, asked);
+        const now = list.find(o => o.id === opening.id);
+        if (!now) continue;
+        checked++;
+        if (!Number.isFinite(now.offset)) {
+          escaped++;
+          note("an opening moved to a non-finite offset", `${kind}, asked for ${asked}`);
+        } else if (now.offset < -1e-6 || now.offset + now.width > P.wallLength(wall) + 1e-6) {
+          escaped++;
+          note("an opening past the end of its wall", `${kind}, asked for ${asked}`);
+        }
+      }
+    }
+  }
+  check("typing any offset at all keeps every opening on its wall",
+    escaped === 0 && checked > 0, `${escaped} escaped over ${checked} attempts`);
+}
+
+// ── The plan survives the whole session ───────────────────────────────────
+{
+  const room = store.room;
+  check("the plan still has its walls after everything", room.walls.length > 0,
+    `${room.walls.length} walls`);
+  let reopened = null;
+  try { reopened = P.parseRoom(P.serializeRoom(room)); } catch (err) { /* noted below */ }
+  check("the plan can still be saved and reopened at the end", !!reopened);
+  if (reopened) {
+    check("and comes back with the same walls",
+      reopened.walls.length === room.walls.length,
+      `${room.walls.length} saved, ${reopened.walls.length} returned`);
+    check("and the same doors and windows",
+      reopened.doors.length === room.doors.length && reopened.windows.length === room.windows.length,
+      `${room.doors.length}/${room.windows.length} vs ${reopened.doors.length}/${reopened.windows.length}`);
+  }
+}
+
+const EXPECTED = [
+  "a gesture threw",
+  "the wheel threw",
+  "a double click threw",
+  "the context menu threw",
+  "a key threw",
+  "blur threw",
+  "drawing threw",
+  "a non-finite number in the plan",
+  "a coordinate impossibly far out",
+  "a wall too short to survive a reload",
+  "something with no id",
+  "two things sharing an id",
+  "an opening with no width",
+  "an opening before the start of its wall",
+  "an opening on a wall that is not there",
+  "an opening past the end of its wall",
+  "an opening moved to a non-finite offset",
+  "two openings on the same wall overlap",
+  "furniture with a non-finite angle",
+  "a public area with no size",
+  "a label at a non-finite angle",
+  "a label with no size",
+  "a plan that will not reopen",
+  "walls disappear when the plan is reopened",
+  "saving the plan threw",
+  "a zoom level that shows nothing",
+  "a zoom level far outside anything usable",
+  "a non-finite view origin",
+];
+for (const name of EXPECTED) {
+  const v = violations.get(name);
+  check(`never: ${name}`, !v, v ? `${v.count} times, e.g. ${v.first}` : "");
+}
+
+dom.restore();
+console.log(`${passed} passed, ${failed} failed — ${gestures} gestures driven through the real editor`);
+if (failed) process.exit(1);

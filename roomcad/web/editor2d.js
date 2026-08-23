@@ -699,6 +699,7 @@ export class Editor2D {
     const rect = this.canvas.getBoundingClientRect();
     const c = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const entry = this.pointers.get(e.pointerId);
+    const previous = entry ? entry.c : null;   // where this pointer was last seen
     if (entry) {
       if (Math.hypot(c.x - entry.c.x, c.y - entry.c.y) > 2) entry.moved = true;
       entry.c = c;
@@ -735,11 +736,21 @@ export class Editor2D {
     const p = this.plan(c);
     if (this.drag) {
       switch (this.drag.type) {
-        case "pan":
+        case "pan": {
           this.canvas.style.cursor = "grabbing";
-          this.origin.x += e.movementX;
-          this.origin.y += e.movementY;
+          // Pan by how far the pointer actually travelled since we last saw it.
+          // movementX/movementY look like the obvious source, but they are
+          // optional on a pointer event, and one event without them turns the
+          // origin into NaN — from which no amount of further dragging
+          // recovers, because NaN propagates. The plan simply disappears until
+          // the page is reloaded. The previous position is already tracked
+          // here, so the delta is computed from that instead.
+          const dx = previous ? c.x - previous.x : (Number.isFinite(e.movementX) ? e.movementX : 0);
+          const dy = previous ? c.y - previous.y : (Number.isFinite(e.movementY) ? e.movementY : 0);
+          this.origin.x += dx;
+          this.origin.y += dy;
           break;
+        }
         case "drawWall":
           this.drag.current = P.snapWallEnd(store.room, p, this.drag.anchor);
           break;
