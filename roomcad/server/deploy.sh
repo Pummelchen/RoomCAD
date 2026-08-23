@@ -23,107 +23,72 @@ ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
   chmod 755 '$REMOTE_ROOT/server.py' && \
   find '$REMOTE_ROOT/web' -name '._*' -delete"
 
-# Caddy serves RoomCAD end to end, including TLS, so it needs a copy of the
-# certificate it can actually read: certbot keeps its store at 0700 root:root
-# and Caddy runs as the caddy user. The hook does the copy on every renewal;
-# running it once here makes sure the files exist before Caddy is asked to load
-# them, and before the Caddyfile is validated against them below.
-# certbot's store on this host is a SYMLINK into another application's
-# directory (/etc/letsencrypt -> /var/minecraftai/web/letsencrypt). When that
-# application is moved or rebuilt the link dangles, the hook cannot be
-# installed, and — because this script stops on the first error — the deploy
-# used to abort here, halfway: the web files were already synced but Caddy was
-# never reloaded and the site was never verified. A broken renewal hook is a
-# problem for the next renewal, not for this deploy, so it now warns and
-# carries on.
-echo "Installing the certificate hook and refreshing Caddy's copy …"
-if ssh "$HOST" "[ -d /etc/letsencrypt/renewal-hooks/deploy ]"; then
-  scp -q "$SERVER_DIR/certbot-deploy-hook.sh" "$HOST:/etc/letsencrypt/renewal-hooks/deploy/roomcad-caddy.sh"
-  ssh "$HOST" "chmod 755 /etc/letsencrypt/renewal-hooks/deploy/roomcad-caddy.sh && \
-    /etc/letsencrypt/renewal-hooks/deploy/roomcad-caddy.sh"
-else
-  echo "WARNING: /etc/letsencrypt/renewal-hooks/deploy is not there."
-  echo "         The certificate hook could not be installed, so the copy Caddy"
-  echo "         serves will NOT be refreshed when the certificate renews."
-  echo "         The deploy continues — this breaks the next renewal, not today."
-  ssh "$HOST" "openssl x509 -enddate -noout -in /var/roomcad/tls/fullchain.pem 2>/dev/null" \
-    | sed 's/^/         current certificate /'
+# RoomCAD keeps its own certificate in its own directory. It used to be copied
+# out of certbot's store by a renewal hook — but that store is a symlink into a
+# third project's tree on this host, and when that tree was restructured the
+# link dangled and the deploy started failing halfway. Nothing in this script
+# reads a path belonging to another project any more; the certificate is simply
+# checked, and its expiry reported.
+echo "Checking RoomCAD's certificate …"
+if ! ssh "$HOST" "test -r /var/roomcad/tls/fullchain.pem && test -r /var/roomcad/tls/privkey.pem"; then
+  echo "ABORTED: /var/roomcad/tls is missing its certificate or key." >&2
+  echo "Nothing was installed. The running site is untouched." >&2
+  exit 1
+fi
+CERT_END=$(ssh "$HOST" "openssl x509 -enddate -noout -in /var/roomcad/tls/fullchain.pem" 2>/dev/null | cut -d= -f2)
+CERT_DAYS=$(ssh "$HOST" "openssl x509 -checkend 2592000 -noout -in /var/roomcad/tls/fullchain.pem >/dev/null 2>&1 && echo ok || echo soon")
+echo "  valid until $CERT_END"
+if [ "$CERT_DAYS" = "soon" ]; then
+  echo "  WARNING: that is less than 30 days away. See renew-certificate.sh." >&2
 fi
 
-# Validate the Caddyfile with the Caddy that is actually on the host before it
-# is allowed anywhere near /etc. Caddy directives come and go between versions,
-# so validating with a local binary proves nothing about the server — and an
-# invalid file installed here would leave a landmine that only goes off the
-# next time Caddy restarts, long after the deploy "succeeded". It also checks
-# the certificate files are readable, so a missing copy aborts here rather than
-# taking the site down on the next reload.
-echo "Validating the Caddyfile against the Caddy on $HOST …"
+# RoomCAD runs its OWN Caddy: its own binary under /var/roomcad/bin, its own
+# config, its own storage, its own unix user and its own unit. It used to be a
+# site block inside the system-wide /etc/caddy/Caddyfile, which also served an
+# unrelated project — so this deploy overwrote that project's configuration on
+# every release. See split-caddy-instances.sh for the migration.
+#
+# Validate with the binary that will actually run it. Directives come and go
+# between Caddy versions, so validating with some other copy proves nothing —
+# and an invalid file installed here is a landmine that only goes off at the
+# next restart, long after the deploy "succeeded". It also checks the
+# certificate is readable, so a missing copy aborts here rather than taking the
+# site down later.
+echo "Validating RoomCAD's Caddyfile with RoomCAD's own Caddy …"
 scp -q "$SERVER_DIR/Caddyfile" "$HOST:/tmp/Caddyfile.candidate"
-if ! ssh "$HOST" "caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" >/dev/null 2>&1; then
-  echo "ABORTED: the Caddyfile is not valid for $(ssh "$HOST" 'caddy version' 2>/dev/null | head -1)." >&2
-  ssh "$HOST" "caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" 2>&1 | grep -i error >&2 || true
+if ! ssh "$HOST" "/var/roomcad/bin/caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" >/dev/null 2>&1; then
+  echo "ABORTED: the Caddyfile is not valid for $(ssh "$HOST" '/var/roomcad/bin/caddy version' 2>/dev/null | head -1)." >&2
+  ssh "$HOST" "/var/roomcad/bin/caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile" 2>&1 | grep -i error >&2 || true
   ssh "$HOST" "rm -f /tmp/Caddyfile.candidate"
   echo "Nothing was installed. The running site is untouched." >&2
   exit 1
 fi
 ssh "$HOST" "rm -f /tmp/Caddyfile.candidate"
 
-echo "Installing systemd unit and Caddyfile …"
-scp "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
-scp "$SERVER_DIR/Caddyfile" "$HOST:/etc/caddy/Caddyfile"
-ssh "$HOST" "chown root:caddy /etc/caddy/Caddyfile && \
-  chmod 644 /etc/caddy/Caddyfile && \
+echo "Installing RoomCAD's units and its own Caddyfile …"
+scp -q "$SERVER_DIR/roomcad.service" "$HOST:/etc/systemd/system/roomcad.service"
+scp -q "$SERVER_DIR/roomcad-caddy.service" "$HOST:/etc/systemd/system/roomcad-caddy.service"
+scp -q "$SERVER_DIR/Caddyfile" "$HOST:/var/roomcad/caddy/Caddyfile"
+ssh "$HOST" "chown root:roomcadweb /var/roomcad/caddy/Caddyfile && \
+  chmod 640 /var/roomcad/caddy/Caddyfile && \
   systemctl daemon-reload && \
   systemctl restart roomcad"
 
-# Reload Caddy, then check it is actually still running. Caddy 2.6.2 can panic
-# while swapping a config in — a Go runtime bug, not a bad config — and the
-# process dies. `systemctl reload` reported that as a non-fatal message, so a
-# deploy once finished with "Deployed." while the site was down. Fall back to a
-# hard restart, and refuse to claim success until the site answers.
-echo "Reloading Caddy …"
-if ! ssh "$HOST" "systemctl reload caddy" 2>/dev/null || \
-   ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
-  echo "  reload did not leave Caddy running — restarting it."
-  ssh "$HOST" "systemctl restart caddy"
+# Reload, then check it is actually still running. Caddy can panic while
+# swapping a config in — a Go runtime bug, not a bad config — and the process
+# dies. `systemctl reload` reports that as a non-fatal message, so a deploy once
+# finished with "Deployed." while the site was down. Fall back to a hard
+# restart, and refuse to claim success until the site answers.
+echo "Reloading RoomCAD's Caddy …"
+if ! ssh "$HOST" "systemctl reload roomcad-caddy" 2>/dev/null || \
+   ! ssh "$HOST" "systemctl is-active --quiet roomcad-caddy"; then
+  echo "  reload did not leave it running — restarting."
+  ssh "$HOST" "systemctl restart roomcad-caddy"
 fi
-if ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
-  echo "FAILED: Caddy is not running on $HOST." >&2
-  ssh "$HOST" "journalctl -u caddy -n 15 --no-pager" >&2 || true
+if ! ssh "$HOST" "systemctl is-active --quiet roomcad-caddy"; then
+  echo "FAILED: roomcad-caddy is not running on $HOST." >&2
+  ssh "$HOST" "journalctl -u roomcad-caddy -n 15 --no-pager" >&2 || true
   exit 1
-fi
-
-# RoomCAD used to be published through an nginx site that proxied to Caddy.
-# Caddy now terminates TLS itself, so that site is retired. In its place goes a
-# block that does nothing but redirect to the real address.
-#
-# That redirect is not optional. nginx owns 80 and 443 here and its default
-# server answers for ANY hostname that matches nothing else, so with no block
-# for this name RoomCAD's old address falls through to that default and serves a
-# completely different application to anyone with an old bookmark. The block
-# contains no proxy_pass, no root, and no RoomCAD configuration — only a 308.
-# nginx only forwards the old address; RoomCAD itself is served by Caddy on
-# 8443 and does not depend on it. /etc/nginx on this host is a SYMLINK into
-# another application's tree, so it can dangle — and when it does, scp fails
-# and a script that stops on the first error abandons the deploy before the
-# site is ever verified. The redirect is worth a warning, not the deploy.
-echo "Pointing the old address at the real one …"
-if ! ssh "$HOST" "[ -d /etc/nginx/sites-available ]"; then
-  echo "  WARNING: /etc/nginx/sites-available is not there — nginx's config" >&2
-  echo "           directory is missing or its symlink is dangling. The old-URL" >&2
-  echo "           redirect cannot be updated. RoomCAD itself is unaffected:" >&2
-  echo "           Caddy serves it on 8443 from its own config." >&2
-  ssh "$HOST" "nginx -t" 2>&1 | sed 's/^/           nginx: /' >&2 || true
-else
-scp -q "$SERVER_DIR/nginx-roomcad-redirect.conf" "$HOST:/etc/nginx/sites-available/roomcad-redirect.conf"
-if ssh "$HOST" "rm -f /etc/nginx/sites-enabled/roomcad.conf && \
-  ln -sf /etc/nginx/sites-available/roomcad-redirect.conf /etc/nginx/sites-enabled/roomcad-redirect.conf && \
-  nginx -t && systemctl reload nginx" >/dev/null 2>&1; then
-  echo "  the old URL now redirects to port 8443."
-else
-  echo "  WARNING: nginx would not reload — the old URL may still land elsewhere." >&2
-  ssh "$HOST" "rm -f /etc/nginx/sites-enabled/roomcad-redirect.conf; nginx -t && systemctl reload nginx" >/dev/null 2>&1 || true
-fi
 fi
 
 # The shared password lives in a host-local env file, never in git.
@@ -173,13 +138,16 @@ else
   echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."
 fi
 
-# The old address must land on RoomCAD, not on whatever nginx serves by default.
+# The old address is forwarded by nginx, which belongs to another project and
+# is no longer this script's business to configure. It is still worth reporting,
+# because a stale bookmark landing on someone else's application is confusing —
+# but it is a note, not a verdict on this deploy.
 legacy="$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 \
   https://roomcad.91.99.176.243.nip.io/ || echo "000")"
 case "$legacy" in
-  30*\ *:8443/*) echo "Old URL redirects correctly: $legacy" ;;
-  *) echo "WARNING: the old URL answered '$legacy' — expected a redirect to :8443." >&2 ;;
+  30*\ *:8443/*) echo "Old URL still redirects here: $legacy" ;;
+  *) echo "NOTE: the old URL answered '$legacy'. It is forwarded by nginx, which" ;;
 esac
 
-echo "Deployed. roomcad and caddy serve the app; nginx only forwards the old URL."
+echo "Deployed. RoomCAD runs its own web server (roomcad-caddy) on its own port."
 echo "RoomCAD: $SITE/"

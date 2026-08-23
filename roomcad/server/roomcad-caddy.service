@@ -1,0 +1,35 @@
+# RoomCAD's own web server, entirely separate from any other on this host.
+#
+# Its own binary, config, storage, unix user and unit. Nothing it reads or
+# writes is shared with another project, so no other project's deploy — or
+# outage, or directory reshuffle — can take RoomCAD down, and RoomCAD's deploy
+# cannot damage anything else.
+[Unit]
+Description=Caddy for RoomCAD (private instance)
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=roomcadweb
+Group=roomcadweb
+# Its own state, so the two instances never contend for one storage lock.
+Environment=XDG_DATA_HOME=/var/roomcad/caddy/data
+Environment=XDG_CONFIG_HOME=/var/roomcad/caddy/config
+ExecStart=/var/roomcad/bin/caddy run --environ --config /var/roomcad/caddy/Caddyfile
+# The admin endpoint is a unix socket rather than the default port, because two
+# Caddy processes cannot share 127.0.0.1:2019; reload has to be pointed at it.
+ExecReload=/var/roomcad/bin/caddy reload --config /var/roomcad/caddy/Caddyfile --force --address unix//var/roomcad/caddy/admin.sock
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths=/var/roomcad/caddy
+
+[Install]
+WantedBy=multi-user.target

@@ -10,9 +10,10 @@ from scratch if the VPS is ever lost. The web app itself lives in
 | --- | --- |
 | `server.py` | Python (stdlib) save + live-collaboration API, SQLite-backed |
 | `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078` |
-| `Caddyfile` | production Caddy config — terminates TLS, serves the web app, proxies `/api/*` to the API |
-| `certbot-deploy-hook.sh` | copies the certificate somewhere the `caddy` user can read, on every renewal |
-| `nginx-roomcad-redirect.conf` | sends the old `:443` address to `:8443` — nginx serves nothing of RoomCAD |
+| `Caddyfile` | RoomCAD's **own** Caddy config — terminates TLS, serves the web app, proxies `/api/*` to the API |
+| `roomcad-caddy.service` | systemd unit for RoomCAD's own Caddy instance, under its own user |
+| `split-caddy-instances.sh` | one-time migration that gave each project on the host its own web server |
+| `renew-certificate.sh` | renews the certificate using RoomCAD's own certbot store |
 | `schema.sql` | SQLite schema (versioned rooms plus hashed browser session records) |
 | `rooms.db.sql` | full SQL dump of the rooms database (structure + content), restorable |
 | `deploy.sh` | one-command deploy of the web app + API to the VPS |
@@ -26,48 +27,64 @@ from scratch if the VPS is ever lost. The web app itself lives in
   web/             # static web app
   rooms/           # legacy .rcad files (migrated once, now empty)
 
-/etc/systemd/system/roomcad.service
-/etc/caddy/Caddyfile
-/etc/letsencrypt/live/roomcad.91.99.176.243.nip.io/   # Let's Encrypt cert
-/etc/letsencrypt/renewal-hooks/deploy/roomcad-caddy.sh  # copies it for Caddy
-/var/roomcad/tls/                        # Caddy's readable copy of the cert
+/etc/systemd/system/roomcad.service        # the Python API
+/etc/systemd/system/roomcad-caddy.service  # RoomCAD's own web server
+
+/var/roomcad/bin/caddy        # its own copy of the binary
+/var/roomcad/caddy/Caddyfile  # its own config
+/var/roomcad/caddy/data       # its own storage
+/var/roomcad/tls/             # its own certificate, root:roomcadweb 0750
+/var/roomcad/letsencrypt/     # its own certbot store (renew-certificate.sh)
 ```
 
 The API listens on `127.0.0.1:8078`; Caddy reverse-proxies `/api/*` to it and
 serves `web/` as static files.
 
-## HTTPS
+## HTTPS, and one web server per project
 
 The entry point is **https://roomcad.91.99.176.243.nip.io:8443/** (a nip.io
-wildcard that resolves to the VPS IP). Caddy serves it end to end: it terminates
-TLS, serves `web/` and forwards `/api/*` to the Python API. Nothing else is in
-the request path — RoomCAD does not use nginx.
+wildcard that resolves to the VPS IP). RoomCAD runs its **own** Caddy: its own
+copy of the binary in `/var/roomcad/bin`, its own config, its own storage, its
+own unix user (`roomcadweb`) and its own unit (`roomcad-caddy.service`). It
+terminates TLS, serves `web/` and forwards `/api/*` to the Python API. Nothing
+else is in the request path.
 
-There is one exception, and it is not in the request path. nginx owns ports 80
-and 443 on this host, and its default server answers for **any** hostname that
-matches nothing else. So a hostname with no server block of its own does not
-404 — it quietly serves whatever that default is, which here is an unrelated
-application. `nginx-roomcad-redirect.conf` therefore keeps a block for this
-name whose entire content is a 308 to port 8443. It has no `proxy_pass` and no
-`root`; it exists so an old bookmark lands on RoomCAD instead of somewhere
-else. `deploy.sh` installs it and then checks the old URL really does redirect.
+It did not start that way, and the reasons it changed are worth keeping:
 
-The port is 8443 rather than 443 because an unrelated service already holds 80
-and 443 on this host. That also rules out Caddy running ACME for itself, since
-HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443. So the certificate is
-issued once with certbot over another site's webroot and auto-renews via the
-systemd `certbot.timer`:
+* RoomCAD used to be a site block inside the **system-wide**
+  `/etc/caddy/Caddyfile`, which also served an unrelated updater on `:8090`.
+  Because `deploy.sh` installed that whole file, this repository had to carry
+  the other project's configuration, and every RoomCAD release overwrote
+  whatever had been changed on the host. One project's deploy was another
+  project's outage waiting to happen.
+* `/etc/nginx` and `/etc/letsencrypt` on this host are **symlinks into a third
+  project's tree**. When that tree was restructured both links dangled, and
+  because `deploy.sh` stops on the first error it began abandoning deploys
+  halfway — web files synced, Caddy never reloaded, site never checked.
 
-```bash
-certbot certonly --webroot -w /var/minecraftai/web/site/public \
-  -d roomcad.91.99.176.243.nip.io --key-type ecdsa --agree-tos --non-interactive
-```
+`split-caddy-instances.sh` performed the separation: it gave the updater its own
+instance too (`/var/xaios_updater/bin/caddy`, `xaios-caddy.service`, user
+`xaiosweb`, port 8090), validated both configs with each project's own binary
+before switching, rolled back if either failed, and left the shared
+`caddy.service` stopped and disabled with its config file untouched as a record.
+Each instance has its own admin socket, because two Caddy processes cannot share
+the default admin port.
 
-certbot keeps its store at `0700 root:root` and Caddy runs as the `caddy` user,
-so rather than loosening permissions on a store shared with other services, the
-deploy hook at `/etc/letsencrypt/renewal-hooks/deploy/roomcad-caddy.sh` copies
-just this certificate into `/var/roomcad/tls/` after every renewal and reloads
-Caddy. `deploy.sh` installs the hook and runs it once.
+Restarting either instance now leaves the other serving.
+
+The port is 8443 rather than 443 because an unrelated service (nginx) still
+holds 80 and 443. That also rules out Caddy running ACME for itself, since
+HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443 — so the certificate is
+obtained by `renew-certificate.sh`, which keeps its certbot state under
+`/var/roomcad/letsencrypt` and installs the result into `/var/roomcad/tls` for
+`roomcadweb` alone. Because the challenge needs port 80, that script **refuses
+to stop another project's web server on its own**: it reports who holds the port
+and stops, unless run with `--take-port-80`. Read its warning first — `nginx -t`
+currently fails on this host, so nginx would not come back.
+
+The old `:443` address is still forwarded to `:8443` by nginx, from a config
+loaded before its directory vanished. That redirect is no longer RoomCAD's to
+manage; `deploy.sh` reports it and moves on.
 
 `flush_interval -1` on the API proxy keeps the live-collaboration SSE stream
 unbuffered.
@@ -150,6 +167,7 @@ logins are disabled (fail-closed).
 ## Restoring from a lost VPS
 
 1. Provision a Linux host and install Caddy, certbot and Python 3
+   (RoomCAD then keeps its own copy of the Caddy binary; see `split-caddy-instances.sh`)
    (stdlib only).
 2. Restore this directory:
 
@@ -169,13 +187,14 @@ logins are disabled (fail-closed).
 
    ```bash
    cp roomcad.service /etc/systemd/system/roomcad.service
-   cp Caddyfile /etc/caddy/Caddyfile
-   chown root:caddy /etc/caddy/Caddyfile
-   chmod 644 /etc/caddy/Caddyfile
+   cp roomcad-caddy.service /etc/systemd/system/roomcad-caddy.service
+   cp Caddyfile /var/roomcad/caddy/Caddyfile
+   chown root:roomcadweb /var/roomcad/caddy/Caddyfile
+   chmod 640 /var/roomcad/caddy/Caddyfile
    printf 'ROOMCAD_PASSWORD=your-password\n' > /var/roomcad/roomcad.env
    chmod 600 /var/roomcad/roomcad.env
    systemctl daemon-reload
-   systemctl enable --now roomcad
+   systemctl enable --now roomcad roomcad-caddy
    systemctl reload caddy
    ```
 

@@ -1,5 +1,28 @@
+# RoomCAD's own web server.
+#
+# This is a PRIVATE Caddy instance: its own binary under /var/roomcad/bin, its
+# own config here, its own storage under /var/roomcad/caddy, its own unix user
+# and its own systemd unit (roomcad-caddy.service). It shares nothing with any
+# other web server on the host.
+#
+# It used to be a site block inside the system-wide /etc/caddy/Caddyfile, which
+# also served an unrelated project on :8090 — so RoomCAD's deploy overwrote
+# that project's configuration on every release, and that project's changes
+# would have been lost on the next one. Two projects in one config file is one
+# project's outage away from being the other project's problem.
+#
+# Nothing here reads a path belonging to anything else. In particular the
+# certificate lives in /var/roomcad/tls, which is RoomCAD's own directory: the
+# old arrangement copied it out of certbot's store through a hook, and when
+# that store turned out to be a symlink into a third project's tree — a tree
+# that was later restructured — the link dangled and deploys began failing.
+
 {
 	auto_https disable_redirects
+	# This instance's own admin socket. Two Caddy processes cannot both hold
+	# the default admin endpoint on 127.0.0.1:2019, and whichever started
+	# second would fail.
+	admin unix//var/roomcad/caddy/admin.sock
 	servers {
 		# HTTP/3 is on by default in this Caddy, but say so explicitly: it is a
 		# property of the deployment we care about, and a default is a quiet
@@ -14,23 +37,10 @@
 	}
 }
 
-:8090 {
-	root * /var/xaios_updater
-	header {
-		X-Content-Type-Options nosniff
-		Cache-Control "public, max-age=300"
-	}
-	file_server
-}
-
-# RoomCAD. Caddy serves it end to end: TLS, the static app and the API. Nothing
-# else sits in the request path.
-#
 # The port is 8443 rather than 443 because an unrelated service already holds 80
 # and 443 on this host. That also rules out Caddy running ACME for itself —
-# HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443 — so it serves the
-# certificate certbot already maintains for this name, copied somewhere the
-# caddy user can read on every renewal (see certbot-deploy-hook.sh).
+# HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443 — so it serves a
+# certificate kept in RoomCAD's own directory (see renew-certificate.sh).
 roomcad.91.99.176.243.nip.io:8443 {
 	tls /var/roomcad/tls/fullchain.pem /var/roomcad/tls/privkey.pem
 	encode gzip

@@ -1,7 +1,17 @@
 // Contracts for the files that decide how RoomCAD is actually served.
 //
-// Caddy serves RoomCAD end to end — TLS, the app and the API — on its own host
-// and port, with nothing in front of it.
+// RoomCAD runs its OWN web server: its own copy of the Caddy binary under
+// /var/roomcad/bin, its own config, its own storage, its own unix user and its
+// own systemd unit. Nothing it reads or writes belongs to another project.
+//
+// It did not start that way. RoomCAD was a site block inside the system-wide
+// /etc/caddy/Caddyfile, which also served an unrelated updater on :8090 — so
+// this repository carried that project's configuration, and every RoomCAD
+// deploy overwrote it. Two other shared paths did the same kind of damage from
+// the other direction: /etc/nginx and /etc/letsencrypt are both symlinks into a
+// third project's tree, and when that tree was restructured they dangled and
+// the deploy began giving up halfway through. These checks are what keeps the
+// projects apart.
 //
 // Two things here are easy to get wrong in ways nothing else notices. A leading
 // "-" on a header directive tells Caddy to DELETE that header rather than set
@@ -56,69 +66,94 @@ check("production terminates TLS itself", /^\s*tls\s+\S+fullchain\.pem\s+\S+priv
 check("production serves RoomCAD on its own host and port",
   /roomcad\.[\d.]+\.nip\.io:\d+\s*\{/.test(prod));
 
-// nginx does not serve RoomCAD. The one block that remains only forwards the
-// old address — without it that hostname matches no server block, falls through
-// to nginx's catch-all default, and serves a different application entirely to
-// anyone with an old bookmark.
-check("the old proxying site is gone for good",
-  !existsSync(join(root, "roomcad", "server", "nginx-roomcad.conf")));
-check("deploy no longer installs a proxying site",
-  !/scp[^\n]*nginx-roomcad\.conf/.test(deploy));
-check("deploy removes the old proxying site", /rm -f \/etc\/nginx\/sites-enabled\/roomcad\.conf/.test(deploy));
+// — Nothing outside /var/roomcad ————————————————————————————————
 {
-  const redirectPath = join(root, "roomcad", "server", "nginx-roomcad-redirect.conf");
-  check("a redirect-only block ships", existsSync(redirectPath));
-  const redirect = existsSync(redirectPath) ? readFileSync(redirectPath, "utf8") : "";
-  // Directives only: the comments in that file talk about proxy_pass precisely
-  // to explain why there isn't one.
-  const directives = redirect.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
-  check("it serves nothing itself — no proxy, no root",
-    !/proxy_pass/.test(directives) && !/^\s*root\s/m.test(directives), "it should only redirect");
-  check("it redirects to the Caddy port",
-    /return 30[18] https:\/\/\$host:\d+\$request_uri/.test(redirect));
-  check("it preserves the method, so a deep link or API call is not turned into a GET",
-    /return 308/.test(redirect));
-  check("it covers plain HTTP as well as HTTPS",
-    /listen 80;/.test(redirect) && /listen 443 ssl;/.test(redirect));
-  check("it answers for the RoomCAD hostname only",
-    (redirect.match(/server_name\s+roomcad\.[\d.]+\.nip\.io;/g) || []).length === 2);
-  check("deploy installs it", /nginx-roomcad-redirect\.conf/.test(deploy));
-  // Same lesson as the renewal hook. nginx only forwards the old address —
-  // RoomCAD is served by Caddy on its own port — so nginx being unconfigurable
-  // must not be able to abandon a deploy before the site is verified.
-  check("a missing nginx config directory does not abort the deploy",
-    /if ! ssh "\$HOST" "\[ -d \/etc\/nginx\/sites-available \]"; then/.test(deploy));
-  check("and it says RoomCAD itself is unaffected, which is the thing worth knowing",
-    /RoomCAD itself is unaffected/.test(deploy));
-  check("deploy checks the old URL actually redirects",
-    /expected a redirect to :8443/.test(deploy));
+  const foreign = [
+    ["/etc/nginx", /\/etc\/nginx/],
+    ["/etc/letsencrypt", /\/etc\/letsencrypt/],
+    ["/etc/caddy", /\/etc\/caddy/],
+  ];
+  // Comments discuss these paths precisely to explain why they are not used,
+  // so only actual commands count.
+  const commands = deploy.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+  for (const [path, re] of foreign) {
+    check(`deploy never touches ${path}`, !re.test(commands),
+      "that path belongs to another project");
+  }
+  check("deploy installs RoomCAD's config into RoomCAD's own directory",
+    /\/var\/roomcad\/caddy\/Caddyfile/.test(deploy));
+  check("deploy validates with RoomCAD's own copy of the binary",
+    /\/var\/roomcad\/bin\/caddy validate/.test(deploy));
+  check("deploy drives RoomCAD's own unit, not the shared one",
+    /systemctl reload roomcad-caddy/.test(deploy) && !/systemctl reload caddy\b/.test(commands));
+  // Directives only: the comments explain what used to share this file.
+  const prodDirectives = prod.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+  check("the config carries no other project's site",
+    !/xaios/.test(prodDirectives) && !/:8090/.test(prodDirectives),
+    "one project per config file");
+}
+
+// — RoomCAD's own web server —————————————————————————————————
+{
+  const unitPath = join(root, "roomcad", "server", "roomcad-caddy.service");
+  check("RoomCAD ships its own systemd unit", existsSync(unitPath));
+  const unit = existsSync(unitPath) ? readFileSync(unitPath, "utf8") : "";
+  check("it runs its own copy of the binary",
+    /ExecStart=\/var\/roomcad\/bin\/caddy run/.test(unit));
+  check("as its own unix user, not one shared with another server",
+    /User=roomcadweb/.test(unit) && /Group=roomcadweb/.test(unit));
+  check("with its own storage, so two instances never contend for one lock",
+    /XDG_DATA_HOME=\/var\/roomcad\/caddy/.test(unit));
+  check("and it comes back by itself if it dies", /Restart=on-failure/.test(unit));
+  // Two Caddy processes cannot share the default admin endpoint; the second to
+  // start simply fails to bind it.
+  check("it has its own admin endpoint", /admin unix\/\/var\/roomcad\/caddy\/admin\.sock/.test(prod));
+  check("and reload is pointed at that endpoint rather than the default port",
+    /ExecReload=[^\n]*--address unix\/\/var\/roomcad\/caddy\/admin\.sock/.test(unit));
+}
+
+// — The migration that separated them ———————————————————————————
+{
+  const splitPath = join(root, "roomcad", "server", "split-caddy-instances.sh");
+  check("the migration that split the instances is in the repository", existsSync(splitPath));
+  const split = existsSync(splitPath) ? readFileSync(splitPath, "utf8") : "";
+  check("it gives the other project its own instance too, rather than leaving it homeless",
+    /xaios-caddy\.service/.test(split) && /\/var\/xaios_updater\/bin\/caddy/.test(split));
+  check("it validates both configs before switching anything",
+    /validate --config \/var\/roomcad\/caddy\/Caddyfile/.test(split)
+    && /validate --config \/var\/xaios_updater\/caddy\/Caddyfile/.test(split));
+  check("it puts the old server back if either new one fails to start",
+    /Rolling back to the shared instance/.test(split) && /systemctl start caddy/.test(split));
+  check("it hides the server's own files from the directory it serves",
+    /hide \/var\/xaios_updater\/caddy/.test(split),
+    "the config sits inside the web root");
+  check("it disables the shared unit rather than deleting anyone's files",
+    /systemctl disable caddy/.test(split) && !/rm -rf \/etc\/caddy/.test(split));
+}
+
+// — Renewing the certificate without borrowing anyone's directories ————
+{
+  const renewPath = join(root, "roomcad", "server", "renew-certificate.sh");
+  check("a self-contained renewal script ships", existsSync(renewPath));
+  const renew = existsSync(renewPath) ? readFileSync(renewPath, "utf8") : "";
+  check("it keeps its certbot state under /var/roomcad",
+    /STORE=\/var\/roomcad\/letsencrypt/.test(renew));
+  check("it will not stop another project's web server on its own",
+    /Not renewing/.test(renew) && /--take-port-80/.test(renew));
+  check("and it warns that nginx cannot currently restart before offering to",
+    /currently FAILS/.test(renew) && /would not come back/.test(renew));
+  check("it installs the result for RoomCAD's own user only",
+    /-o root -g roomcadweb \/var\/roomcad\/tls/.test(renew));
+  check("the old shared-store hook is gone for good",
+    !existsSync(join(root, "roomcad", "server", "certbot-deploy-hook.sh")));
+  check("deploy reports how long the certificate has left",
+    /openssl x509 -checkend/.test(deploy));
 }
 
 // HSTS, on the host Caddy now owns end to end.
 check("production sends HSTS", /Strict-Transport-Security\s+"max-age=\d+/.test(prod));
 check("HSTS is not preloaded and does not claim subdomains",
   !/Strict-Transport-Security[^"]*"[^"]*(preload|includeSubDomains)/.test(prod));
-
-// Caddy needs a readable copy of the certificate; certbot's own store is 0700.
-check("a certbot deploy hook ships with the server",
-  existsSync(join(root, "roomcad", "server", "certbot-deploy-hook.sh")));
-check("deploy installs the certificate hook", /renewal-hooks\/deploy\/roomcad-caddy\.sh/.test(deploy));
-// The store this hook lives in is a symlink into another application's tree on
-// this host. When that moved, the hook could not be installed, and a deploy
-// that stops on the first error stopped THERE — after syncing the web files
-// but before reloading Caddy or checking the site was still up. A deploy must
-// not be able to end in that state over something that only matters at the
-// next renewal.
-check("a missing renewal-hook directory does not abort the deploy",
-  /if ssh "\$HOST" "\[ -d \/etc\/letsencrypt\/renewal-hooks\/deploy \]"; then/.test(deploy));
-check("and it says plainly what will break instead of failing silently",
-  /WARNING: \/etc\/letsencrypt\/renewal-hooks\/deploy is not there/.test(deploy)
-  && /will NOT be refreshed when the certificate renews/.test(deploy));
-check("it reports how long the current certificate has left",
-  /openssl x509 -enddate -noout/.test(deploy));
-
-check("the hook runs once at deploy so the copy exists before Caddy loads it",
-  /roomcad-caddy\.sh\"?\s*$|roomcad-caddy\.sh$/m.test(deploy));
 
 // Content-Security-Policy. The import map in index.html is inline, so it is
 // allowed by hash — which silently stops matching the moment anyone edits it.
@@ -168,17 +203,17 @@ check("the API proxy flushes immediately", /flush_interval\s+-1/.test(prod));
 
 // A config that fails to parse must never reach the live host.
 check("deploy validates the Caddyfile on the target before installing it",
-  /caddy\s+validate/.test(deploy));
+  /caddy validate/.test(deploy));
 
 // Caddy 2.6.2 can panic while swapping a config in — a Go runtime bug, not a
 // bad config — and die. systemctl reported that as a non-fatal message, so a
 // deploy once printed "Deployed." while the site was down.
-check("deploy checks Caddy survived the reload",
-  /is-active --quiet caddy/.test(deploy));
+check("deploy checks its own Caddy survived the reload",
+  /is-active --quiet roomcad-caddy/.test(deploy));
 check("deploy falls back to a restart if the reload killed it",
-  /reload caddy[\s\S]{0,400}systemctl restart caddy/.test(deploy));
-check("deploy fails loudly when Caddy is not running",
-  /FAILED: Caddy is not running/.test(deploy) && /exit 1/.test(deploy));
+  /reload roomcad-caddy[\s\S]{0,400}systemctl restart roomcad-caddy/.test(deploy));
+check("deploy fails loudly when it is not running",
+  /FAILED: roomcad-caddy is not running/.test(deploy) && /exit 1/.test(deploy));
 check("deploy will not claim success until the site actually answers",
   /curl[^\n]*%\{http_code\}[\s\S]{0,600}FAILED:/.test(deploy));
 check("the check uses the real public URL over TLS",
