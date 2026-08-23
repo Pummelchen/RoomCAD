@@ -23,6 +23,9 @@ import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
   ROOM_SLAB_THICKNESS, WEATHER_KINDS, NEAR_SIDE_TURN, CROSSING_TURN, seedFromString,
+  PARK_OFFSET, BAY_PITCH, PARK_CLEAR, PARK_SHARE, PARK_MIN, PARK_MAX,
+  UNLOAD_MIN, UNLOAD_MAX, BUS_DWELL_MIN, BUS_DWELL_MAX, BUS_STOPS_PER_BLOCK,
+  BUS_STOP_OFFSET, RESERVE_TTL,
 } = await loadWebModule("city.js");
 
 // Derived rather than exported: the carriageway sits one kerb below the
@@ -201,8 +204,12 @@ for (let trial = 0; trial < 120; trial++) {
     if (car.dir !== 1 && car.dir !== -1) note("a car with no direction", String(car.dir));
     if (!car.arc) {
       const cross = car.axis === "x" ? car.z : car.x;
-      if (Math.abs(cross - car.fixed) > 1e-6) {
-        note("a car that has drifted out of its lane", (cross - car.fixed).toExponential(1));
+      // Its lane centreline, plus however far it has pulled towards the kerb to
+      // park or to call at a stop. Still exact: the offset is a value the model
+      // holds, so a vehicle that is anywhere else is drifting.
+      const want = car.fixed + Math.sign(City.laneOffset(car.axis, car.dir)) * (car.kerbOffset || 0);
+      if (Math.abs(cross - want) > 1e-6) {
+        note("a car that has drifted out of its lane", (cross - want).toExponential(1));
       }
       if (car.lane.axis !== car.axis || car.lane.dir !== car.dir) {
         note("a car whose lane disagrees with where it is pointing", car.kind);
@@ -709,6 +716,7 @@ for (const [w, l, label] of [
   // Watched across the whole fleet rather than one car: the streets are busy
   // enough that any particular vehicle may spend a quarter of an hour in a
   // queue without reaching a junction at all.
+  const startingSpeeds = city.cars.map(v => `${v.kind}${v.cruise.toFixed(4)}`).join();
   const before = new Map(city.cars.map(v => [v.id, v.pace]));
   const changes = new Map(city.cars.map(v => [v.id, 0]));
   const everySeen = [];
@@ -735,14 +743,24 @@ for (const [w, l, label] of [
     new Set(everySeen.map(p => p.toFixed(4))).size > everySeen.length * 0.8,
     `${new Set(everySeen.map(p => p.toFixed(4))).size} distinct of ${everySeen.length}`);
 
-  // Drawn from each vehicle's own stream, so the city is still reproducible.
+  // The city is reproducible; the traffic in it is not. Two builds of the same
+  // room give the same streets, the same buildings and the same fleet drawn up
+  // in the same places at the same speeds — and then diverge, because which
+  // way each vehicle turns is a real coin toss rather than a seeded one.
   const twin = new City();
   twin.build(boundsFor(0, 0, 9, 7), 2718, 0);
-  for (let f = 0; f < 18000; f++) twin.update(1 / 60, viewer);
-  const mine = city.cars.map(v => v.pace.toFixed(6)).join(",");
-  const theirs = twin.cars.map(v => v.pace.toFixed(6)).join(",");
-  check("the same city still behaves identically every time it is opened",
-    mine === theirs, "the fleet's paces diverged");
+  check("two builds of a room start identically",
+    twin.cars.map(v => `${v.kind}${v.cruise.toFixed(4)}`).join() ===
+      startingSpeeds,
+    "the fleet should be laid out from the seed");
+  for (let f = 0; f < 9000; f++) twin.update(1 / 60, viewer);
+  let apart = 0;
+  for (let i = 0; i < twin.cars.length; i++) {
+    if (Math.hypot(twin.cars[i].x - city.cars[i].x, twin.cars[i].z - city.cars[i].z) > 5) apart++;
+  }
+  check("and then go their own ways",
+    apart > twin.cars.length / 2,
+    `${apart} of ${twin.cars.length} ended up somewhere different`);
   twin.dispose();
   city.dispose();
 }
@@ -1074,6 +1092,255 @@ for (const [w, l, label] of [
     line ? line[1] : "");
   check("the city is driven with that same capped value, and told where the viewer is",
     /this\.city\.update\(dt, this\.camera\.position\)/.test(walk));
+}
+
+// ── Kerbside stopping ──────────────────────────────────────────────────────
+//
+// Cars park along the kerb, trucks stop in the lane to load, and buses call at
+// designated stops. Every number below is one that was wrong when first
+// measured, so each is a regression guard rather than a restatement of the
+// code:
+//
+//   - the cap on parked cars counted only the ones already stopped, so every
+//     car passing a free bay in the same second reserved one while the count
+//     was still low and they all arrived: 94 parked against a cap of 53;
+//   - a bay is 7 m and a bus is up to 12.2 m, so a bus claiming one bay left
+//     the space either side looking free and a car parked into it;
+//   - arriving forced the vehicle onto the bay centre and to full kerb offset,
+//     two teleports of up to 3.9 m and 1.3 m;
+//   - a vehicle that reserved a bay and was then caught in traffic kept it:
+//     one held a space for 356 s without ever reaching it;
+//   - the truck rate was applied per frame rather than per second, 56x too
+//     often, and a guard on "has a turn pending" stopped buses calling at
+//     1492 of the 1502 stops they drove past.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+
+  // The layout itself.
+  const lanes = [...city.lanes.values()];
+  const bays = lanes.flatMap(l => l.bays || []);
+  check("there are parking bays along the streets", bays.length > 200, `${bays.length} bays`);
+
+  // The distance is stated here rather than read from the code: a check that
+  // imports the very constant it is testing moves with it, and passes however
+  // wrong the constant becomes. What has to be true is that a parked car is
+  // clear of the crossing and the stop line and leaves a few metres beyond
+  // them — the "couple of metres before the traffic lights" this is for.
+  const KEEP_CLEAR = ROAD_WIDTH / 2 + 4;
+  let nearJunction = 0;
+  let worstBay = Infinity;
+  for (const lane of lanes) {
+    const crossing = lane.axis === "x" ? city.roadX : city.roadZ;
+    for (const bay of lane.bays || []) {
+      const gap = Math.min(...crossing.map(road => Math.abs(bay.at - road)));
+      worstBay = Math.min(worstBay, gap);
+      if (gap < KEEP_CLEAR) nearJunction++;
+    }
+  }
+  check("parking stops well before the traffic lights",
+    nearJunction === 0,
+    `${nearJunction} bays closer than ${KEEP_CLEAR.toFixed(1)} m; nearest is ${worstBay.toFixed(1)} m`);
+
+  const stops = bays.filter(b => b.busStop).length;
+  const blocks = (GRID_RADIUS * 2 + 1) ** 2;
+  // Two per block, across its four sides — again as a literal, so raising the
+  // constant is a failure rather than a silently accepted new expectation.
+  check("a block has two bus stops across its four sides",
+    stops === blocks * 2, `${stops} stops for ${blocks} blocks, expected ${blocks * 2}`);
+
+  // And the behaviour, over ten simulated minutes.
+  const cars = city.cars.filter(v => v.kind === "car").length;
+  const cap = Math.ceil(city.cars.length * PARK_SHARE);
+  let peakParked = 0;
+  let everParked = 0;
+  let everUnloaded = 0;
+  let everAtAStop = 0;
+  let jumps = 0;
+  let worstJump = 0;
+  let widestReach = 0;
+  let doubleBooked = 0;
+  let busAwayFromAStop = 0;
+  let heldTooLong = 0;
+  const dwell = { park: [Infinity, -Infinity], unload: [Infinity, -Infinity], busstop: [Infinity, -Infinity] };
+  const held = new Map();
+
+  for (let f = 0; f < 36000; f++) {
+    const before = city.cars.map(v => ({ x: v.x, z: v.z }));
+    city.update(1 / 60, { x: 0, y: 1.6, z: 0 });
+
+    for (let i = 0; i < city.cars.length; i++) {
+      const v = city.cars[i];
+      const moved = Math.hypot(v.x - before[i].x, v.z - before[i].z);
+      // A frame is 1/60 s and nothing in the city does 60 m/s. Anything this
+      // far in one frame is a reposition, not driving.
+      if (moved > 1.0) { jumps++; worstJump = Math.max(worstJump, moved); }
+      if (v.stopTarget) {
+        if (!held.has(v.id)) held.set(v.id, f);
+        if ((f - held.get(v.id)) / 60 > RESERVE_TTL + 5) heldTooLong++;
+      } else held.delete(v.id);
+    }
+
+    if (f % 120) continue;
+
+    let parkedNow = 0;
+    const claims = new Map();
+    for (const v of city.cars) {
+      if (!v.stop) continue;
+      const span = dwell[v.stop.kind];
+      const total = v.stop.until - (v.stop.at ?? city._clock);
+      if (v.stop.kind === "park") { parkedNow++; everParked++; }
+      if (v.stop.kind === "unload") everUnloaded++;
+      if (v.stop.kind === "busstop") {
+        everAtAStop++;
+        if (!v.stop.bay || !v.stop.bay.busStop) busAwayFromAStop++;
+      }
+      // A stopped vehicle must be inside its own kerb, not up on the pavement.
+      if (v.stop.kind !== "unload") {
+        const road = v.fixed - City.laneOffset(v.axis, v.dir);
+        const across = Math.abs((v.axis === "x" ? v.z : v.x) - road);
+        widestReach = Math.max(widestReach, across + (v.kind === "bus" ? 1.25 : 0.9));
+      }
+      claims.set(v, true);
+      void span; void total;
+    }
+    // No two stopped vehicles may occupy the same stretch of kerb. Tested as
+    // bodies rather than as bay bookings: with one bay each, a bus and the car
+    // in the next bay hold different bookings and still overlap by metres.
+    const resting = [...claims.keys()];
+    for (let a = 0; a < resting.length; a++) {
+      for (let b = a + 1; b < resting.length; b++) {
+        if (vehiclesOverlap(resting[a], resting[b])) doubleBooked++;
+      }
+    }
+    peakParked = Math.max(peakParked, parkedNow);
+  }
+
+  check("the cap on parked cars holds",
+    peakParked <= cap, `${peakParked} parked at once, cap ${cap} (${cars} cars)`);
+  check("cars do park", everParked > 0, `${everParked} sightings`);
+  check("trucks stop to load", everUnloaded > 0, `${everUnloaded} sightings`);
+  check("buses call at their stops", everAtAStop > 0, `${everAtAStop} sightings`);
+  check("a bus only ever stops at a designated stop",
+    busAwayFromAStop === 0, `${busAwayFromAStop} sightings elsewhere`);
+  check("no two stopped vehicles occupy the same stretch of kerb",
+    doubleBooked === 0, `${doubleBooked} sightings`);
+  check("stopping never teleports a vehicle",
+    jumps === 0, `${jumps} jumps, worst ${worstJump.toFixed(2)} m in one frame`);
+  check("a stopped vehicle stays inside the kerb",
+    widestReach <= ROAD_WIDTH / 2, `reached ${widestReach.toFixed(2)} m, kerb at ${ROAD_WIDTH / 2}`);
+  check("no vehicle holds a space it cannot reach",
+    heldTooLong === 0, `${heldTooLong} frames past the ${RESERVE_TTL} s limit`);
+
+  // The durations the user asked for: five minutes to two hours parked, five
+  // to ten minutes unloading. Sampled from the model rather than the clock, so
+  // the test does not have to run for two hours.
+  {
+    const seen = { park: [], unload: [], busstop: [] };
+    const probe = new City();
+    probe.build(boundsFor(0, 0, 9, 7), 4242, 0);
+    for (let f = 0; f < 60000; f++) {
+      probe.update(1 / 60, { x: 0, y: 1.6, z: 0 });
+      for (const v of probe.cars) {
+        if (v.stop && !v.stop.counted) {
+          v.stop.counted = true;
+          seen[v.stop.kind].push(v.stop.until - probe._clock);
+        }
+      }
+    }
+    const range = list => [Math.min(...list), Math.max(...list)];
+    check("some of every kind of stop happened",
+      seen.park.length && seen.unload.length && seen.busstop.length,
+      `park ${seen.park.length}, unload ${seen.unload.length}, bus ${seen.busstop.length}`);
+    if (seen.park.length) {
+      const [lo, hi] = range(seen.park);
+      check("a car parks for between five minutes and two hours",
+        lo >= 5 * 60 - 1 && hi <= 120 * 60 + 1,
+        `${(lo / 60).toFixed(1)}-${(hi / 60).toFixed(1)} min`);
+    }
+    if (seen.unload.length) {
+      const [lo, hi] = range(seen.unload);
+      check("a truck loads for between five and ten minutes",
+        lo >= 5 * 60 - 1 && hi <= 10 * 60 + 1,
+        `${(lo / 60).toFixed(1)}-${(hi / 60).toFixed(1)} min`);
+    }
+    if (seen.busstop.length) {
+      const [lo, hi] = range(seen.busstop);
+      check("a bus dwells at a stop rather than parking there",
+        lo >= 5 && hi <= 90, `${lo.toFixed(0)}-${hi.toFixed(0)} s`);
+    }
+    probe.dispose();
+  }
+
+  // A bus standing at a stop must make the kerb either side of it unavailable.
+  // Waiting for the situation to arise in a ten-minute run does not test it —
+  // it needs a car to choose the neighbouring bay during the fifteen to forty
+  // five seconds a bus is there — so the decision is put to the model directly.
+  {
+    const bus = city.cars.find(v => v.kind === "bus");
+    const car = city.cars.find(v => v.kind === "car");
+    const lane = [...city.lanes.values()].find(l => (l.bays || []).some(b => b.busStop));
+    const stop = lane.bays.find(b => b.busStop);
+    const near = lane.bays
+      .filter(b => b !== stop && Math.abs(b.at - stop.at) <= bus.length / 2 + car.length / 2)
+      .sort((a, b) => Math.abs(a.at - stop.at) - Math.abs(b.at - stop.at));
+
+    check("a bus is longer than the space it stops in",
+      near.length > 0, `bus ${bus.length.toFixed(1)} m, bays every ${BAY_PITCH} m`);
+
+    const busLane = { ...lane, members: [] };
+    const standing = { ...bus, lane: busLane };
+    const arriving = { ...car, lane: busLane };
+    for (const b of lane.bays) b.taken = null;
+    city._takeBay(standing, stop);
+    const refused = near.every(b => !city._bayFree(arriving, b));
+    check("a bus at a stop blocks the kerb its body covers",
+      refused,
+      `${near.filter(b => city._bayFree(arriving, b)).length} of ${near.length} neighbouring bays still offered`);
+    check("and it does not block the whole street",
+      lane.bays.some(b => city._bayFree(arriving, b)),
+      "every bay in the lane was refused");
+    for (const b of lane.bays) b.taken = null;
+  }
+
+  // A parked car rejoining traffic must look behind it, not only ahead: it
+  // eases off the kerb from a standstill and takes about a second and a half
+  // to clear, into whatever was already coming.
+  // Put to the model rather than grepped for: a call can be left in place and
+  // disabled, and three earlier source-matching contracts here passed against
+  // exactly that. A car whose time is up, with traffic bearing down on it, must
+  // stay where it is.
+  //
+  // Built from scratch rather than borrowed from the fleet — a car picked out
+  // of a city that has been running for ten minutes brings whatever state it
+  // happens to be in, and the check then reports on unrelated changes.
+  {
+    const lane = { axis: "x", dir: 1, fixed: 3.1, members: [], bays: [] };
+    const make = (at, speed) => ({
+      kind: "car", id: "probe" + at, length: 4.4, width: 1.78,
+      axis: "x", dir: 1, x: at, z: 3.1, fixed: 3.1, speed, arc: null,
+      lane, stop: null, stopTarget: null, kerbOffset: 0, kerbTarget: 0,
+      braking: false, indicate: 0,
+    });
+
+    const parked = make(0, 0);
+    parked.kerbOffset = PARK_OFFSET;
+    parked.kerbTarget = PARK_OFFSET;
+    parked.stop = { kind: "park", bay: null, bays: [], until: city._clock - 1 };
+    const coming = make(-6, 11);
+    lane.members = [parked, coming];
+
+    check("a car does not pull out in front of traffic already alongside",
+      city._handleStopping(parked, 1 / 60) && parked.stop !== null,
+      "it released into a 6 m gap at 11 m/s");
+
+    coming.x = -90;
+    check("and it does pull out once the road behind is clear",
+      !city._handleStopping(parked, 1 / 60) && parked.stop === null,
+      "it stayed put with 90 m of clear road behind");
+  }
+
+  city.dispose();
 }
 
 const EXPECTED = [

@@ -51,8 +51,25 @@ check("the city releases its own GPU resources", city.includes("dispose()") &&
   walk.includes("this.city.dispose();"));
 
 // — Correctness ————————————————————————————————————————————
-check("the same room always yields the same city (seeded, not random)",
-  !city.includes("Math.random()") && city.includes("makeRandom(seed)"));
+// The PLACE is reproducible; what the traffic does in it is not. Reopening a
+// room must give back the same buildings, the same hills and the same lit
+// windows — and cars that make different decisions than last time.
+check("the city itself is built from the seed, not from chance",
+  city.includes("makeRandom(seed)"));
+{
+  // Real randomness is reached for in exactly one place, so this can check
+  // that the geometry never touches it.
+  const rolls = (city.match(/Math\.random\(\)/g) || []).length;
+  check("real randomness has a single entry point", rolls === 1, `${rolls} uses`);
+  check("and it is the named helper", /function trueRandom\(\) \{\s*\n\s*return Math\.random\(\);/.test(city));
+  const buildPath = city.slice(city.indexOf("build(bounds, seed, floorLift) {"),
+    city.indexOf("// MARK: - Traffic"));
+  check("nothing that builds the city uses it",
+    !buildPath.includes("trueRandom"),
+    "the same room would stop looking the same");
+  check("but the turn a vehicle takes does",
+    /const r = trueRandom\(\);/.test(city));
+}
 check("the room's plot is never paved over",
   city.includes("_padLayer(flats, rect, hole,"));
 check("pavement tops out at the room's own floor level",
