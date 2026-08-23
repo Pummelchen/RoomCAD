@@ -94,13 +94,33 @@ curl --http3-only https://roomcad.91.99.176.243.nip.io:8443/
 cannot connect. It is advisory: HTTP/2 over TCP still serves every client, and
 browsers fall back on their own when a QUIC attempt fails.
 
+HTTP/3 is **confirmed working for public clients**. The way to establish that,
+if it is ever in doubt again, is to capture on the server while an external
+client connects, rather than to trust a test run from here:
+
+```bash
+# on the server, ignoring anything coming over the tailnet
+tcpdump -ni any 'udp port 8443 and not net 100.64.0.0/10' -w /tmp/ext.pcap
+# then have something on the public internet fetch the site
+```
+
+A completed handshake shows the server sending a ~1280-byte Initial (the one
+carrying the certificate), then Handshake, then 1-RTT packets. 1-RTT means the
+handshake finished.
+
 **Do not trust an HTTP/3 test from a machine that reaches the server over a VPN
 or mesh network.** If the host is in a Tailscale/WireGuard network, traffic to
 its public address is carried over that tunnel instead of the public internet —
 a different path with a smaller MTU, which QUIC is far more sensitive to than
 TCP. `ip route get <ip>` shows which interface is really used, and a capture on
-the server (`tcpdump -ni any 'udp port 8443'`) shows which interface packets
-arrive on. Judge public reachability only from a device on an unrelated network.
+the server shows which interface packets arrive on.
+
+This is not hypothetical: over a 1280-MTU tunnel the server's ~1280-byte
+Initial cannot be sent at all (1280 + 28 bytes of IP/UDP header exceeds the
+tunnel MTU, and QUIC sets DF so it is dropped rather than fragmented). The
+client then retransmits its ClientHello forever and the handshake times out —
+while the very same server completes the handshake normally with any client
+that reaches it over the public internet.
 
 Caddy must be recent. Debian ships 2.6.2 (upstream 2022), whose QUIC and config
 reloading are both long superseded — a reload of that build could panic and
