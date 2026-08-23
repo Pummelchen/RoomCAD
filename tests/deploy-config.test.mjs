@@ -83,6 +83,13 @@ check("deploy removes the old proxying site", /rm -f \/etc\/nginx\/sites-enabled
   check("it answers for the RoomCAD hostname only",
     (redirect.match(/server_name\s+roomcad\.[\d.]+\.nip\.io;/g) || []).length === 2);
   check("deploy installs it", /nginx-roomcad-redirect\.conf/.test(deploy));
+  // Same lesson as the renewal hook. nginx only forwards the old address —
+  // RoomCAD is served by Caddy on its own port — so nginx being unconfigurable
+  // must not be able to abandon a deploy before the site is verified.
+  check("a missing nginx config directory does not abort the deploy",
+    /if ! ssh "\$HOST" "\[ -d \/etc\/nginx\/sites-available \]"; then/.test(deploy));
+  check("and it says RoomCAD itself is unaffected, which is the thing worth knowing",
+    /RoomCAD itself is unaffected/.test(deploy));
   check("deploy checks the old URL actually redirects",
     /expected a redirect to :8443/.test(deploy));
 }
@@ -96,6 +103,20 @@ check("HSTS is not preloaded and does not claim subdomains",
 check("a certbot deploy hook ships with the server",
   existsSync(join(root, "roomcad", "server", "certbot-deploy-hook.sh")));
 check("deploy installs the certificate hook", /renewal-hooks\/deploy\/roomcad-caddy\.sh/.test(deploy));
+// The store this hook lives in is a symlink into another application's tree on
+// this host. When that moved, the hook could not be installed, and a deploy
+// that stops on the first error stopped THERE — after syncing the web files
+// but before reloading Caddy or checking the site was still up. A deploy must
+// not be able to end in that state over something that only matters at the
+// next renewal.
+check("a missing renewal-hook directory does not abort the deploy",
+  /if ssh "\$HOST" "\[ -d \/etc\/letsencrypt\/renewal-hooks\/deploy \]"; then/.test(deploy));
+check("and it says plainly what will break instead of failing silently",
+  /WARNING: \/etc\/letsencrypt\/renewal-hooks\/deploy is not there/.test(deploy)
+  && /will NOT be refreshed when the certificate renews/.test(deploy));
+check("it reports how long the current certificate has left",
+  /openssl x509 -enddate -noout/.test(deploy));
+
 check("the hook runs once at deploy so the copy exists before Caddy loads it",
   /roomcad-caddy\.sh\"?\s*$|roomcad-caddy\.sh$/m.test(deploy));
 
