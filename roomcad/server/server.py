@@ -224,6 +224,23 @@ def create_session(token):
         conn.commit()
 
 
+def destroy_session(token):
+    """Ends one browser session.
+
+    Without this a login could not be undone: the cookie lasts a year and
+    nothing on the server or in the UI could end it early, so signing in on a
+    borrowed machine meant leaving it signed in.
+    """
+    if not token:
+        return
+    conn = get_conn()
+    with DB_LOCK:
+        conn.execute("DELETE FROM browser_sessions WHERE token_hash=?", (session_hash(token),))
+        conn.commit()
+    with PRESENCE_LOCK:
+        PRESENCE.pop(token, None)
+
+
 def session_is_valid(token):
     if not token:
         return False
@@ -719,6 +736,23 @@ class Handler(BaseHTTPRequestHandler):
                 "Set-Cookie",
                 "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=%d%s"
                 % (SESSION_COOKIE, token, SESSION_TTL_SECONDS, "; Secure" if https else ""),
+            )
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+            return
+        if path == "/api/logout":
+            # No auth check on purpose: a session that is already invalid must
+            # still be able to clear its cookie rather than being told 401.
+            self._drain()
+            destroy_session(self._cookie(SESSION_COOKIE))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "11")  # {"ok": true}
+            self.send_header("Cache-Control", "no-store")
+            self.send_header(
+                "Set-Cookie",
+                "%s=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0%s"
+                % (SESSION_COOKIE, "; Secure" if self._is_https() else ""),
             )
             self.end_headers()
             self.wfile.write(b'{"ok": true}')

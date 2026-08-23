@@ -345,29 +345,6 @@ body {
   color: #fff;
 }
 
-.sidebar-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-
-.sidebar-actions button {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: 7px;
-  padding: 6px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-  color: var(--text);
-}
-
-.sidebar-actions button:hover {
-  background: var(--accent-soft);
-}
-
 #canvas-area {
   flex: 1;
   position: relative;
@@ -1183,4 +1160,33 @@ body.resizing-sidebars * {
   font-size: 0.7rem;
   line-height: 1.3;
   opacity: 0.55;
+}
+
+/* Version and sign-out sit together at the foot of the inspector. */
+#app-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* The sidebar is resizable and can be narrow; wrap rather than breaking the
+     button's label across two lines. */
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+}
+#app-footer #sign-out {
+  white-space: nowrap;
+  background: none;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 5px;
+  color: rgba(226, 232, 240, 0.66);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+}
+#app-footer #sign-out:hover {
+  border-color: rgba(226, 232, 240, 0.4);
+  color: rgba(240, 245, 252, 0.95);
+}
+#app-footer #sign-out:focus-visible {
+  outline: 2px solid #3d8bfd;
+  outline-offset: 1px;
 }

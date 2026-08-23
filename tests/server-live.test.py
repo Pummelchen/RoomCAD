@@ -466,6 +466,27 @@ def main():
           raw.decode("latin1").startswith("HTTP/1.1 200"),
           raw.decode("latin1").split("\r\n")[0])
 
+    # Signing out. The session cookie lasts a year, so without a way to end it
+    # a login on a borrowed machine could not be undone.
+    status, _, sc = request(port, "POST", "/api/login", {"password": "testpass"})
+    out_cookie = sc.split(";")[0]
+    check("a fresh session works", request(port, "GET", "/api/rooms", None, out_cookie)[0] == 200)
+    status, _, logout_sc = request(port, "POST", "/api/logout", None, out_cookie)
+    check("logout succeeds", status == 200, f"{status}")
+    check("logout clears the cookie", logout_sc is not None and "Max-Age=0" in logout_sc, str(logout_sc))
+    check("the cookie stays HttpOnly while being cleared",
+          logout_sc is not None and "HttpOnly" in logout_sc, str(logout_sc))
+    check("the session is really gone, not just the cookie",
+          request(port, "GET", "/api/rooms", None, out_cookie)[0] == 401)
+    # An already-invalid session must still be able to clear itself rather than
+    # being told 401 and left stuck.
+    check("logging out twice is not an error",
+          request(port, "POST", "/api/logout", None, out_cookie)[0] == 200)
+    check("logging out with no session at all is fine",
+          request(port, "POST", "/api/logout")[0] == 200)
+    check("logout does not resurrect access",
+          request(port, "GET", "/api/rooms", None, out_cookie)[0] == 401)
+
     # Deleting a file must take every version of it with it, however many there
     # are, and leave nothing behind that refers to it.
     bulk = "bulkroom"

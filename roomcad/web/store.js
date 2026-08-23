@@ -330,6 +330,12 @@ export const store = {
     // Doors and windows are positioned along their wall, so they travel with it
     // for free — as long as the wall keeps its identity and its length.
     this.room.walls = moved;
+    // A drag runs inside a transaction, so sanitize() does not see it until the
+    // drag ends. Without these two the model is briefly inconsistent with
+    // itself: the sidebar reports the size the room had before the drag began,
+    // and an opening on a wall that got shorter is drawn past its end.
+    P.fitOpeningsToWalls(this.room);
+    P.syncExtent(this.room);
     return true;
   },
 

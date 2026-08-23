@@ -359,26 +359,6 @@ function attachAlongAxis(room, end, fixed, excludeWallID) {
     : point(fixed.x, clean(attach.z));
 }
 
-/// Moves a whole wall, keeping its length.
-///
-/// The movement is clamped, not the two endpoints separately: clamping each end
-/// on its own lets one stop at the edge of the plate while the other keeps
-/// going, which silently shortens the wall — and a wall that gets shorter can
-/// drop a door that no longer fits on it.
-export function translateWall(w, dx, dz, width, length) {
-  const minX = Math.min(w.start.x, w.end.x);
-  const maxX = Math.max(w.start.x, w.end.x);
-  const minZ = Math.min(w.start.z, w.end.z);
-  const maxZ = Math.max(w.start.z, w.end.z);
-  const room = (lo, hi) => (lo > hi ? 0 : null);
-  const moveX = room(-minX, width - maxX) ?? clamp(dx, -minX, width - maxX);
-  const moveZ = room(-minZ, length - maxZ) ?? clamp(dz, -minZ, length - maxZ);
-  return {
-    ...w,
-    start: { x: clean(w.start.x + moveX), z: clean(w.start.z + moveZ) },
-    end: { x: clean(w.end.x + moveX), z: clean(w.end.z + moveZ) },
-  };
-}
 
 /// How short a wall may become before it would lose something mounted on it.
 function neededWallLength(room, wall) {
@@ -474,6 +454,25 @@ export function dragWall(room, id, dx, dz) {
     }
   }
   return shifted;
+}
+
+/// Slides doors and windows so they stay on the wall they belong to.
+///
+/// Dragging can shorten a wall — a carried corner moves inward — and an opening
+/// keeps its offset from the wall's start, so it can end up hanging past the
+/// end. sanitize() fixes that, but only once the drag is committed; during the
+/// drag the plan would draw a door in mid-air. Applying it as the wall moves
+/// keeps what is on screen true at every step.
+export function fitOpeningsToWalls(room) {
+  for (const list of [room.doors || [], room.windows || []]) {
+    for (const o of list) {
+      const wall = (room.walls || []).find(w => w.id === o.wallID);
+      if (!wall) continue;
+      const room_ = wallLength(wall) - o.width - 0.10;
+      if (room_ < 0.10) continue;          // too short; the drag guard stops this
+      o.offset = clamp(o.offset, 0.10, room_);
+    }
+  }
 }
 
 /// The floor actually enclosed by the walls, in m².

@@ -602,6 +602,22 @@ document.getElementById("zoom-100").addEventListener("click", () => editor.zoomT
 document.getElementById("zoom-200").addEventListener("click", () => editor.zoomTo(200));
 document.getElementById("zoom-fit").addEventListener("click", () => editor.fit());
 
+// Signing out. The session cookie lasts a year, so without this there is no way
+// to end a login on a machine you do not own. Unsaved work is protected by the
+// same guard as opening another room.
+document.getElementById("sign-out").addEventListener("click", async () => {
+  if (!confirmDiscard()) return;
+  if (!window.confirm("Sign out of RoomCAD on this device?")) return;
+  try {
+    await apiLogout();
+  } catch (err) {
+    console.warn("Sign out failed:", err);
+  }
+  // Reload either way: if the cookie is gone the login gate returns, and if the
+  // request failed the gate will reappear as soon as the next call is refused.
+  location.reload();
+});
+
 // Build palette in the left sidebar: Wall / Door / Window go straight to their
 // tool; Light opens a small choice between the 60 W bulb and the 200 W panel.
 const lightButton = document.getElementById("light-button");
@@ -751,6 +767,12 @@ async function apiLoadRoomVersion(name, version) {
 
 async function apiVersions(name) {
   const res = await fetch("/api/versions/" + encodeURIComponent(name));
+  if (!res.ok) throw apiReject(res);
+  return res.json();
+}
+
+async function apiLogout() {
+  const res = await fetch("/api/logout", { method: "POST" });
   if (!res.ok) throw apiReject(res);
   return res.json();
 }
@@ -1053,10 +1075,20 @@ async function openStoredRoom(name, version) {
     watchRoom(data.name);
     // Persist the exact version the person selected. This is deliberately
     // server-side: a reload resumes it without browser-local storage.
-    apiRememberLastRoom(data.name, data.version).catch(() => {});
-  } catch {
-    window.alert("This saved room could not be opened.");
-    removeStoredRoom(name);
+    // Best effort: if this does not land the room still opened, the next
+    // session just resumes somewhere else.
+    apiRememberLastRoom(data.name, data.version)
+      .catch(err => console.warn("Could not remember the open version:", err));
+  } catch (err) {
+    // NEVER delete here. This used to call removeStoredRoom(), which issues
+    // DELETE /api/rooms/<name> and destroys the file and every version of it on
+    // the server. Anything at all failing above — a dropped connection, a
+    // momentary 500, an error thrown while applying the room — therefore wiped
+    // the user's work permanently, with no confirmation and no undo. Opening a
+    // room is a read; a read that fails must cost nothing.
+    console.warn("Could not open saved room:", name, err);
+    window.alert("This saved room could not be opened. It has been left untouched — try again.");
+    renderRooms();   // refresh the list, in case it really is gone server-side
   }
 }
 

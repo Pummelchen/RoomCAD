@@ -750,29 +750,43 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
 //
 // Clamping the two endpoints separately lets one stop at the edge of the plate
 // while the other keeps going, which shortens the wall — and a wall that gets
-// shorter can drop a door that no longer fits on it.
+// shorter can drop a door that no longer fits on it. dragWall clamps the
+// movement instead, and is the path the app actually takes.
 {
-  const w = { id: "t", start: { x: 0.2, z: 1 }, end: { x: 3.2, z: 1 } };
-  const len = P.wallLength(w);
-  const shoved = P.translateWall(w, -5, 0, 25, 25);
-  check("a wall shoved past the edge keeps its length",
-    near(P.wallLength(shoved), len, 1e-9), `${P.wallLength(shoved)} vs ${len}`);
-  check("and stops at the edge", near(Math.min(shoved.start.x, shoved.end.x), 0, 1e-9));
+  const plate = walls => {
+    const r = P.freshRoom("P", 6, 4, 2.6);
+    r.origin = { x: 0, z: 0 };
+    r.canvas = { width: 25, length: 25 };
+    r.walls = walls;                  // free-standing, so this is about movement
+    r.doors = [];
+    r.windows = [];
+    return r;
+  };
+  const solo = list => (list ? list.find(w => w.id === "solo") : undefined);
+  const room = plate([{ id: "solo", start: P.point(0.2, 1), end: P.point(3.2, 1) }]);
+  const len = P.wallLength(room.walls[0]);
 
-  const far = P.translateWall(w, 100, 100, 25, 25);
-  check("the same holds at the far edge", near(P.wallLength(far), len, 1e-9));
-  check("it stays on the plate", Math.max(far.start.x, far.end.x) <= 25 + 1e-9
+  const shoved = solo(P.dragWall(room, "solo", -5, 0));
+  check("a wall shoved past the edge keeps its length",
+    shoved && near(P.wallLength(shoved), len, 1e-9), `${shoved && P.wallLength(shoved)} vs ${len}`);
+  check("and stops at the edge",
+    shoved && near(Math.min(shoved.start.x, shoved.end.x), 0, 1e-9));
+
+  const far = solo(P.dragWall(room, "solo", 100, 100));
+  check("the same holds at the far edge", far && near(P.wallLength(far), len, 1e-9));
+  check("it stays on the plate",
+    far && Math.max(far.start.x, far.end.x) <= 25 + 1e-9
     && Math.max(far.start.z, far.end.z) <= 25 + 1e-9);
 
-  const free = P.translateWall(w, 0.5, 0.25, 25, 25);
+  const free = solo(P.dragWall(room, "solo", 0.5, 0.25));
   check("an unobstructed move is exact",
-    near(free.start.x, 0.7) && near(free.start.z, 1.25) && near(free.end.x, 3.7));
+    free && near(free.start.x, 0.7) && near(free.start.z, 1.25) && near(free.end.x, 3.7));
 
   // A wall longer than the plate must not be flung across it.
-  const huge = { id: "h", start: { x: 0, z: 2 }, end: { x: 30, z: 2 } };
-  const nudged = P.translateWall(huge, 1, 0, 25, 25);
+  const huge = plate([{ id: "solo", start: P.point(0, 2), end: P.point(30, 2) }]);
+  const nudged = solo(P.dragWall(huge, "solo", 1, 0));
   check("a wall wider than the plate is left where it is",
-    near(nudged.start.x, 0) && near(nudged.end.x, 30));
+    !nudged || (near(nudged.start.x, 0) && near(nudged.end.x, 30)));
 }
 
 // ── Size is measured, never typed ─────────────────────────────────────────
