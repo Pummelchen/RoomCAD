@@ -17,8 +17,11 @@
 		file_server
 		encode gzip
 		header {
-			-X-Frame-Options "DENY"
-			-X-Content-Type-Options "nosniff"
+			# Match production. A leading "-" would DELETE these rather than
+			# set them, which is what the deployed config used to do.
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+			Referrer-Policy "same-origin"
 			# Match production: revalidate every time. Without this the browser
 			# applies heuristic freshness and quietly keeps serving the previous
 			# build of a module after you have edited it.

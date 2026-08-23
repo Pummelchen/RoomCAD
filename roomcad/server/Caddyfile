@@ -14,8 +14,12 @@
 :8077 {
 	encode gzip
 	header {
-		-X-Frame-Options "DENY"
-		-X-Content-Type-Options "nosniff"
+		# In Caddy a leading "-" DELETES a header. These lines used to carry
+		# it, so the app shipped with no clickjacking or MIME-sniffing
+		# protection at all — and nginx in front adds none either.
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "same-origin"
 	}
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8078 {
@@ -44,8 +48,12 @@
 	tls internal
 	encode gzip
 	header {
-		-X-Frame-Options "DENY"
-		-X-Content-Type-Options "nosniff"
+		# In Caddy a leading "-" DELETES a header. These lines used to carry
+		# it, so the app shipped with no clickjacking or MIME-sniffing
+		# protection at all — and nginx in front adds none either.
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "same-origin"
 	}
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8078 {
