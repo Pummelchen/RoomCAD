@@ -69,6 +69,9 @@ const SIDEWALK_COLOR = 0xb9b6ad;
 const KERB_COLOR = 0x9a978f;
 const GRASS_COLOR = 0x6f9457;
 const MARKING_COLOR = 0xe6e2d4;
+const BAY_LINE_COLOR = 0xd8d3c2;    // the box a car parks inside
+const BUS_BOX_COLOR = 0xb8452f;     // bus stops are painted, and only for buses
+const BUS_LETTER_COLOR = 0xefe9dc;
 const TRUNK_COLOR = 0x6b4f36;
 const CANOPY_COLORS = [0x5c8a45, 0x6f9c52, 0x4e7a3b];
 const LAMP_POLE_COLOR = 0x4a4d53;
@@ -128,11 +131,12 @@ const CAR_COLORS = [
 ];
 const TRUCK_COLORS = [0xdfe2e6, 0x3f6fa8, 0xc8563c, 0x4a4f57, 0xd9c89a];
 const BUS_COLORS = [0xd23f36, 0x2f6f3f, 0xe0a52c, 0x3a5f9e];
+const VAN_COLORS = [0xf2f4f7, 0xdfe3e8, 0xc8ced6, 0x8d9aa8, 0x3f6fae];
 const TYRE_COLOR = 0x1b1d21;
 const GLASS_COLOR = 0x2a3038;
 
 // Traffic.
-const LANE_OFFSET = 3.1;        // lane centre from the road centreline
+const LANE_OFFSET = 2.9;        // lane centre from the road centreline
 const LIGHT_CYCLE = 30;         // the nominal cycle, and what a balanced junction still runs
 const GREEN_MIN = 6;            // never shorter, however empty the approach
 const GREEN_MAX = 26;           // never longer, however long the queue
@@ -177,25 +181,54 @@ const FLEET_SIZE = 240;
 // parking. A bus at a stop pulls over as far as it fits and the traffic behind
 // it waits, which is what a kerbside stop without a layby does; a truck loading
 // stops in the lane outright, which is what they do everywhere.
-export const PARK_OFFSET = 2.4;        // a parked car, clear of the running lane
-export const BUS_STOP_OFFSET = 1.9;    // as far over as a bus fits inside the kerb
+export const PARK_OFFSET = 2.5;        // a parked car, clear of the running lane
+export const VAN_OFFSET = 2.6;         // a van at the kerb, offloading
+// How much room a stopped vehicle has to leave beside it before the traffic
+// stops having to go round: half the widest vehicle, and a little.
+const LANE_CLEAR = 1.5;
+export const BUS_STOP_OFFSET = 3.4;    // right into the layby, out of the running lane
 export const BAY_PITCH = 7.0;          // one parking space
 export const RESERVE_TTL = 40;         // how long a vehicle may hold a space it has not reached
 // No bay within this of a junction centre. The stop line is at ten metres and
 // the crossing just inside it, so this leaves several metres of clear kerb
 // before either.
 export const PARK_CLEAR = 16;
-export const PARK_SHARE = 0.22;        // at most this fraction of the cars parked at once
+export const PARK_SHARE = 0.5;         // at most this fraction of the fleet parked at once
 export const PARK_MIN = 5 * 60;        // five minutes
 export const PARK_MAX = 120 * 60;      // two hours
-const PARK_CHANCE = 0.02;       // per free bay passed
-export const UNLOAD_MIN = 5 * 60;      // a truck loading or unloading
-export const UNLOAD_MAX = 10 * 60;
-const UNLOAD_CHANCE = 0.0004;   // per second of driving
-export const BUS_DWELL_MIN = 15;       // a bus at a stop is not parking
-export const BUS_DWELL_MAX = 45;
+const PARK_APPROACH = 26;       // how far off a vehicle starts lining up for its space
+const KERB_EASE_FROM = 7;       // ... and how close before it starts pulling over
+const PARK_PATIENCE = 15 * 60;  // how long it holds out for the space it set off for
+const START_PARKED = 0.9;       // of the parking cap, filled before the city starts
+// Reversing into a space, as two arcs of opposite lock: swing the tail in, then
+// straighten. The geometry is fixed by the two of them having to add up to the
+// distance from the running lane to the kerb — 2R(1-cos t) across, 2R sin t
+// along — so choosing the angle chooses the radius and the run-up.
+export const REVERSE_ANGLE = 35 * Math.PI / 180;
+export const REVERSE_RADIUS = PARK_OFFSET / (2 * (1 - Math.cos(REVERSE_ANGLE)));
+export const REVERSE_RUN = 2 * REVERSE_RADIUS * Math.sin(REVERSE_ANGLE);
+const REVERSE_SPEED = 1.1;      // walking pace, backwards
+const REVERSE_SLACK = 1.8;      // the room a gap needs beyond the vehicle itself
+const MANOEUVRE_WAIT = 1.2;     // the pause between stopping and selecting reverse
+export const UNLOAD_MIN = 5 * 60;      // a van at the kerb, offloading
+export const UNLOAD_MAX = 15 * 60;
+const UNLOAD_CHANCE = 0.02;     // per free bay a van passes
+export const BUS_DWELL_MIN = 60;       // a bus calls for a minute
+export const BUS_DWELL_MAX = 300;      // ... and at most five
 const BUS_STOP_COOLDOWN = 90;   // it does not call at two stops in a row
 export const BUS_STOPS_PER_BLOCK = 2;  // out of the block's four sides
+const LAYBY_DEPTH = 2.6;        // how far a bus stop is cut back into the pavement
+const LAYBY_TAPER = 4.0;        // the angled run in and out of it
+// How much kerb a vehicle needs beyond its own length. Parallel parking wants
+// about half a vehicle of slack, and at 2.5 m a 6.6 m van claimed a single 7 m
+// bay — four centimetres of room at each end. It reversed into it and clipped
+// whatever was parked in front: 18 contacts in fifteen minutes. At 4 m a van
+// takes two bays and simply pulls in, and a car still takes one.
+const BAY_CLEARANCE = 4.0;
+const BAY_LINE_W = 0.12;        // painted bay markings
+const BAY_LENGTH = 5.6;         // the box itself, inside the pitch
+const PARK_BOX_DEPTH = 2.3;     // how far the painted box reaches into the road
+const BUS_LAYBY_LENGTH = 17;    // room for a bus and the taper either end
 // Junction furniture. A driver meets the stop line, then the crossing, then
 // the carriageway, so the crossing sits between the line and the junction.
 const CROSS_GAP = 0.6;          // carriageway edge to the near edge of the crossing
@@ -218,6 +251,7 @@ export const TURN_CONTROL_PERIOD = 2;   // seconds between reviews
 const TURN_SLOT = 8;            // road length one vehicle and its gap occupy
 const TURN_LOAD_FLOOR = 0.5;    // never red-out a street emptier than this
 const TURN_LOAD_FACTOR = 1.35;  // ... nor one within this much of the average
+const ROUTE_CONGESTION = 2.5;   // how many junctions of detour a full street is worth
 
 const SIGNAL_HEIGHT = 3.4;
 const SIGNAL_HEAD_H = 0.86;
@@ -250,6 +284,7 @@ const PRECIP_HEIGHT = 30;
 /// 34 to 58 km/h, which is a wider gap than the streets should have.
 const VEHICLE_REF = {
   car: { L: 4.45, W: 1.78, wheelR: 0.34, lampY: 0.62 },
+  van: { L: 6.0, W: 1.9, wheelR: 0.38, lampY: 0.70 },
   truck: { L: 9.7, W: 2.42, wheelR: 0.5, lampY: 0.86 },
   bus: { L: 11.35, W: 2.5, wheelR: 0.5, lampY: 0.72 },
 };
@@ -261,7 +296,16 @@ const VEHICLE_KINDS = [
     cruise: 11.5, accel: 2.8, brake: 5.6, colors: CAR_COLORS,
   },
   {
-    kind: "truck", share: 0.2, length: [8.4, 11.0], width: 2.42,
+    // The delivery van: short enough to pull into a parking bay, which is the
+    // whole point of it. Loading used to be done by the artics, standing in the
+    // running lane for ten minutes at a time — a lane closed, on a grid with
+    // one lane each way.
+    kind: "van", share: 0.12, length: [5.4, 6.6], width: 1.9,
+    bodyH: 1.02, roofH: 0.72, roofFrac: 0.62, axles: 2,
+    cruise: 10.0, accel: 2.2, brake: 5.0, colors: VAN_COLORS,
+  },
+  {
+    kind: "truck", share: 0.08, length: [8.4, 11.0], width: 2.42,
     bodyH: 1.18, roofH: 1.25, roofFrac: 0.3, axles: 3,
     cruise: 8.8, accel: 1.5, brake: 4.2, colors: TRUCK_COLORS,
   },
@@ -561,6 +605,53 @@ function buildCarGeometry(L, W, wheelR) {
 }
 
 /// A rigid truck: cab, chassis, and a box body sitting above the frame.
+/// A delivery van: one body, a raked nose, a tall box behind the cab, and the
+/// sliding door and rear shutter that say what it is for. Short enough to fit a
+/// parking bay, which is the point — the loading it does used to be done by the
+/// artics, standing in the running lane.
+function buildVanGeometry(L, W, wheelR) {
+  const b = partBuilder();
+  const floor = wheelR * 0.55;
+  const bodyH = 1.34;
+  const bodyY = floor + bodyH / 2;
+
+  // The box: the whole length behind the nose, full height.
+  b.box(-L * 0.08, bodyY, 0, L * 0.78, bodyH, W, PAINT);
+  // Roof, slightly inset, so the top edge reads as an edge.
+  b.box(-L * 0.08, floor + bodyH, 0, L * 0.74, 0.09, W * 0.94, PAINT);
+
+  // Nose: short bonnet and a raked screen up to the cab roof.
+  const noseX = L * 0.38;
+  b.box(noseX, floor + 0.42, 0, L * 0.2, 0.62, W * 0.96, PAINT);
+  b.box(L * 0.25, floor + bodyH * 0.78, 0, L * 0.13, 0.82, W * 0.92, GLASS, -0.34);
+  // Cab side glass, one pane each side, and the door line under it.
+  for (const side of [-1, 1]) {
+    b.box(L * 0.14, floor + bodyH * 0.74, side * W * 0.49, L * 0.18, 0.5, 0.03, GLASS);
+    // The cab door line and the sliding door stand off the flank by DIFFERENT
+    // amounts. At the same one they shared both of their faces, which is two
+    // surfaces at one depth down the side of the van.
+    b.box(L * 0.13, floor + bodyH * 0.36, side * (W * 0.5 + 0.012), L * 0.22, 0.5, 0.02, TRIM);
+    // The sliding side door, the panel a delivery van is recognised by.
+    b.box(-L * 0.04, bodyY, side * (W * 0.5 + 0.030), L * 0.24, bodyH * 0.82, 0.02, TRIM);
+  }
+  // Rear shutter and bumpers.
+  b.box(-L * 0.47, bodyY, 0, 0.04, bodyH * 0.86, W * 0.9, TRIM);
+  b.box(L * 0.47, floor + 0.2, 0, 0.1, 0.24, W * 0.94, TRIM);
+  b.box(-L * 0.49, floor + 0.22, 0, 0.08, 0.22, W * 0.94, TRIM);
+
+  // Two axles, wheels proud of the flanks so the two never share a plane.
+  const wheelW = 0.2;
+  const track = W * 0.5 + 0.03;
+  for (const ax of [L * 0.3, -L * 0.28]) {
+    for (const side of [-1, 1]) b.wheel(ax, wheelR, side * track, wheelR, wheelW);
+    // Arches, so a wheel is not simply stuck to a flat side.
+    for (const side of [-1, 1]) {
+      b.box(ax, wheelR + 0.3, side * (W * 0.5 - 0.02), wheelR * 2.3, 0.1, 0.06, TRIM);
+    }
+  }
+  return b.build();
+}
+
 function buildTruckGeometry(L, W, wheelR) {
   const b = partBuilder();
   const floor = wheelR * 0.62;
@@ -666,6 +757,7 @@ export class City {
     this.drops = [];
     this.junctions = [];
     this.turnControl = new Map();
+    this.turnLoads = new Map();
     this._turnControlAt = 0;
     this._turnLookahead = 0;
     this.strays = 0;
@@ -817,12 +909,27 @@ export class City {
     this._groundMaterials = [sets.flats.material];
     this._terrain(cx, cz, reach, span, seed);
 
+    // Roads, lanes and kerbside spaces are laid out BEFORE the pavements,
+    // because a bus stop is a layby and a layby is a piece missing from the
+    // pavement. The pads cannot be built until it is known where those pieces
+    // go.
+    this._layoutRoads(cx, cz, span);
+    // Its OWN stream, not the one the blocks and buildings are drawing from.
+    // Moving this work earlier moved every later draw from `rnd` along with it,
+    // which quietly rebuilt the whole city — different buildings in different
+    // places, and 1158 surfaces that now happened to land at the same depth as
+    // each other. The layout must not care when the traffic is laid out.
+    const trafficRnd = makeRandom(seed ^ 0x5bf03635);
+    this._buildTraffic(cx, cz, span, reach, trafficRnd);
+    this._layoutParking(cx, cz, span, block, trafficRnd);
+    const laybys = this._laybyRects();
+
     for (let gx = -GRID_RADIUS; gx <= GRID_RADIUS; gx++) {
       for (let gz = -GRID_RADIUS; gz <= GRID_RADIUS; gz++) {
         const bx = cx + gx * span;
         const bz = cz + gz * span;
         const home = gx === 0 && gz === 0;
-        this._blockPad(sets.flats, bx, bz, block, home ? plot : null);
+        this._blockPad(sets.flats, bx, bz, block, home ? plot : null, laybys);
         if (home) {
           this._homeTower(sets, bounds, floorLift, rnd);
         } else {
@@ -836,12 +943,14 @@ export class City {
       }
     }
 
-    this._layoutRoads(cx, cz, span);
     this._roadMarkings(sets.flats, cx, cz, block, span);
+    this._paintKerbside(sets.flats, laybys);
     this._trafficSignals(sets.signalPoles, sets.signalHousings, sets.signalDark, cx, cz);
     this._streetLamps(sets.poles, sets.lampHeads, cx, cz, block, span);
-    this._buildTraffic(cx, cz, span, reach, rnd);
-    this._layoutParking(cx, cz, span, block, rnd);
+    // Destinations come after the bays exist, and only for cars: a bus runs a
+    // route and a truck stops where the work is.
+    for (const v of this.cars) if (v.kind === "car") v.goal = this._pickGoal(v);
+    this._parkStartingCars(trafficRnd);
     this._buildSignalLamps();
     this._buildTurnArrows();
     this._buildPrecipitation(rnd);
@@ -955,42 +1064,68 @@ export class City {
   /// One slab layer of a block, as up to four strips around an optional hole.
   /// The room's own plot is the hole: paving over it would push pavement up
   /// through the floor of a ground-floor room.
-  _padLayer(flats, rect, hole, top, height, color, holeGrow = 0) {
-    const { x0, x1, z0, z1 } = rect;
+  _padLayer(flats, rect, hole, top, height, color, holeGrow = 0, notches = null) {
     const strip = (ax0, ax1, az0, az1) => {
       const w = ax1 - ax0;
       const d = az1 - az0;
       if (w <= 0.01 || d <= 0.01) return;
       flats.add(boxMatrix((ax0 + ax1) / 2, top - height / 2, (az0 + az1) / 2, w, height, d), color);
     };
-    if (!hole) {
-      strip(x0, x1, z0, z1);
-      return;
+
+    // The pad, less the room's own plot, less every bus layby cut into its
+    // kerb. Done as rectangle subtraction rather than as a special case for
+    // each, because a block can have a plot AND two laybys and the strips
+    // either side of one have to be cut by the others in turn.
+    let pieces = [{ ...rect }];
+    const cutAll = (cut) => {
+      const next = [];
+      for (const r of pieces) {
+        const cx0 = Math.max(r.x0, Math.min(r.x1, cut.x0));
+        const cx1 = Math.max(r.x0, Math.min(r.x1, cut.x1));
+        const cz0 = Math.max(r.z0, Math.min(r.z1, cut.z0));
+        const cz1 = Math.max(r.z0, Math.min(r.z1, cut.z1));
+        if (cx1 - cx0 <= 0.01 || cz1 - cz0 <= 0.01) { next.push(r); continue; }
+        next.push({ x0: r.x0, x1: r.x1, z0: r.z0, z1: cz0 });
+        next.push({ x0: r.x0, x1: r.x1, z0: cz1, z1: r.z1 });
+        next.push({ x0: r.x0, x1: cx0, z0: cz0, z1: cz1 });
+        next.push({ x0: cx1, x1: r.x1, z0: cz0, z1: cz1 });
+      }
+      pieces = next.filter(r => r.x1 - r.x0 > 0.01 && r.z1 - r.z0 > 0.01);
+    };
+
+    if (hole) {
+      // Each layer cuts the plot a little differently. Cut them all to exactly
+      // the same edge and the kerb strip and the pavement strip share a
+      // vertical face right along the boundary of the room's own plot — which
+      // is a face you look straight at from a ground-floor room.
+      cutAll({
+        x0: hole.x0 - holeGrow, x1: hole.x1 + holeGrow,
+        z0: hole.z0 - holeGrow, z1: hole.z1 + holeGrow,
+      });
     }
-    // Each layer cuts its hole a little differently. Cut them all to exactly
-    // the same edge and the kerb strip and the pavement strip share a vertical
-    // face right along the boundary of the room's own plot — which is a face
-    // you look straight at from a ground-floor room.
-    const hx0 = Math.max(x0, Math.min(x1, hole.x0 - holeGrow));
-    const hx1 = Math.max(x0, Math.min(x1, hole.x1 + holeGrow));
-    const hz0 = Math.max(z0, Math.min(z1, hole.z0 - holeGrow));
-    const hz1 = Math.max(z0, Math.min(z1, hole.z1 + holeGrow));
-    strip(x0, x1, z0, hz0);
-    strip(x0, x1, hz1, z1);
-    strip(x0, hx0, hz0, hz1);
-    strip(hx1, x1, hz0, hz1);
+    // Grown by the same amount as the plot, and for the same reason: cut every
+    // layer to exactly the same edge and the kerb strip and the pavement strip
+    // share a vertical face right down the side of the layby — a face you stand
+    // next to at the bus stop. It was 158 of them.
+    for (const notch of notches || []) {
+      cutAll({
+        x0: notch.x0 - holeGrow, x1: notch.x1 + holeGrow,
+        z0: notch.z0 - holeGrow, z1: notch.z1 + holeGrow,
+      });
+    }
+    for (const r of pieces) strip(r.x0, r.x1, r.z0, r.z1);
   }
 
   /// The raised pavement pad for one block: kerb, pavement, and a lawn on the
   /// blocks that are not the room's own. Each layer tops out a few millimetres
   /// below the one outside it, so nothing z-fights.
-  _blockPad(flats, bx, bz, block, hole) {
+  _blockPad(flats, bx, bz, block, hole, laybys = null) {
     const rect = { x0: bx - block / 2, x1: bx + block / 2, z0: bz - block / 2, z1: bz + block / 2 };
-    this._padLayer(flats, rect, hole, PAVEMENT_Y, KERB_HEIGHT, KERB_COLOR);
+    this._padLayer(flats, rect, hole, PAVEMENT_Y, KERB_HEIGHT, KERB_COLOR, 0, laybys);
     const inset = 0.35;
     this._padLayer(flats, {
       x0: rect.x0 + inset, x1: rect.x1 - inset, z0: rect.z0 + inset, z1: rect.z1 - inset,
-    }, hole, PAVEMENT_Y - 0.005, KERB_HEIGHT, SIDEWALK_COLOR, 0.03);
+    }, hole, PAVEMENT_Y - 0.005, KERB_HEIGHT, SIDEWALK_COLOR, 0.03, laybys);
     if (!hole) {
       this._padLayer(flats, {
         x0: rect.x0 + SIDEWALK, x1: rect.x1 - SIDEWALK,
@@ -1652,7 +1787,9 @@ export class City {
     // street a turn feeds is full: one block and its road, which is exactly
     // the stretch a vehicle taking that turn commits itself to.
     this._turnLookahead = span;
+    this._span = span;
     this.turnControl = new Map();
+    this.turnLoads = new Map();
     this._turnControlAt = 0;
     this._demand = new Map();
     this._startSignals();
@@ -1766,6 +1903,9 @@ export class City {
           kerbTarget: 0,
           stop: null,
           stopTarget: null,
+          manoeuvre: null,
+          goal: null,
+          goalSince: 0,
           busStopAfter: 0,
           turn: 0,
           arc: null,
@@ -1805,6 +1945,7 @@ export class City {
 
     const geometryFor = {
       car: () => buildCarGeometry(VEHICLE_REF.car.L, VEHICLE_REF.car.W, VEHICLE_REF.car.wheelR),
+      van: () => buildVanGeometry(VEHICLE_REF.van.L, VEHICLE_REF.van.W, VEHICLE_REF.van.wheelR),
       truck: () => buildTruckGeometry(VEHICLE_REF.truck.L, VEHICLE_REF.truck.W, VEHICLE_REF.truck.wheelR),
       bus: () => buildBusGeometry(VEHICLE_REF.bus.L, VEHICLE_REF.bus.W, VEHICLE_REF.bus.wheelR),
     };
@@ -1994,7 +2135,9 @@ export class City {
           state: "green",
           // Staggered, so neighbours do not all change together on the first
           // cycle before demand has had a chance to pull them apart.
-          until: this._clock + GREEN_MIN * (0.4 + (offset / LIGHT_CYCLE)),
+          // Staggered, but never shorter than a green is allowed to be —
+          // the first cycle is a cycle like any other.
+          until: this._clock + GREEN_MIN * (1 + (offset / LIGHT_CYCLE)),
           greenFrom: this._clock,
         });
       }
@@ -2367,6 +2510,13 @@ export class City {
       const allow = settle(approach);
       for (const [, ok] of allow) if (!ok) forbidden++;
       this.turnControl.set(key, allow);
+      // How full each way out is, kept for the routing. A vehicle picking the
+      // shortest way to its destination and nothing else pours every journey
+      // that shares a direction onto the same streets; with this it can weigh
+      // a longer way round against a queue, which is what a driver does.
+      const loads = new Map();
+      for (const m of approach.moves) loads.set(m.turn, projected(m.seg));
+      this.turnLoads.set(key, loads);
     }
 
     this.turnStats = {
@@ -2411,6 +2561,20 @@ export class City {
   /// to the edge and was wrapped round to the far side, which is a car
   /// vanishing from one street and appearing in another.
   _decideTurn(v, junction) {
+    // Already pulling in somewhere. Its space is on THIS street, a few metres
+    // ahead — taking a turn now carries it onto another one still holding a
+    // reservation it can no longer reach, and the turn arc moves it sideways
+    // out of the approach it was lined up on.
+    //
+    // Except at the edge of the grid, where carrying straight on is not a
+    // choice: there is no road there. Holding a vehicle straight anyway drove
+    // it off the end of the street network and into the safety net.
+    if (v.stopTarget) {
+      const last = this.roadX.length - 1;
+      const onwards = junction.index + v.dir >= 0 && junction.index + v.dir <= last;
+      if (onwards) { v.turn = 0; v.mustTurn = false; return; }
+    }
+
     if (v.turnDecidedAt === junction.index) {
       // Already chosen — but the arrows are reviewed while it approaches, and a
       // driver whose exit has gone red picks another rather than queueing for a
@@ -2488,6 +2652,33 @@ export class City {
     // manager guarantees at least one, so this never empties the list.
     const green = options.filter(t => this._turnPermitted(v, junction, t));
     const from = green.length ? green : options;
+
+    // A vehicle with somewhere to be takes the way that gets it closer. Ties
+    // are broken at random and so is the choice when nothing helps, which is
+    // what keeps identical journeys from becoming a single worn path.
+    if (v.goal && v.goal.lane) {
+      // Already on the right street with the space still ahead: carry straight
+      // on to it. Left to the cost function, a vehicle one junction short of
+      // its space scores every movement the same and turns off at the last
+      // corner before arriving.
+      if (v.lane === v.goal.lane) {
+        const along = v.axis === "x" ? v.x : v.z;
+        if ((v.goal.at - along) * v.dir > 0 && straightOn
+          && this._turnPermitted(v, junction, 0)) { v.turn = 0; return; }
+      }
+      const goalCell = City.cellOf(v.goal, this.roadX, this.roadZ);
+      let best = Infinity;
+      const ties = [];
+      for (const t of from) {
+        const cost = this._costAfter(v, junction, t, goalCell, v.goal.lane);
+        if (cost < best - 1e-6) { best = cost; ties.length = 0; }
+        if (cost <= best + 1e-6) ties.push(t);
+      }
+      if (ties.length && best < Infinity) {
+        v.turn = ties[Math.floor(r * ties.length) % ties.length];
+        return;
+      }
+    }
     v.turn = from[Math.floor(r * from.length) % from.length];
   }
 
@@ -2745,10 +2936,26 @@ export class City {
     const heading = City.forwardOf(v.axis, v.dir);
 
     // Pulling in. It eases towards the kerb while it runs down to the space.
+    // Part-way through reversing into a space: the manoeuvre owns the vehicle
+    // until it is done.
+    if (v.manoeuvre) return this._runManoeuvre(v, dt);
+
     if (v.stopTarget) {
       const along = v.axis === "x" ? v.x : v.z;
-      const togo = (v.stopTarget.bay.at - along) * v.dir;
-      v.kerbTarget = v.stopTarget.offset;
+      const target = v.stopTarget;
+      // A space with a car in front of it has to be reversed into, and the
+      // run-up stops one car's length past it rather than at it.
+      const reversing = target.reverse === true;
+      const togo = (target.bay.at + (reversing ? v.dir * REVERSE_RUN : 0) - along) * v.dir;
+      // The pull-over starts only once the space is close. Started the moment
+      // the space was claimed — up to PARK_APPROACH away — the vehicle drifts
+      // towards the kerb across several bays and clips whatever is parked in
+      // them, which was the commonest contact in the model.
+      v.kerbTarget = reversing || togo > KERB_EASE_FROM ? 0 : target.offset;
+      // Indicating all the way in, as a driver does — this is the signal that
+      // the car in front of you is about to stop, and it goes on well before
+      // anything happens.
+      v.indicate = NEAR_SIDE_TURN;
 
       // Give the space back rather than keep it at any cost. Overshooting it —
       // pushed past by the queue behind — used to snap the vehicle back to the
@@ -2764,6 +2971,23 @@ export class City {
         return;
       }
 
+      if (togo < 0.5 && v.speed < 0.6 && reversing) {
+        // Stopped alongside. Pause, then take it back on the lock.
+        v.speed = 0;
+        v.manoeuvre = {
+          kind: target.kind,
+          bay: target.bay,
+          bays: target.bays,
+          from: (v.axis === "x" ? v.x : v.z) * v.dir,
+          angle: 0,
+          rising: true,
+          waitUntil: this._clock + MANOEUVRE_WAIT,
+          base: v.heading,
+        };
+        v.stopTarget = null;
+        return true;
+      }
+
       if (togo < 0.5 && v.speed < 0.6) {
         v.speed = 0;
         // NOT snapping kerbOffset to the target here. The ease at the top of
@@ -2775,8 +2999,16 @@ export class City {
           kind,
           bay: v.stopTarget.bay,
           bays: v.stopTarget.bays,
-          until: this._clock + (kind === "park"
-            ? PARK_MIN + trueRandom() * (PARK_MAX - PARK_MIN)
+          until: this._clock + (kind === "unload"
+            ? UNLOAD_MIN + trueRandom() * (UNLOAD_MAX - UNLOAD_MIN)
+            : kind === "park"
+            // Five minutes to two hours, weighted towards the short end. Drawn
+            // flat, the average stay is an hour and the city quietly empties:
+            // every car is either parked or on its way to park, and almost
+            // nobody is left driving. Squaring the draw keeps the same range
+            // and brings the average down to about forty minutes, which is
+            // also closer to how kerbside parking actually turns over.
+            ? PARK_MIN + trueRandom() ** 2 * (PARK_MAX - PARK_MIN)
             : BUS_DWELL_MIN + trueRandom() * (BUS_DWELL_MAX - BUS_DWELL_MIN)),
         };
         if (kind === "park") { this._parkedCars++; this._parkingSoon--; }
@@ -2834,7 +3066,10 @@ export class City {
     const junction = this._nextJunction(v);
     if (junction) {
       this._decideTurn(v, junction);
-      v.indicate = junction.distance < INDICATE_FROM ? v.turn : 0;
+      // A vehicle lining up for a space is already indicating for the kerb, and
+      // that signal outranks the junction's: it is the one that says "I am
+      // stopping", which is what the traffic behind actually needs to know.
+      if (!v.stopTarget) v.indicate = junction.distance < INDICATE_FROM ? v.turn : 0;
       const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
       const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
       const green = this._isGreen(v.axis, ix, iz, this._clock);
@@ -3009,6 +3244,18 @@ export class City {
       }
     }
 
+    // Every bay in one flat list, so choosing a destination is a pick from a
+    // list rather than a walk of every lane.
+    this.bayIndex = [];
+    for (const [, lane] of this.lanes) {
+      for (const bay of lane.bays) {
+        bay.lane = lane;
+        bay.x = lane.axis === "x" ? bay.at : lane.fixed;
+        bay.z = lane.axis === "x" ? lane.fixed : bay.at;
+        this.bayIndex.push(bay);
+      }
+    }
+
     // Which lane runs along a given side of a block with its KERB facing it.
     // Traffic keeps right, so the near-side lane is the one whose lane offset
     // points back towards the block.
@@ -3058,7 +3305,7 @@ export class City {
   /// a car then parks into the half of the bay the bus is standing in. The
   /// clearance allows for the neighbour being a car rather than a point.
   _takeBay(v, bay) {
-    const reach = v.length / 2 + 2.5;
+    const reach = v.length / 2 + BAY_CLEARANCE;
     const claimed = [];
     for (const other of v.lane.bays) {
       if (other !== bay && Math.abs(other.at - bay.at) > reach) continue;
@@ -3072,7 +3319,7 @@ export class City {
   /// Whether a vehicle can have that bay: it and everything its body would
   /// cover must be free.
   _bayFree(v, bay) {
-    const reach = v.length / 2 + 2.5;
+    const reach = v.length / 2 + BAY_CLEARANCE;
     for (const other of v.lane.bays) {
       if (other !== bay && Math.abs(other.at - bay.at) > reach) continue;
       if (other.taken) return false;
@@ -3085,12 +3332,166 @@ export class City {
     for (const bay of v.stop.bays) bay.taken = null;
   }
 
+  /// Puts a share of the cars in bays before the city has run a single frame.
+  ///
+  /// A street with nothing parked on it does not look like a city, and there is
+  /// a second reason: the only way a vehicle leaves the road is by parking, so
+  /// starting every car in traffic starts the city over its own capacity and it
+  /// jams before parking can ever drain it. Beginning at the equilibrium
+  /// instead — most cars at the kerb, the rest driving between spaces — is both
+  /// what a real street looks like and what keeps it moving.
+  ///
+  /// The expiry times are spread across a whole stay rather than drawn fresh,
+  /// so they do not all come back to the road together.
+  _parkStartingCars(rnd) {
+    const wanted = Math.floor(this.cars.length * PARK_SHARE * START_PARKED);
+    for (const v of this.cars) {
+      if (this._parkedCars >= wanted) break;
+      if (v.kind !== "car" || v.stop) continue;
+      const bay = v.goal && !v.goal.taken && !v.goal.busStop && this._bayFree(v, v.goal)
+        ? v.goal : null;
+      if (!bay) continue;
+
+      const from = v.lane.members.indexOf(v);
+      if (from >= 0) v.lane.members.splice(from, 1);
+      v.lane = bay.lane;
+      v.axis = bay.lane.axis;
+      v.dir = bay.lane.dir;
+      v.fixed = bay.lane.fixed;
+      v.lane.members.push(v);
+      if (v.axis === "x") { v.x = bay.at; v.z = v.fixed; } else { v.z = bay.at; v.x = v.fixed; }
+      v.heading = Math.atan2(City.forwardOf(v.axis, v.dir).z, City.forwardOf(v.axis, v.dir).x);
+      v.speed = 0;
+      v.arc = null;
+      v.turn = 0;
+      v.mustTurn = false;
+      v.turnDecidedAt = -1;
+      v.kerbOffset = PARK_OFFSET;
+      v.kerbTarget = PARK_OFFSET;
+      v.stop = {
+        kind: "park",
+        bay,
+        bays: this._takeBay(v, bay),
+        until: this._clock + PARK_MIN + rnd() * (PARK_MAX - PARK_MIN),
+      };
+      this._parkedCars++;
+      this._holdAtKerb(v);
+      v.goal = null;
+    }
+  }
+
+  // MARK: - Destinations
+
+  /// Somewhere to be going, preferably across town.
+  ///
+  /// A vehicle without a destination is not driving, it is milling about — and
+  /// it showed, because the only thing that decided where anyone went was a
+  /// coin toss at each junction. Every car now picks a parking space, drives to
+  /// it, and stays for a while; the far-side preference is what puts traffic on
+  /// the roads BETWEEN the two halves of the city rather than only near where
+  /// it happened to start.
+  _pickGoal(v) {
+    v.goalSince = this._clock;
+    if (!this.bayIndex || !this.bayIndex.length) return null;
+    const far = this._span * GRID_RADIUS;         // roughly half the grid
+    let fallback = null;
+    // A handful of tries for somewhere far away, then whatever is free. Walking
+    // the whole list sorted by distance would send every car in a district to
+    // the same bay.
+    for (let i = 0; i < 24; i++) {
+      const bay = this.bayIndex[Math.floor(trueRandom() * this.bayIndex.length)];
+      if (!bay || bay.busStop || bay.taken) continue;
+      if (!fallback) fallback = bay;
+      if (Math.hypot(bay.x - v.x, bay.z - v.z) >= far) return bay;
+    }
+    return fallback;
+  }
+
+  /// Where a bay sits on the grid: which junction a vehicle would be at when it
+  /// draws level with it, and which lane it has to be in to do so.
+  static cellOf(bay, roadA, roadB) {
+    const along = bay.lane.axis === "x" ? roadA : roadB;
+    // The junction just BEFORE the space, in the direction its lane runs — not
+    // the nearest one. The nearest can be the junction beyond it, and a vehicle
+    // routed there arrives having already driven past the space it came for,
+    // which is a full lap of the block to try again.
+    let best = -1;
+    let closest = Infinity;
+    for (let i = 0; i < along.length; i++) {
+      const before = (bay.at - along[i]) * bay.lane.dir;
+      if (before <= 0 || before >= closest) continue;
+      closest = before;
+      best = i;
+    }
+    if (best < 0) {
+      best = 0;
+      for (let i = 1; i < along.length; i++) {
+        if (Math.abs(along[i] - bay.at) < Math.abs(along[best] - bay.at)) best = i;
+      }
+    }
+    return bay.lane.axis === "x"
+      ? { ix: best, iz: bay.lane.roadIndex }
+      : { ix: bay.lane.roadIndex, iz: best };
+  }
+
+  /// How many junctions of driving still separate a vehicle from its
+  /// destination, if it takes a given movement at the junction ahead.
+  ///
+  /// Manhattan distance on the grid, plus a step for still being on the wrong
+  /// street when it gets there. That last part is what makes a vehicle turn
+  /// onto its destination's road rather than run alongside it forever.
+  _costAfter(v, junction, turn, goalCell, goalLane) {
+    const last = this.roadX.length - 1;
+    let axis = v.axis;
+    let dir = v.dir;
+    let ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
+    let iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+
+    if (turn === 0) {
+      if (axis === "x") ix += dir; else iz += dir;
+    } else {
+      const target = this._turnTarget({ axis, dir, fixed: v.lane.fixed, turn }, junction);
+      if (!target) return Infinity;
+      axis = target.newAxis;
+      dir = target.newDir;
+      if (axis === "x") ix += dir; else iz += dir;
+    }
+    if (ix < 0 || ix > last || iz < 0 || iz > last) return Infinity;
+
+    const steps = Math.abs(ix - goalCell.ix) + Math.abs(iz - goalCell.iz);
+    // On the destination's own street, pointing the right way, is worth a step:
+    // a vehicle that is level with its space but on the far carriageway has to
+    // go round the block to reach it.
+    const aligned = axis === goalLane.axis && dir === goalLane.dir
+      && (axis === "x" ? iz : ix) === goalLane.roadIndex;
+
+    // Plus what it will cost to get through. Shortest-path routing on its own
+    // was measurably worse than turning at random — every journey heading the
+    // same way took the same streets and the grid stopped completely — because
+    // a route that ignores congestion cannot route around any.
+    const jx = v.axis === "x" ? junction.index : v.lane.roadIndex;
+    const jz = v.axis === "x" ? v.lane.roadIndex : junction.index;
+    const loads = this.turnLoads.get(`${v.axis}|${v.dir}|${jx}|${jz}`);
+    const busy = loads && loads.has(turn) ? loads.get(turn) : 0;
+    return steps + (aligned ? 0 : 1) + busy * ROUTE_CONGESTION;
+  }
+
   /// Whether a vehicle is in the running lane, for the traffic behind it. A
   /// parked car is at the kerb and is driven past; a truck unloading and a bus
   /// at a stop are not, and the queue behind them is the point.
   static blocksLane(v) {
+    // Asked of the vehicle's position, not of what it is doing there. This used
+    // to name the kinds that counted as out of the way — parking did, loading
+    // and calling at a stop did not — and that was right when loading meant an
+    // artic standing in the running lane. Vans load at the kerb and buses pull
+    // into laybys, so by kind they were still roadblocks: 38 vans at the kerb,
+    // each closing the lane it was parked beside, and the city stopped dead at
+    // 0.2 junction crossings a second.
+    if (v.manoeuvre) return true;             // across the lane, reversing in
     if (!v.stop) return true;
-    return v.stop.kind !== "park";
+    // Clear when its nearest edge is outside the room the widest thing on the
+    // road needs to get past it.
+    return (v.kerbOffset - v.width / 2) < LANE_CLEAR;
   }
 
   /// A car looks for a space, a truck stops where it stands, a bus calls at its
@@ -3103,24 +3504,29 @@ export class City {
     // clear of the junctions.
     if (v.stop || v.stopTarget || v.arc) return;
 
-    if (v.kind === "truck") {
-      // Nothing to look for — it stops in the lane, wherever it is.
-      if (trueRandom() < UNLOAD_CHANCE * dt) {
-        v.stop = {
-          kind: "unload",
-          until: this._clock + UNLOAD_MIN + trueRandom() * (UNLOAD_MAX - UNLOAD_MIN),
-          bay: null,
-        };
-        v.kerbTarget = 0;
-      }
-      return;
-    }
+    // An articulated lorry is passing through. It used to stand in the running
+    // lane to load, which on a grid with one lane each way is a closed road for
+    // ten minutes; that work belongs to the vans, which fit at the kerb.
+    if (v.kind === "truck") return;
+    void dt;
 
     const along = v.axis === "x" ? v.x : v.z;
     for (const bay of v.lane.bays) {
       const ahead = (bay.at - along) * v.dir;
-      if (ahead < 2 || ahead > BAY_PITCH * 1.2) continue;   // the next one along
+      if (ahead < 2 || ahead > PARK_APPROACH) continue;
       if (bay.taken) continue;
+
+      if (v.kind === "van") {
+        // Any free space will do — a delivery is wherever the delivery is.
+        if (bay.busStop) continue;
+        if (trueRandom() >= UNLOAD_CHANCE) continue;
+        if (!this._bayFree(v, bay) || !this._bayUsable(v, bay)) continue;
+        v.stopTarget = { bay, kind: "unload", offset: VAN_OFFSET,
+                         giveUp: this._clock + RESERVE_TTL,
+                         reverse: this._gapNeedsReversing(v, bay),
+                         bays: this._takeBay(v, bay) };
+        return;
+      }
 
       if (v.kind === "bus") {
         if (!bay.busStop || this._clock < v.busStopAfter) continue;
@@ -3131,19 +3537,261 @@ export class City {
         return;
       }
       if (bay.busStop) continue;                            // not a parking space
+      // Its OWN space, not just any space it drives past — the destination is
+      // the whole reason it is on this street, and a car that took the first
+      // free bay on its route never went anywhere.
+      //
+      // Until it has been looking too long. A driver who has spent a quarter of
+      // an hour trying to reach one particular space takes what is going
+      // instead, and that is also what keeps the city from seizing: the only
+      // way off the road is to park, so a jam that stops vehicles reaching
+      // their spaces is a jam that can never drain itself. With the destination
+      // held to strictly, throughput fell to nothing and stayed there.
+      const patient = this._clock - (v.goalSince || 0) < PARK_PATIENCE;
+      if (bay !== v.goal && patient) continue;
       // Counting the ones already on their way in as well as the ones already
       // there. Without that, every car that happens to pass a free bay in the
       // same second reserves one while the count is still low, and they all
       // arrive: the cap said 53 and 94 cars parked.
-      if (this._parkedCars + this._parkingSoon >= this.cars.length * PARK_SHARE) return;
-      if (trueRandom() >= PARK_CHANCE) continue;
-      if (!this._bayFree(v, bay)) continue;
+      if (this._parkedCars + this._parkingSoon >= this.cars.length * PARK_SHARE) {
+        v.goal = this._pickGoal(v);        // come back to it another time
+        return;
+      }
+      if (!this._bayFree(v, bay) || !this._bayUsable(v, bay)) {
+        v.goal = this._pickGoal(v);
+        return;
+      }
       this._parkingSoon++;
       v.stopTarget = { bay, kind: "park", offset: PARK_OFFSET,
                        giveUp: this._clock + RESERVE_TTL,
+                       reverse: this._gapNeedsReversing(v, bay),
                        bays: this._takeBay(v, bay) };
       return;
     }
+  }
+
+  /// Reversing into the space, one frame at a time.
+  ///
+  /// The vehicle is off its lane centreline and at an angle to it for the whole
+  /// manoeuvre, which no other part of the model expects, so this takes the
+  /// vehicle over completely: it sets the position and the heading itself and
+  /// nothing else touches them until it is parked.
+  _runManoeuvre(v, dt) {
+    const m = v.manoeuvre;
+    v.speed = 0;
+    v.braking = false;
+    // Both indicators while manoeuvring, the same as any vehicle stopped in a
+    // way that needs explaining to the traffic behind.
+    v.indicate = ((this._clock * BLINK_HZ) % 1) < 0.55 ? 1 : 0;
+    if (this._clock < m.waitUntil) return true;
+
+    const step = (REVERSE_SPEED * dt) / REVERSE_RADIUS;
+    m.angle += m.rising ? step : -step;
+    if (m.rising && m.angle >= REVERSE_ANGLE) { m.angle = REVERSE_ANGLE; m.rising = false; }
+
+    const done = !m.rising && m.angle <= 0;
+    const pose = City.reversePose(m.from, Math.max(0, m.angle), m.rising);
+    const side = City.kerbSide(v.axis, v.dir);
+    const along = pose.along * v.dir;
+    if (v.axis === "x") { v.x = along; v.z = v.fixed + side * pose.across; }
+    else { v.z = along; v.x = v.fixed + side * pose.across; }
+    // The nose swings away from the kerb as the tail swings into it. The kerb
+    // is always ninety degrees to the left of the heading, whichever way round
+    // the lane runs, so one sign covers all four.
+    v.heading = m.base - pose.turn;
+    v.kerbOffset = pose.across;
+    v.kerbTarget = pose.across;
+
+    if (!done) return true;
+
+    v.heading = m.base;
+    v.kerbOffset = PARK_OFFSET;
+    v.kerbTarget = PARK_OFFSET;
+    v.manoeuvre = null;
+    this._settleIntoBay(v, m.kind, m.bay, m.bays);
+    return true;
+  }
+
+  /// Coming to rest in a space, however the vehicle got into it.
+  _settleIntoBay(v, kind, bay, bays) {
+    v.speed = 0;
+    v.indicate = 0;
+    v.stop = {
+      kind,
+      bay,
+      bays,
+      until: this._clock + (kind === "unload"
+        ? UNLOAD_MIN + trueRandom() * (UNLOAD_MAX - UNLOAD_MIN)
+        : PARK_MIN + trueRandom() ** 2 * (PARK_MAX - PARK_MIN)),
+    };
+    if (kind === "park") { this._parkedCars++; this._parkingSoon--; }
+    v.turn = 0;
+    v.mustTurn = false;
+    v.turnDecidedAt = -1;
+    this._holdAtKerb(v);
+  }
+
+  /// Where every bus layby is, in world rectangles.
+  ///
+  /// A bus stop has to be a layby and not just a painted box: on a thirteen
+  /// metre street a bus that pulls as far over as the kerb allows still has a
+  /// metre of itself in the running lane, and everything behind it waits. Cut
+  /// back into the pavement it stands completely clear, which is the whole
+  /// point of building one.
+  _laybyRects() {
+    const out = [];
+    for (const [, lane] of this.lanes) {
+      const side = City.kerbSide(lane.axis, lane.dir);
+      const inner = lane.fixed - City.laneOffset(lane.axis, lane.dir) + side * (ROAD_WIDTH / 2);
+      const outer = inner + side * LAYBY_DEPTH;
+      for (const bay of lane.bays) {
+        if (!bay.busStop) continue;
+        const half = BUS_LAYBY_LENGTH / 2;
+        const a0 = bay.at - half;
+        const a1 = bay.at + half;
+        out.push(lane.axis === "x"
+          ? { x0: a0, x1: a1, z0: Math.min(inner, outer), z1: Math.max(inner, outer) }
+          : { x0: Math.min(inner, outer), x1: Math.max(inner, outer), z0: a0, z1: a1 });
+      }
+    }
+    return out;
+  }
+
+  /// The paint along the kerb: a box for every parking space, and a coloured
+  /// bed with BUS across it at every stop, so what a space is for is legible
+  /// from the pavement rather than only from the code.
+  _paintKerbside(flats, laybys) {
+    const y = ROAD_Y + 0.02;
+    // The laybys are road surface, not pavement — laid at road level in the
+    // hole the pads left for them.
+    // Each patch is laid a little LARGER than the piece cut out of the pavement
+    // for it, so its side faces end up buried inside the pad rather than flush
+    // with the cut edge. Flush is two surfaces at one depth along a face you
+    // stand right next to, and it was 1158 of them across the city.
+    const bury = 0.12;
+    for (const r of laybys) {
+      flats.add(boxMatrix((r.x0 + r.x1) / 2, ROAD_Y - KERB_HEIGHT / 2, (r.z0 + r.z1) / 2,
+        (r.x1 - r.x0) + bury * 2, KERB_HEIGHT, (r.z1 - r.z0) + bury * 2), ASPHALT_COLOR);
+    }
+
+    for (const [, lane] of this.lanes) {
+      const alongX = lane.axis === "x";
+      const side = City.kerbSide(lane.axis, lane.dir);
+      const kerb = lane.fixed - City.laneOffset(lane.axis, lane.dir) + side * (ROAD_WIDTH / 2);
+      // A line laid ACROSS the lane direction, at a given distance along it.
+      const tick = (at, from, to, colour) => {
+        const mid = (from + to) / 2;
+        const width = Math.abs(to - from);
+        flats.add(alongX
+          ? boxMatrix(at, y, mid, BAY_LINE_W, 0.04, width)
+          : boxMatrix(mid, y, at, width, 0.04, BAY_LINE_W), colour);
+      };
+      const rail = (a0, a1, across, colour, thickness = BAY_LINE_W) => {
+        const mid = (a0 + a1) / 2;
+        const len = Math.abs(a1 - a0);
+        flats.add(alongX
+          ? boxMatrix(mid, y, across, len, 0.04, thickness)
+          : boxMatrix(across, y, mid, thickness, 0.04, len), colour);
+      };
+
+      for (const bay of lane.bays) {
+        if (bay.busStop) {
+          // A bed of colour the length of the layby, with BUS laid along it.
+          const half = BUS_LAYBY_LENGTH / 2 - 0.5;
+          const nearEdge = kerb - side * (LAYBY_DEPTH * 0.02);
+          const farEdge = kerb + side * (LAYBY_DEPTH - 0.25);
+          const mid = (nearEdge + farEdge) / 2;
+          const depth = Math.abs(farEdge - nearEdge);
+          flats.add(alongX
+            ? boxMatrix(bay.at, y - 0.004, mid, half * 2, 0.03, depth)
+            : boxMatrix(mid, y - 0.004, bay.at, depth, 0.03, half * 2), BUS_BOX_COLOR);
+          // Three letters, as bars: B, U, S. Legible as lettering from a window
+          // without needing a texture or a font in the bundle.
+          const letters = [
+            [[0, 1], [0, 0.55], [0, 0.1], [-0.28, 0.78], [-0.28, 0.32]],   // B
+            [[-0.3, 1], [0.3, 1], [0, 0.1]],                               // U
+            [[0, 1], [-0.3, 0.78], [0, 0.55], [0.3, 0.32], [0, 0.1]],      // S
+          ];
+          const letterAt = [-2.3, 0, 2.3];
+          for (let li = 0; li < letters.length; li++) {
+            for (const [across, up] of letters[li]) {
+              const a = bay.at + letterAt[li] + across * 1.5 * lane.dir;
+              const c = kerb + side * (LAYBY_DEPTH * up * 0.82 + 0.25);
+              flats.add(alongX
+                ? boxMatrix(a, y + 0.002, c, 0.5, 0.03, 0.16)
+                : boxMatrix(c, y + 0.002, a, 0.16, 0.03, 0.5), BUS_LETTER_COLOR);
+            }
+          }
+          continue;
+        }
+        // An ordinary space: a box open to the carriageway, as they are painted.
+        const half = BAY_LENGTH / 2;
+        const back = kerb - side * 0.12;
+        const front = kerb - side * (LAYBY_DEPTH * 0 + PARK_BOX_DEPTH);
+        // The rail stops short of both ticks. Run through them and the two
+        // share a square of road at exactly one depth at each corner, which is
+        // 912 z-fighting corners across the city.
+        tick(bay.at - half, back, front, BAY_LINE_COLOR);
+        tick(bay.at + half, back, front, BAY_LINE_COLOR);
+        rail(bay.at - half + BAY_LINE_W, bay.at + half - BAY_LINE_W, front, BAY_LINE_COLOR);
+      }
+    }
+  }
+
+  /// Which way the kerb lies from a lane's centreline.
+  static kerbSide(axis, dir) {
+    return Math.sign(City.laneOffset(axis, dir));
+  }
+
+  /// Where a vehicle would be, part-way through reversing into a space.
+  ///
+  /// Two arcs of opposite lock, taken backwards: the first swings the tail
+  /// towards the kerb, the second straightens up against it. `a` runs from zero
+  /// up to REVERSE_ANGLE and back down, which is the steering wheel going one
+  /// way and then the other.
+  static reversePose(from, a, rising) {
+    const R = REVERSE_RADIUS;
+    if (rising) {
+      return { along: from - R * Math.sin(a), across: R * (1 - Math.cos(a)), turn: a };
+    }
+    return {
+      along: from - REVERSE_RUN + R * Math.sin(a),
+      across: PARK_OFFSET - R * (1 - Math.cos(a)),
+      turn: a,
+    };
+  }
+
+  /// Is there a car parked directly in front of the space?
+  ///
+  /// That is the whole difference between the two manoeuvres. An open kerb is
+  /// driven into forwards; a gap between two parked cars has to be reversed
+  /// into, because there is no way to swing the nose in without clipping the
+  /// one in front.
+  _gapNeedsReversing(v, bay) {
+    // BOTH neighbours, not just the one in front. Driving forward into a space
+    // means easing sideways towards the kerb over the last few metres — which
+    // is exactly the stretch of kerb the space BEHIND occupies, so a vehicle
+    // pulling in over an occupied one drives diagonally through it. Reversing
+    // starts from alongside instead and never crosses either neighbour.
+    for (const step of [1, -1]) {
+      const at = bay.at + v.dir * step * BAY_PITCH;
+      for (const other of v.lane.bays) {
+        if (Math.abs(other.at - at) > 0.5) continue;
+        if (other.taken) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether a space can be taken at all.
+  ///
+  /// One with a vehicle in front of it has to be reversed into, and reversing
+  /// needs the gap to be longer than the vehicle by about half a car — the same
+  /// as it does in the street. Without this a van would back into a space four
+  /// centimetres longer than itself and end up inside the car in front of it.
+  _bayUsable(v, bay) {
+    if (!this._gapNeedsReversing(v, bay)) return true;
+    return v.length + REVERSE_SLACK <= BAY_PITCH;
   }
 
   /// Everything a stopped or stopping vehicle does. Returns true when it has
@@ -3169,6 +3817,10 @@ export class City {
 
     // Time to go. Wait for a gap before pulling back out.
     if (v.stop.kind === "park") {
+      // Indicating out, before anything moves. A parked car with its indicator
+      // going is the only warning the traffic behind gets, and it goes on while
+      // the driver is still waiting for a gap rather than as they pull away.
+      v.indicate = ((this._clock * BLINK_HZ) % 1) < 0.55 ? CROSSING_TURN : 0;
       const leader = this._leader(v);
       if (leader && leader.gap < v.length + SAFE_GAP) {
         v.speed = 0;
@@ -3187,6 +3839,7 @@ export class City {
     this._releaseBays(v);
     if (v.stop.kind === "park") this._parkedCars--;
     if (v.stop.kind === "busstop") v.busStopAfter = this._clock + BUS_STOP_COOLDOWN;
+    if (v.stop.kind === "park") v.goal = this._pickGoal(v);
     v.stop = null;
     v.kerbTarget = 0;
     return false;

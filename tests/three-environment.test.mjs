@@ -153,11 +153,16 @@ check("headlights are running lamps, not something that switches on at dusk",
 // is a car vanishing from one street and appearing in another.
 check("the street grid is closed — nothing wraps",
   !/Wrap beyond the fog/.test(city) && /No wrapping, and nothing is ever removed/.test(city));
-// Carry on, turn left, turn right — evenly, among the options that exist AND
-// are being allowed. The junction's turn arrows narrow the choice; nothing
-// weights what is left of it.
-check("a junction is an even choice between the turns it is allowing",
-  /const options = \[0\];[\s\S]{0,400}from\[Math\.floor\(r \* from\.length\)/.test(city));
+// Carry on, turn left, turn right. The junction's turn arrows narrow the
+// choice, the vehicle's destination picks from what is left, and only where
+// nothing distinguishes the options is it an even draw — so what is asserted
+// is that the fallback is still even, not that every choice is.
+check("a junction with nothing to choose between falls back to an even draw",
+  /const options = \[0\];[\s\S]{0,2000}from\[Math\.floor\(r \* from\.length\)/.test(city));
+check("a vehicle with a destination takes the way that gets it closer",
+  /this\._costAfter\(v, junction, t, goalCell, v\.goal\.lane\)/.test(city));
+check("ties between equally good ways are broken at random",
+  /ties\[Math\.floor\(r \* ties\.length\) % ties\.length\]/.test(city));
 check("the choice is taken from the movements showing green",
   /const green = options\.filter\(t => this\._turnPermitted\(/.test(city));
 check("and it never empties the list — an approach always has one way out",
