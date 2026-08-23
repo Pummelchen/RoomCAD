@@ -1688,91 +1688,10 @@ export function syncExtent(room) {
 
 // MARK: - Auto room layout
 
-function rectInRect(p, r) {
-  return p.x >= r.x - 0.01 && p.x <= r.x + r.w + 0.01
-    && p.z >= r.z - 0.01 && p.z <= r.z + r.l + 0.01;
-}
 
-/// The narrowest a walk path may be. Anything less is not circulation but a
-/// strip of dead floor, so it is given to the room beside it instead.
-export const CORRIDOR_MIN_WIDTH = 1.00;
 /// The shortest side a generated room may have.
 export const MIN_ROOM_DIM = 1.60;
 
-/// The free space inside `layout` as a handful of LARGE rectangles.
-///
-/// Subtracting each obstacle from the previous result in turn — which is what
-/// this used to do — cuts full-width and full-height slices every time, so a
-/// plan with a few narrow walkway strips gets shredded into slivers that are
-/// artefacts of the subtraction order rather than real geometry. On the saved
-/// template that turned 80 m² of floor into nineteen pieces, none wider than
-/// 145 cm, and the generator concluded there was nowhere to put a room.
-///
-/// Instead the layout is cut into the grid implied by every obstacle edge,
-/// free cells are marked, and neighbouring free cells are merged back into the
-/// biggest rectangles they will form.
-export function freeRectangles(layout, obstacles) {
-  const xs = new Set([clean(layout.x), clean(layout.x + layout.w)]);
-  const zs = new Set([clean(layout.z), clean(layout.z + layout.l)]);
-  for (const o of obstacles) {
-    for (const v of [o.x, o.x + o.w]) if (v > layout.x + 1e-9 && v < layout.x + layout.w - 1e-9) xs.add(clean(v));
-    for (const v of [o.z, o.z + o.l]) if (v > layout.z + 1e-9 && v < layout.z + layout.l - 1e-9) zs.add(clean(v));
-  }
-  const X = [...xs].sort((a, b) => a - b);
-  const Z = [...zs].sort((a, b) => a - b);
-  const nx = X.length - 1;
-  const nz = Z.length - 1;
-  if (nx < 1 || nz < 1) return [];
-
-  const free = [];
-  for (let i = 0; i < nx; i++) {
-    free.push([]);
-    for (let j = 0; j < nz; j++) {
-      const cx = (X[i] + X[i + 1]) / 2;
-      const cz = (Z[j] + Z[j + 1]) / 2;
-      free[i].push(!obstacles.some(o =>
-        cx > o.x && cx < o.x + o.w && cz > o.z && cz < o.z + o.l));
-    }
-  }
-
-  const used = free.map(col => col.map(() => false));
-  const spans = (i, j, zFirst) => {
-    // How far a rectangle rooted at this cell can grow, one axis then the other.
-    let i2 = i, j2 = j;
-    if (zFirst) {
-      while (j2 + 1 < nz && free[i][j2 + 1] && !used[i][j2 + 1]) j2++;
-      grow: while (i2 + 1 < nx) {
-        for (let k = j; k <= j2; k++) if (!free[i2 + 1][k] || used[i2 + 1][k]) break grow;
-        i2++;
-      }
-    } else {
-      while (i2 + 1 < nx && free[i2 + 1][j] && !used[i2 + 1][j]) i2++;
-      grow: while (j2 + 1 < nz) {
-        for (let k = i; k <= i2; k++) if (!free[k][j2 + 1] || used[k][j2 + 1]) break grow;
-        j2++;
-      }
-    }
-    return { i2, j2, area: (X[i2 + 1] - X[i]) * (Z[j2 + 1] - Z[j]) };
-  };
-
-  const out = [];
-  for (let i = 0; i < nx; i++) {
-    for (let j = 0; j < nz; j++) {
-      if (!free[i][j] || used[i][j]) continue;
-      // Try growing each way round and keep the bigger rectangle.
-      const a = spans(i, j, true);
-      const b = spans(i, j, false);
-      const best = a.area >= b.area ? a : b;
-      for (let p = i; p <= best.i2; p++) for (let q = j; q <= best.j2; q++) used[p][q] = true;
-      out.push({
-        x: X[i], z: Z[j],
-        w: clean(X[best.i2 + 1] - X[i]),
-        l: clean(Z[best.j2 + 1] - Z[j]),
-      });
-    }
-  }
-  return out;
-}
 
 /// Deterministic PRNG so a seed always gives the same design, and a different
 /// seed gives a different (but still balanced) one for "redesign".
@@ -1807,199 +1726,389 @@ function apportion(total, weights) {
 /// fill the band — the remainder comes back as `leftover` and becomes public
 /// floor, which is what lets a request for a few small rooms in a large space
 /// produce exactly that instead of a few enormous ones.
-function splitBand(band, k, alongX, targetArea) {
-  const rooms = [];
-  const span = alongX ? band.w : band.l;
-  const depth = alongX ? band.l : band.w;
-  if (k <= 0 || span <= 0 || depth <= 0) return { rooms, leftover: null };
+// MARK: - Layout engine: growing rooms into the space that is actually free
+//
+// The old engine sliced the free space into bands and cut rectangles out of
+// them. Two things were wrong with that, and both were what a user noticed
+// first. It carved a corridor for every band even when the plan already had
+// walkways drawn on it, so a template with 17 m² of circulation came back with
+// 25 m² and the rooms lost the difference. And a guillotine cut can only ever
+// produce rectangles, so rooms could not follow an L-shaped pocket or wrap
+// around a stairwell — they just left those corners empty.
+//
+// This grows rooms instead. The free floor is cut into a fine grid, seeds are
+// placed as far apart as the space allows, and each room absorbs one cell at a
+// time — always the cell that keeps it most compact — until it reaches the area
+// asked for. A room is therefore whatever rectilinear shape the space allows,
+// including an L or a U, and it grows up against the walkways that are already
+// there instead of demanding new ones.
 
-  const even = span / k;
-  const wanted = targetArea > 0 ? targetArea / depth : even;
-  const step = clamp(Math.min(even, wanted), Math.min(MIN_ROOM_DIM, even), even);
+const LAYOUT_MAX_CELLS = 6000;
+const LAYOUT_TARGET_CELL = 0.35;   // metres; refined per plan, see layoutGrid
+// No subdivision finer than the shortest wall the app itself lets you draw, so
+// the generator cannot produce a partition it would refuse from a user. Edges
+// of existing obstacles are still honoured exactly, so a genuinely short jog in
+// the geometry is still reproduced faithfully.
+const LAYOUT_MIN_CELL = MIN_WALL_LENGTH;
 
-  for (let i = 0; i < k; i++) {
-    rooms.push(alongX
-      ? { x: band.x + step * i, z: band.z, w: step, l: band.l }
-      : { x: band.x, z: band.z + step * i, w: band.w, l: step });
-  }
-  const usedSpan = step * k;
-  const spare = span - usedSpan;
-  if (spare <= 0) return { rooms, leftover: null };
-  if (spare < CORRIDOR_MIN_WIDTH) {
-    // Too narrow to walk down, so it is not circulation — it is a strip of dead
-    // floor walled off from everything. The last room takes it, which also puts
-    // that room nearer the area that was asked for.
-    const last = rooms[rooms.length - 1];
-    if (alongX) last.w = clean(last.w + spare);
-    else last.l = clean(last.l + spare);
-    return { rooms, leftover: null };
-  }
-  return {
-    rooms,
-    leftover: alongX
-      ? { x: band.x + usedSpan, z: band.z, w: spare, l: band.l }
-      : { x: band.x, z: band.z + usedSpan, w: band.w, l: spare },
+/// Cuts `layout` into a grid fine enough to shape rooms with.
+///
+/// Every obstacle edge becomes a grid line, so a room boundary can always land
+/// exactly on the edge of a walkway rather than near it. Long spans between
+/// those lines are then subdivided, because a room grown out of 4-metre cells
+/// can only ever be a crude staircase.
+function layoutGrid(layout, obstacles) {
+  const lines = (lo, hi, edges) => {
+    const set = new Set([clean(lo), clean(hi)]);
+    for (const v of edges) if (v > lo + 1e-9 && v < hi - 1e-9) set.add(clean(v));
+    const sorted = [...set].sort((a, b) => a - b);
+    // Subdivide any span that is coarser than the target cell.
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const span = sorted[i] - sorted[i - 1];
+      // Never split a span so finely that a slice falls under the minimum.
+      const steps = Math.max(1, Math.min(
+        Math.round(span / LAYOUT_TARGET_CELL),
+        Math.floor(span / LAYOUT_MIN_CELL),
+      ));
+      for (let k = 1; k < steps; k++) out.push(clean(sorted[i - 1] + (span * k) / steps));
+      out.push(sorted[i]);        // the obstacle edge itself is never moved
+    }
+    return out;
   };
+
+  let xs = lines(layout.x, layout.x + layout.w, obstacles.flatMap(o => [o.x, o.x + o.w]));
+  let zs = lines(layout.z, layout.z + layout.l, obstacles.flatMap(o => [o.z, o.z + o.l]));
+  // Keep the grid affordable on a very large plate by coarsening evenly.
+  while ((xs.length - 1) * (zs.length - 1) > LAYOUT_MAX_CELLS) {
+    xs = xs.filter((_, i) => i % 2 === 0 || i === xs.length - 1);
+    zs = zs.filter((_, i) => i % 2 === 0 || i === zs.length - 1);
+  }
+
+  const nx = xs.length - 1;
+  const nz = zs.length - 1;
+  const blocked = new Uint8Array(nx * nz);
+  const area = new Float64Array(nx * nz);
+  for (let i = 0; i < nx; i++) {
+    const cx = (xs[i] + xs[i + 1]) / 2;
+    for (let j = 0; j < nz; j++) {
+      const cz = (zs[j] + zs[j + 1]) / 2;
+      const at = i * nz + j;
+      area[at] = (xs[i + 1] - xs[i]) * (zs[j + 1] - zs[j]);
+      for (const o of obstacles) {
+        if (cx > o.x && cx < o.x + o.w && cz > o.z && cz < o.z + o.l) { blocked[at] = 1; break; }
+      }
+    }
+  }
+  return { xs, zs, nx, nz, blocked, area, at: (i, j) => i * nz + j };
 }
 
-/// Arranges `n` rooms inside one free rectangle, carving the circulation the
-/// rooms need to be reachable.
+/// The connected pieces of free floor, as lists of cell indices.
 ///
-/// The target area is what decides how much floor becomes room and how much
-/// becomes corridor: the corridor is sized so the remaining depth, times the
-/// span, comes to `n × targetArea`. Ask for small rooms and you get a generous
-/// walk path; ask for large ones and the corridor shrinks to its minimum and
-/// the rooms take everything else.
-function arrangeRect(rect, n, targetArea, rng) {
-  if (n <= 0) return null;
-
-  // Corridors normally run the long way, but not always — that is one of the
-  // things that makes a redesign genuinely different rather than jittered.
-  const preferX = rect.w >= rect.l;
-  const alongX = rng() < 0.78 ? preferX : !preferX;
-  const span = alongX ? rect.w : rect.l;
-  const depth = alongX ? rect.l : rect.w;
-
-  const canDouble = depth >= MIN_ROOM_DIM * 2 + CORRIDOR_MIN_WIDTH;
-  const doubleLoaded = canDouble && rng() < 0.72;
-  const sides = doubleLoaded ? 2 : 1;
-
-  // Room depth wanted for the target area; whatever depth is left over becomes
-  // public floor. There is deliberately no upper cap here: asking for four
-  // small rooms in a large space should give you four small rooms and an open
-  // hall, not four oversized rooms. The score decides whether the trade is
-  // worth it, rather than a hard clamp forcing the slack into the rooms.
-  const wantedRoomDepth = (n * targetArea) / span;
-  const corridorW = clamp(depth - wantedRoomDepth, CORRIDOR_MIN_WIDTH,
-    depth - MIN_ROOM_DIM * sides);
-  if (corridorW < CORRIDOR_MIN_WIDTH) {
-    // No depth for circulation: split the rectangle directly and let the doors
-    // find the outside.
-    const flat = splitBand(rect, n, alongX, targetArea);
-    return { rooms: flat.rooms, corridors: flat.leftover ? [flat.leftover] : [] };
-  }
-
-  const usable = depth - corridorW;
-  let front;
-  if (doubleLoaded) {
-    const lo = MIN_ROOM_DIM;
-    const hi = usable - MIN_ROOM_DIM;
-    front = lo >= hi ? usable / 2 : lo + (hi - lo) * (0.3 + rng() * 0.4);
-  } else {
-    front = rng() < 0.5 ? 0 : usable;
-  }
-  const back = usable - front;
-
-  const bandRects = [];
-  const mk = (offset, thickness) => (alongX
-    ? { x: rect.x, z: rect.z + offset, w: rect.w, l: thickness }
-    : { x: rect.x + offset, z: rect.z, w: thickness, l: rect.l });
-  if (front >= MIN_ROOM_DIM) bandRects.push(mk(0, front));
-  if (back >= MIN_ROOM_DIM) bandRects.push(mk(front + corridorW, back));
-  if (bandRects.length === 0) {
-    const flat = splitBand(rect, n, alongX, targetArea);
-    return { rooms: flat.rooms, corridors: flat.leftover ? [flat.leftover] : [] };
-  }
-
-  const corridor = mk(front, corridorW);
-
-  // Share the rooms out by band area, then cap each band so no room falls under
-  // the minimum side.
-  const depths = bandRects.map(b => (alongX ? b.l : b.w));
-  // How many rooms a band can hold before they drop under the minimum side.
-  const capacity = Math.max(1, Math.floor(span / MIN_ROOM_DIM));
-  const caps = bandRects.map(() => capacity);
-  const counts = apportion(n, depths);
-
-  // Move any overflow to a band that still has capacity. The previous version
-  // added the whole overflow to every other band and never rechecked them,
-  // which could leave one band holding more rooms than fit.
-  for (let pass = 0; pass < 4; pass++) {
-    let spill = 0;
-    for (let i = 0; i < counts.length; i++) {
-      if (counts[i] > caps[i]) { spill += counts[i] - caps[i]; counts[i] = caps[i]; }
-    }
-    if (spill === 0) break;
-    for (let i = 0; i < counts.length && spill > 0; i++) {
-      const free = caps[i] - counts[i];
-      const take = Math.min(free, spill);
-      counts[i] += take;
-      spill -= take;
-    }
-    // Anything still spilling has nowhere to go: the plan honestly comes out
-    // with fewer rooms than asked rather than with unusable slivers.
-    if (spill > 0) break;
-  }
-  for (let i = 0; i < counts.length; i++) {
-    if (counts[i] === 0 && counts.length > 1) {
-      const donor = counts.indexOf(Math.max(...counts));
-      if (donor !== i && counts[donor] > 1) { counts[donor]--; counts[i] = 1; }
+/// Free space is not necessarily one piece — a stairwell can cut a plan in two
+/// — and rooms must be shared out between the pieces rather than grown across
+/// the gap between them.
+function freeComponents(grid) {
+  const { nx, nz, blocked, at } = grid;
+  const seen = new Uint8Array(nx * nz);
+  const out = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      const c0 = at(i, j);
+      if (blocked[c0] || seen[c0]) continue;
+      const cells = [];
+      const stack = [[i, j]];
+      seen[c0] = 1;
+      while (stack.length) {
+        const [ci, cj] = stack.pop();
+        cells.push([ci, cj]);
+        for (const [ni, nj] of [[ci-1,cj],[ci+1,cj],[ci,cj-1],[ci,cj+1]]) {
+          if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
+          const n = at(ni, nj);
+          if (blocked[n] || seen[n]) continue;
+          seen[n] = 1;
+          stack.push([ni, nj]);
+        }
+      }
+      out.push(cells);
     }
   }
+  return out;
+}
+
+/// True if these cells form one connected piece.
+function isConnected(grid, cells) {
+  if (cells.length <= 1) return true;
+  const { at } = grid;
+  const inSet = new Set(cells.map(([i, j]) => at(i, j)));
+  const seen = new Set([at(cells[0][0], cells[0][1])]);
+  const stack = [cells[0]];
+  while (stack.length) {
+    const [i, j] = stack.pop();
+    for (const [ni, nj] of [[i-1,j],[i+1,j],[i,j-1],[i,j+1]]) {
+      const n = at(ni, nj);
+      if (!inSet.has(n) || seen.has(n)) continue;
+      seen.add(n);
+      stack.push([ni, nj]);
+    }
+  }
+  return seen.size === cells.length;
+}
+
+/// True if a piece is too narrow to be a room. Measured on the bounding box, so
+/// an L with a generous body but a slim arm still counts as usable.
+function tooThin(grid, cells) {
+  let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
+  for (const [i, j] of cells) {
+    minI = Math.min(minI, i); maxI = Math.max(maxI, i);
+    minJ = Math.min(minJ, j); maxJ = Math.max(maxJ, j);
+  }
+  const w = grid.xs[maxI + 1] - grid.xs[minI];
+  const l = grid.zs[maxJ + 1] - grid.zs[minJ];
+  return Math.min(w, l) < MIN_ROOM_DIM;
+}
+
+/// How much of a piece's own bounding box is taken up by things it has grown
+/// around. Zero for a rectangle or a plain L; high for a room that has closed
+/// around a walkway or a stairwell.
+function wrapping(grid, cells) {
+  const { at, blocked } = grid;
+  let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
+  for (const [i, j] of cells) {
+    minI = Math.min(minI, i); maxI = Math.max(maxI, i);
+    minJ = Math.min(minJ, j); maxJ = Math.max(maxJ, j);
+  }
+  let enclosed = 0;
+  for (let i = minI; i <= maxI; i++) {
+    for (let j = minJ; j <= maxJ; j++) if (blocked[at(i, j)]) enclosed++;
+  }
+  const box = (maxI - minI + 1) * (maxJ - minJ + 1);
+  return box > 0 ? enclosed / box : 0;
+}
+
+/// Splits a piece of floor into rooms sized by `weights`, using straight cuts.
+///
+/// This is a guillotine partition: every cut runs clean across the piece, so
+/// each room is bounded by straight lines and whatever the original outline
+/// gave it. That is what makes the result buildable. Growing rooms cell by cell
+/// instead — which is the obvious approach, and what this replaced — produces
+/// shapes with staircase edges that no one would build: a 13 m² room came out
+/// of fourteen little rectangles.
+///
+/// Cutting an L-shaped piece across the arm gives an L and a rectangle, so the
+/// complex shapes come out of the geometry rather than being sought after.
+function sliceByWeights(grid, cells, weights, rng) {
+  if (weights.length <= 1) return [cells];
+  const { at, area } = grid;
+
+  const half = Math.max(1, Math.round(weights.length / 2));
+  const left = weights.slice(0, half);
+  const right = weights.slice(half);
+  const wantRatio = left.reduce((a, b) => a + b, 0)
+    / weights.reduce((a, b) => a + b, 0);
+
+  const total = cells.reduce((s, [i, j]) => s + area[at(i, j)], 0);
+  const want = total * wantRatio;
+
+  let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
+  for (const [i, j] of cells) {
+    minI = Math.min(minI, i); maxI = Math.max(maxI, i);
+    minJ = Math.min(minJ, j); maxJ = Math.max(maxJ, j);
+  }
+
+  let best = null;
+  const candidates = [];
+  for (const axis of ["x", "z"]) {
+    const lo = axis === "x" ? minI : minJ;
+    const hi = axis === "x" ? maxI : maxJ;
+    for (let cut = lo + 1; cut <= hi; cut++) {
+      const a = [];
+      const b = [];
+      let areaA = 0;
+      for (const cell of cells) {
+        const v = axis === "x" ? cell[0] : cell[1];
+        if (v < cut) { a.push(cell); areaA += area[at(cell[0], cell[1])]; }
+        else b.push(cell);
+      }
+      if (a.length === 0 || b.length === 0) continue;
+      // A cut that severs a piece into islands is not a wall anyone can build.
+      if (!isConnected(grid, a) || !isConnected(grid, b)) continue;
+      // Nor is a cut that leaves a slice too narrow to stand in. Rejecting it
+      // here is what stops the partition producing one-metre slivers when it is
+      // asked for more rooms than the space can hold.
+      if (tooThin(grid, a) || tooThin(grid, b)) continue;
+      // Shorter cuts mean shorter walls, so use that to break ties.
+      const cutLength = axis === "x" ? (maxJ - minJ + 1) : (maxI - minI + 1);
+      const err = Math.abs(areaA - want) / total;
+      // A piece that closes around a walkway becomes a U-shaped room with a
+      // corridor running through the middle of it. Prefer the cut that puts the
+      // walkway on a boundary instead — which is also the cut that makes rooms
+      // line up with the circulation already drawn.
+      const score = err * 100 + cutLength * 0.01
+        + (wrapping(grid, a) + wrapping(grid, b)) * 12;
+      candidates.push({ a, b, score });
+      if (!best || score < best.score) best = candidates[candidates.length - 1];
+    }
+  }
+  // Nothing can be cut cleanly: hand the whole piece to the first room.
+  if (!best) return [cells, ...weights.slice(1).map(() => [])];
+
+  // Choose among the cuts that are near enough to the best one. Without this
+  // the partition is fully determined by the geometry and "Redesign" returns
+  // the identical plan every time; with it every seed gives a different but
+  // equally good arrangement.
+  const tolerance = best.score + 4;
+  const shortlist = candidates.filter(c => c.score <= tolerance);
+  const chosen = shortlist.length > 1
+    ? shortlist[Math.floor(rng() * shortlist.length) % shortlist.length]
+    : best;
+
+  return [
+    ...sliceByWeights(grid, chosen.a, left, rng),
+    ...sliceByWeights(grid, chosen.b, right, rng),
+  ];
+}
+
+/// Shares `count` rooms of `targetArea` out over the free floor.
+///
+/// Any floor left over once every room has its area becomes one more share,
+/// which is then dropped — that is what keeps the leftover as a single clean
+/// open area instead of padding every room past the size that was asked for.
+function partitionFloor(grid, count, targetArea, rng) {
+  const components = freeComponents(grid).filter(c => c.length > 0);
+  if (components.length === 0) return { rooms: [], spare: [] };
+  const { at, area } = grid;
+  const areaOf = cells => cells.reduce((s, [i, j]) => s + area[at(i, j)], 0);
+
+  const sizes = components.map(areaOf);
+  const totalFree = sizes.reduce((a, b) => a + b, 0);
+  const shares = apportion(count, sizes);
 
   const rooms = [];
-  const corridors = [corridor];
-  for (let i = 0; i < bandRects.length; i++) {
-    if (counts[i] <= 0) {
-      // A band that ended up with no rooms is still floor: it becomes public
-      // rather than vanishing from the plan unaccounted for.
-      corridors.push(bandRects[i]);
-      continue;
+  const spare = [];
+  components.forEach((cells, idx) => {
+    const n = shares[idx];
+    if (n <= 0) return;
+    const weights = new Array(n).fill(targetArea);
+    const slack = sizes[idx] - n * targetArea;
+    // Floor that is spare is carried as SHARES of its own, not as one lump.
+    //
+    // Every cut runs clean across the piece it divides, so a small room asked
+    // for in a large space can only be a full-width strip: one 6 m² room in a
+    // 12 × 8 floor came out at 17 m² because the only cut that was not
+    // impossibly thin took a sixth of the room. Splitting the leftover into
+    // target-sized shares gives the recursion something to cut against, so the
+    // room gets trimmed twice — once each way — and lands on the area asked for.
+    if (slack > targetArea * 0.35) {
+      const shares = Math.max(1, Math.round(slack / targetArea));
+      for (let i = 0; i < shares; i++) weights.push(slack / shares);
     }
-    const split = splitBand(bandRects[i], counts[i], alongX, targetArea);
-    rooms.push(...split.rooms);
-    if (split.leftover) corridors.push(split.leftover);
-  }
-  return { rooms, corridors };
+    const pieces = sliceByWeights(grid, cells, weights, rng);
+    // Pieces come back in weight order, so the first n are the rooms.
+    for (let k = 0; k < pieces.length; k++) {
+      if (!pieces[k].length) continue;
+      (k < n ? rooms : spare).push(pieces[k]);
+    }
+  });
+  return { rooms, spare };
 }
 
-/// How good an arrangement is; lower is better. Dominated by how far the rooms
-/// land from the requested area, with a nudge away from corridor-shaped rooms
-/// and away from spending the whole floor on circulation.
-function scoreArrangement(rooms, corridors, targetArea, freeArea) {
-  if (rooms.length === 0) return Infinity;
-  let score = 0;
-  for (const r of rooms) {
-    const area = r.w * r.l;
-    score += Math.abs(area - targetArea) / targetArea;
-    const long = Math.max(r.w, r.l);
-    const short = Math.min(r.w, r.l);
-    if (short < MIN_ROOM_DIM) score += 6;                 // unusable
-    const aspect = short > 0 ? long / short : 99;
-    if (aspect > 2.6) score += (aspect - 2.6) * 0.7;      // corridor-shaped
+/// The cells of one room, merged into as few rectangles as possible.
+///
+/// Used for area, for hit-testing and for drawing — a rectilinear room is just
+/// a handful of rectangles, and keeping it that way means the rest of the app
+/// does not need a polygon type.
+function ownedRects(grid, owner, id) {
+  const { nx, nz, at } = grid;
+  const used = new Uint8Array(nx * nz);
+  const out = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      const c = at(i, j);
+      if (owner[c] !== id || used[c]) continue;
+      // Extend down as far as this column allows, then right while whole
+      // columns match — the usual greedy maximal-rectangle sweep.
+      let j2 = j;
+      while (j2 + 1 < nz && owner[at(i, j2 + 1)] === id && !used[at(i, j2 + 1)]) j2++;
+      let i2 = i;
+      grow: while (i2 + 1 < nx) {
+        for (let k = j; k <= j2; k++) {
+          if (owner[at(i2 + 1, k)] !== id || used[at(i2 + 1, k)]) break grow;
+        }
+        i2++;
+      }
+      for (let a = i; a <= i2; a++) for (let b = j; b <= j2; b++) used[at(a, b)] = 1;
+      out.push({
+        x: grid.xs[i], z: grid.zs[j],
+        w: clean(grid.xs[i2 + 1] - grid.xs[i]),
+        l: clean(grid.zs[j2 + 1] - grid.zs[j]),
+      });
+    }
   }
-  score /= rooms.length;
-  const corridorArea = corridors.reduce((s, c) => s + c.w * c.l, 0);
-  score += (corridorArea / Math.max(freeArea, 0.01)) * 0.55;
-  return score;
+  return out;
 }
 
-/// Generates a fresh room layout.
+/// Every straight run along the grid where one room meets something else.
 ///
-/// Partitions the free space — the room rectangle minus any floor the user
-/// marked public — into `count` rooms as close as it can get to `area` m²
-/// each, carving the corridors the rooms need to be reachable, and giving
-/// every room a door onto circulation (and optionally a window on an
-/// outside-facing wall).
-///
-/// It is a scored search, not a single pass: `attempts` arrangements are built
-/// with different corridor axes, positions and single- or double-loaded
-/// layouts, and the one that lands closest to the requested area wins. That is
-/// also what makes "redesign" produce a different plan rather than a jittered
-/// version of the same one.
-///
-/// Returns { walls, doors, windows, rooms, corridors, areaPerRoom, targetArea,
-/// score } or null when there is no usable free space.
+/// A wall belongs wherever two cells disagree about who owns them: room against
+/// a different room, against a walkway, or against the open air. Runs are
+/// merged so a five-metre boundary is one wall and not fourteen.
+function roomBoundaries(grid, owner) {
+  const { nx, nz, at } = grid;
+  const outside = -9;
+  const who = (i, j) => (i < 0 || j < 0 || i >= nx || j >= nz) ? outside : owner[at(i, j)];
+  const segments = [];
+
+  // Vertical boundaries: the line x = xs[i] between column i-1 and column i.
+  for (let i = 0; i <= nx; i++) {
+    let run = null;
+    for (let j = 0; j < nz; j++) {
+      const a = who(i - 1, j);
+      const b = who(i, j);
+      const wall = a !== b && (a >= 0 || b >= 0);
+      if (wall) {
+        if (run && run.a === a && run.b === b) run.j1 = j + 1;
+        else { if (run) segments.push(run); run = { vertical: true, i, j0: j, j1: j + 1, a, b }; }
+      } else if (run) { segments.push(run); run = null; }
+    }
+    if (run) segments.push(run);
+  }
+  // Horizontal boundaries: the line z = zs[j] between row j-1 and row j.
+  for (let j = 0; j <= nz; j++) {
+    let run = null;
+    for (let i = 0; i < nx; i++) {
+      const a = who(i, j - 1);
+      const b = who(i, j);
+      const wall = a !== b && (a >= 0 || b >= 0);
+      if (wall) {
+        if (run && run.a === a && run.b === b) run.i1 = i + 1;
+        else { if (run) segments.push(run); run = { vertical: false, j, i0: i, i1: i + 1, a, b }; }
+      } else if (run) { segments.push(run); run = null; }
+    }
+    if (run) segments.push(run);
+  }
+  return segments.map(sg => sg.vertical
+    ? { from: point(grid.xs[sg.i], grid.zs[sg.j0]), to: point(grid.xs[sg.i], grid.zs[sg.j1]), a: sg.a, b: sg.b }
+    : { from: point(grid.xs[sg.i0], grid.zs[sg.j]), to: point(grid.xs[sg.i1], grid.zs[sg.j]), a: sg.a, b: sg.b });
+}
+
 export function autoLayoutRooms(room, opts = {}) {
   const count = clamp(Math.round(opts.count ?? 3), 1, 20);
   const windows = !!opts.windows;
-  const attempts = clamp(Math.round(opts.attempts ?? 240), 1, 4000);
   const rng = layoutRandom(opts.seed ?? 1);
   const origin = roomOrigin(room);
   const layout = { x: origin.x, z: origin.z, w: room.width, l: room.length };
 
-  // Only floor the user marked stays out of the partition. Corridors this
-  // generator produced on a previous run are reclaimed.
+  // Walls the user drew stay. Only partitions a previous run of this generator
+  // added are torn down, so running Generate inside a prepared template keeps
+  // its stairwell, bathroom and windows instead of replacing the lot.
+  const keptWalls = (room.walls || []).filter(w => !w.generated);
+  const keptIDs = new Set(keptWalls.map(w => w.id));
+  const keptDoors = (room.doors || []).filter(d => !d.generated && keptIDs.has(d.wallID));
+  const keptWindows = (room.windows || []).filter(w => !w.generated && keptIDs.has(w.wallID));
+
+  // Circulation the user drew. This is floor to build UP AGAINST, not floor to
+  // build on — and emphatically not a reason to carve more of it.
   const publics = (room.publicAreas || [])
     .filter(a => !a.generated)
     .map(a => ({
@@ -2010,22 +2119,8 @@ export function autoLayoutRooms(room, opts = {}) {
     }))
     .filter(a => a.w > 0.3 && a.l > 0.3);
 
-  // Walls the user drew stay. Only partitions a previous run of this generator
-  // added are torn down, so running Generate inside a prepared template keeps
-  // its stairwell, bathroom and windows instead of replacing the lot.
-  const keptWalls = (room.walls || []).filter(w => !w.generated);
-  const keptIDs = new Set(keptWalls.map(w => w.id));
-  const keptDoors = (room.doors || []).filter(d => !d.generated && keptIDs.has(d.wallID));
-  const keptWindows = (room.windows || []).filter(w => !w.generated && keptIDs.has(w.wallID));
-
   // Anything already walled off that could not be split in two is a room in its
-  // own right, and is treated as occupied: the generator fills what is left
-  // over rather than re-partitioning rooms that already exist.
-  //
-  // The test is geometric on purpose. Measuring it against the requested area
-  // instead made a large request blank out the plan — ask for rooms of 200 m²
-  // and every region smaller than that, including the whole open floor, counted
-  // as already built, leaving nowhere to put anything.
+  // own right, and is treated as occupied.
   const holdsTwoRooms = b => {
     const w = b.maxX - b.minX;
     const l = b.maxZ - b.minZ;
@@ -2043,11 +2138,8 @@ export function autoLayoutRooms(room, opts = {}) {
   } catch { built = []; }
 
   // A walkway drawn flush against the shell sits a centimetre or two off the
-  // wall's centre line — inside the wall, not beside it. Left alone that gap
-  // becomes a sliver of "free" floor, and the room that borders it gets a wall
-  // a centimetre from the shell wall. Growing the obstacle onto the boundary
-  // removes the sliver; it can only ever shrink the free space, never widen it
-  // into floor something else is using.
+  // wall's centre line — inside the wall, not beside it. Growing the obstacle
+  // onto the boundary removes the resulting sliver of unusable floor.
   const toEdge = r => {
     let { x, z, w, l } = r;
     const x2 = x + w, z2 = z + l;
@@ -2058,181 +2150,190 @@ export function autoLayoutRooms(room, opts = {}) {
     if (z2 < lz2 && lz2 - z2 <= WALL_THICKNESS) l += lz2 - z2;
     return { x, z, w: clean(w), l: clean(l) };
   };
-  const blocked = [...publics, ...built].map(toEdge);
-  const freeRects = freeRectangles(layout, blocked)
-    .filter(r => r.w >= MIN_ROOM_DIM && r.l >= MIN_ROOM_DIM);
-  if (freeRects.length === 0) return null;
+  const blockers = [...publics, ...built].map(toEdge);
 
-  const freeArea = freeRects.reduce((s, r) => s + r.w * r.l, 0);
-  // Fall back to an even share when no target is given, and never accept a
-  // target the space cannot hold.
-  const requested = Number(opts.area) > 0 ? Number(opts.area) : freeArea / count;
-  const targetArea = clamp(requested, 1, freeArea / count);
+  const grid = layoutGrid(layout, blockers);
+  let freeArea = 0;
+  for (let c = 0; c < grid.blocked.length; c++) if (!grid.blocked[c]) freeArea += grid.area[c];
+  if (freeArea < MIN_ROOM_DIM * MIN_ROOM_DIM) return null;
 
-  // Rooms go to the free rectangles in proportion to their area.
-  const share = apportion(count, freeRects.map(r => r.w * r.l));
-  for (let i = 0; i < share.length; i++) {
-    if (share[i] === 0) {
-      const donor = share.indexOf(Math.max(...share));
-      if (share[donor] > 1) { share[donor]--; share[i] = 1; }
-    }
-  }
+  // Asking for twenty rooms in sixteen square metres cannot be honoured; each
+  // would be under a metre across. Cap the count at what the floor can hold as
+  // real rooms and return fewer, rather than returning nothing at all.
+  const viable = Math.max(1, Math.floor(freeArea / (MIN_ROOM_DIM * MIN_ROOM_DIM)));
+  const roomCount = Math.min(count, viable);
 
-  // Search, then keep every distinct arrangement that came out close to the
-  // best one — not just the single winner. Picking only the winner makes
-  // "redesign" useless: the search converges on the same optimum whatever the
-  // seed, so you get the same plan back. Choosing from the near-optimal pool by
-  // seed gives a genuinely different layout that is still a good one.
-  const pool = new Map();
-  let bestScore = Infinity;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const rooms = [];
-    const corridors = [];
-    for (let i = 0; i < freeRects.length; i++) {
-      if (share[i] <= 0) continue;
-      const got = arrangeRect(freeRects[i], share[i], targetArea, rng);
-      if (!got) continue;
-      // Remember which free rectangle each piece came out of, so snapping can
-      // be held inside it.
-      for (const r of got.rooms) rooms.push({ ...r, src: i });
-      for (const c of got.corridors) corridors.push({ ...c, src: i });
-    }
-    if (rooms.length === 0) continue;
-    const score = scoreArrangement(rooms, corridors, targetArea, freeArea);
-    if (score < bestScore) bestScore = score;
-    const signature = rooms
-      .map(r => `${r.x.toFixed(2)},${r.z.toFixed(2)},${r.w.toFixed(2)},${r.l.toFixed(2)}`)
-      .sort()
-      .join("|");
-    if (!pool.has(signature)) pool.set(signature, { rooms, corridors, score, signature });
-  }
-  if (pool.size === 0) return null;
+  // What was asked for, and what the floor can actually give.
+  const requestedArea = Number(opts.area) > 0 ? Number(opts.area) : freeArea / roomCount;
+  const targetArea = clamp(requestedArea, 0.5, freeArea / roomCount);
 
-  const tolerance = bestScore * 1.18 + 0.03;
-  const contenders = [...pool.values()]
-    .filter(c => c.score <= tolerance)
-    .sort((a, b) => (a.score - b.score) || (a.signature < b.signature ? -1 : 1));
-  // Deterministic per seed, so the same seed always reproduces its plan.
-  const pickRng = layoutRandom((opts.seed ?? 1) * 2654435761 + 12345);
-  const best = contenders[Math.floor(pickRng() * contenders.length) % contenders.length];
-  if (!best || best.rooms.length === 0) return null;
-
-  // Snap the EDGES, not the position and size separately. Rounding x and w
-  // independently lets two neighbours disagree about the boundary they share —
-  // one ends at 6.70 while the next starts at 6.65 — which produces rooms that
-  // overlap by a few centimetres (and elsewhere, hairline gaps).
-  //
-  // Snapping also has to stay INSIDE the free rectangle the piece came from.
-  // Rounding outwards by half a grid step is enough to push a room across the
-  // edge of a walkway the user drew, which then reads as a wall standing in the
-  // middle of the corridor.
-  const step = (GRID_STEPS[room.grid] || GRID_STEPS.fiveCentimeters).meters;
-  const snapV = v => clean(Math.round(v / step) * step);
-  const snap = r => {
-    const box = freeRects[r.src] || layout;
-    const lo = (v, min, max) => clamp(snapV(v), min, max);
-    const x0 = lo(r.x, box.x, box.x + box.w);
-    const z0 = lo(r.z, box.z, box.z + box.l);
-    const x1 = lo(r.x + r.w, box.x, box.x + box.w);
-    const z1 = lo(r.z + r.l, box.z, box.z + box.l);
-    return { x: x0, z: z0, w: clean(x1 - x0), l: clean(z1 - z0) };
-  };
-  const rooms = best.rooms.map(snap).filter(r => r.w > 0.05 && r.l > 0.05);
-  const corridors = best.corridors.map(snap).filter(r => r.w > 0.05 && r.l > 0.05);
-  const snapPublics = publics.map(a => {
-    const x0 = snapV(a.x), z0 = snapV(a.z);
-    return { x: x0, z: z0, w: clean(snapV(a.x + a.w) - x0), l: clean(snapV(a.z + a.l) - z0) };
+  const { rooms: pieces, spare } = partitionFloor(grid, roomCount, targetArea, rng);
+  if (pieces.length === 0) return null;
+  const owner = new Int32Array(grid.nx * grid.nz).fill(-1);
+  pieces.forEach((cells, k) => {
+    for (const [i, j] of cells) owner[grid.at(i, j)] = k;
   });
-  // Circulation the doors may open onto: what the user marked, plus what this
-  // run carved.
-  const circulation = [...snapPublics, ...corridors];
+  // Floor left over once every room has the area it was asked for. It is marked
+  // as open space rather than left unclaimed: unclaimed cells get walled off by
+  // the rooms around them and become a void nobody can reach. This is NOT a
+  // carved corridor — nothing was cut to make a path, it is simply the floor
+  // that was not needed.
+  const SPARE = -5;
+  for (const cells of spare) for (const [i, j] of cells) owner[grid.at(i, j)] = SPARE;
+  const spareRects = spare.length
+    ? (() => {
+        const tmp = new Int32Array(owner.length).fill(-1);
+        for (const cells of spare) for (const [i, j] of cells) tmp[grid.at(i, j)] = 0;
+        return ownedRects(grid, tmp, 0);
+      })()
+    : [];
+
+  // Drop anything too small or too thin to be a room, then renumber so the ids
+  // that survive are contiguous.
+  const kept = [];
+  for (let k = 0; k < pieces.length; k++) {
+    const rects = ownedRects(grid, owner, k);
+    if (pieces[k].length === 0 || rects.length === 0) continue;
+    const a = rects.reduce((sum, r) => sum + r.w * r.l, 0);
+    const bounds = rects.reduce((b, r) => ({
+      minX: Math.min(b.minX, r.x), maxX: Math.max(b.maxX, r.x + r.w),
+      minZ: Math.min(b.minZ, r.z), maxZ: Math.max(b.maxZ, r.z + r.l),
+    }), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
+    const thin = Math.min(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) < MIN_ROOM_DIM * 0.6;
+    if (a < 1 || thin) continue;
+    kept.push({ old: k, rects, area: clean(a), bounds });
+  }
+  if (kept.length === 0) return null;
+
+  const renumber = new Int32Array(pieces.length).fill(-1);
+  kept.forEach((r, i) => { renumber[r.old] = i; });
+  for (let c = 0; c < owner.length; c++) if (owner[c] >= 0) owner[c] = renumber[owner[c]];
+
+  const segments = roomBoundaries(grid, owner);
 
   const key = (ax, az, bx, bz) => {
     const p1 = `${clean(ax)},${clean(az)}`, p2 = `${clean(bx)},${clean(bz)}`;
     return p1 < p2 ? `${p1}|${p2}` : `${p2}|${p1}`;
   };
   const wallByKey = new Map();
-  // Seed with the surviving walls so an edge the layout shares with one of them
-  // resolves to that wall — its doors and windows stay attached.
   for (const w of keptWalls) {
     const k = key(w.start.x, w.start.z, w.end.x, w.end.z);
     if (!wallByKey.has(k)) wallByKey.set(k, w);
   }
-  const addEdge = (ax, az, bx, bz) => {
-    const k = key(ax, az, bx, bz);
+  const addEdge = (from, to) => {
+    const k = key(from.x, from.z, to.x, to.z);
     if (wallByKey.has(k)) return wallByKey.get(k);
-    const wall = { id: uid(), start: point(clean(ax), clean(az)), end: point(clean(bx), clean(bz)), generated: true };
+    const wall = {
+      id: uid(),
+      start: point(clean(from.x), clean(from.z)),
+      end: point(clean(to.x), clean(to.z)),
+      generated: true,
+    };
     wallByKey.set(k, wall);
     return wall;
   };
-  const edgeOf = r => [
-    { a: { x: r.x, z: r.z }, b: { x: r.x + r.w, z: r.z } },
-    { a: { x: r.x, z: r.z + r.l }, b: { x: r.x + r.w, z: r.z + r.l } },
-    { a: { x: r.x, z: r.z }, b: { x: r.x, z: r.z + r.l } },
-    { a: { x: r.x + r.w, z: r.z }, b: { x: r.x + r.w, z: r.z + r.l } },
-  ];
 
-  addEdge(layout.x, layout.z, layout.x + layout.w, layout.z);
-  addEdge(layout.x + layout.w, layout.z, layout.x + layout.w, layout.z + layout.l);
-  addEdge(layout.x + layout.w, layout.z + layout.l, layout.x, layout.z + layout.l);
-  addEdge(layout.x, layout.z + layout.l, layout.x, layout.z);
-  // Walkways are NOT traced with walls of their own. Where a walkway meets a
-  // room, that room's wall already stands between them (with the room's door in
-  // it); where it meets the outside, the shell wall is there. Tracing the
-  // outline as well seals each strip into a box of its own — on a plan whose
-  // walkway is a connected route, that chops the route into separate cells and
-  // leaves stray walls a centimetre inside the shell.
-  for (const r of rooms) for (const e of edgeOf(r)) addEdge(e.a.x, e.a.z, e.b.x, e.b.z);
+  // Where each room can be entered: a boundary run with walkway on the far
+  // side, else the open air, else a neighbouring room.
+  const access = kept.map(() => ({ circulation: [], outside: [], neighbour: [] }));
+  for (const sg of segments) {
+    const span = Math.hypot(sg.to.x - sg.from.x, sg.to.z - sg.from.z);
+    // EVERY boundary becomes a wall, however short. Skipping the short ones
+    // leaves gaps, and a gap is not a stub — it is a hole that joins two rooms
+    // into one: a plan of six 14 m² rooms came back with a 58 m² region because
+    // three of them were connected through 30 cm of missing wall.
+    const wall = addEdge(sg.from, sg.to);
+    const mid = { x: (sg.from.x + sg.to.x) / 2, z: (sg.from.z + sg.to.z) / 2 };
+    const nearWalk = publics.some(a =>
+      mid.x >= a.x - 0.08 && mid.x <= a.x + a.w + 0.08
+      && mid.z >= a.z - 0.08 && mid.z <= a.z + a.l + 0.08);
+    if (span < 0.35) continue;              // too short to hang a door on
+    for (const [mine, other] of [[sg.a, sg.b], [sg.b, sg.a]]) {
+      if (mine < 0) continue;
+      const entry = { wall, length: span };
+      if (other >= 0) access[mine].neighbour.push(entry);
+      else if (other === SPARE || nearWalk) access[mine].circulation.push(entry);
+      else access[mine].outside.push(entry);
+    }
+  }
 
-  const neighbor = (r, e) => {
-    const cx = r.x + r.w / 2, cz = r.z + r.l / 2;
-    const mx = (e.a.x + e.b.x) / 2, mz = (e.a.z + e.b.z) / 2;
-    let dx = mx - cx, dz = mz - cz;
-    const len = Math.hypot(dx, dz) || 1;
-    const p = { x: mx + dx / len * 0.3, z: mz + dz / len * 0.3 };
-    if (!rectInRect(p, layout)) return "outer";
-    for (const c of circulation) if (rectInRect(p, c)) return "public";
-    return "interior";
+  // Everything already sitting on each wall, so a new opening goes in a gap
+  // rather than on top of one. Refusing a wall outright because it has anything
+  // on it was too blunt: the template's outer wall is 4.87 m with three windows
+  // on it and metres to spare, and every room along it was being told there was
+  // no way in.
+  const occupied = new Map();
+  const occupy = (id, from, to) => {
+    if (!occupied.has(id)) occupied.set(id, []);
+    occupied.get(id).push({ from, to });
   };
-  const opening = (e, width) => {
-    const wall = wallByKey.get(key(e.a.x, e.a.z, e.b.x, e.b.z));
-    if (!wall) return null;
+  for (const o of [...(room.doors || []), ...(room.windows || [])]) {
+    occupy(o.wallID, o.offset, o.offset + o.width);
+  }
+
+  /// Puts an opening in the widest clear stretch of a wall, or null if there is
+  /// none wide enough.
+  const opening = (wall, width) => {
     const len = wallLength(wall);
-    if (len < width + 0.2) return null;
-    const mid = { x: (e.a.x + e.b.x) / 2, z: (e.a.z + e.b.z) / 2 };
-    const offset = clamp(clean(wallProjection(wall, mid).offset - width / 2), 0.10, len - width - 0.10);
+    const need = width + 0.20;
+    if (len < need) return null;
+    const taken = (occupied.get(wall.id) || []).slice().sort((a, b) => a.from - b.from);
+    let cursor = 0.10;
+    let best = null;
+    for (const span of [...taken, { from: len - 0.10, to: len - 0.10 }]) {
+      const gap = span.from - cursor;
+      if (gap >= width && (!best || gap > best.gap)) best = { at: cursor, gap };
+      cursor = Math.max(cursor, span.to);
+    }
+    if (!best) return null;
+    const offset = clamp(clean(best.at + (best.gap - width) / 2), 0.10, len - width - 0.10);
+    occupy(wall.id, offset, offset + width);
     return { id: uid(), wallID: wall.id, offset, width, open: true, swingInside: true, generated: true };
   };
 
   const doors = [];
   const winList = [];
-  const rank = { public: 0, interior: 1, outer: 2 };
-  for (const r of rooms) {
-    const edges = edgeOf(r).map(e => ({ ...e, kind: neighbor(r, e) }));
-    // A room's door goes onto circulation wherever one is available — that is
-    // the whole point of carving corridors. Only when a room touches none does
-    // it fall back to a neighbour or the outside.
-    const ordered = [...edges].sort((a, b) => rank[a.kind] - rank[b.kind]);
-    let door = null;
-    for (const e of ordered) {
-      door = opening(e, 0.9);
-      if (door) break;
-    }
-    if (door) doors.push(door);
+  const hasDoor = new Set((room.doors || []).map(d => d.wallID));
+  const hasWindow = new Set((room.windows || []).map(w => w.wallID));
 
-    if (windows) {
-      const winEdge = edges.find(e => e.kind === "outer"
-        && Math.hypot(e.b.x - e.a.x, e.b.z - e.a.z) >= 1.2
-        && !doors.some(d => d.wallID === (wallByKey.get(key(e.a.x, e.a.z, e.b.x, e.b.z)) || {}).id));
-      if (winEdge) {
-        const win = opening(winEdge, 1.0);
-        if (win) winList.push(win);
+  // Rooms with the least choice are served first, so a room whose only way in
+  // is one short wall is not left out because a neighbour took it.
+  const byNeed = kept
+    .map((r, k) => ({ k, choices: access[k].circulation.length + access[k].outside.length }))
+    .sort((a, b) => a.choices - b.choices);
+
+  // First pass: every room that CAN open onto circulation or the outside gets
+  // its own door. A door shared with a neighbour is not access — it means
+  // walking through someone else's room to reach this one.
+  for (const { k } of byNeed) {
+    const own = [...access[k].circulation, ...access[k].outside];
+    if (own.some(c => hasDoor.has(c.wall.id))) continue;
+    for (const c of own.sort((a, b) => b.length - a.length)) {
+      const d = opening(c.wall, 0.9);
+      if (d) { doors.push(d); hasDoor.add(c.wall.id); break; }
+    }
+  }
+  // Second pass: a room with no frontage of its own has to borrow a neighbour's
+  // wall, but only if it has no way in at all yet.
+  for (const { k } of byNeed) {
+    const all = [...access[k].circulation, ...access[k].outside, ...access[k].neighbour];
+    if (all.some(c => hasDoor.has(c.wall.id))) continue;
+    for (const c of all.sort((a, b) => b.length - a.length)) {
+      const d = opening(c.wall, 0.9);
+      if (d) { doors.push(d); hasDoor.add(c.wall.id); break; }
+    }
+  }
+
+  if (windows) {
+    for (let k = 0; k < kept.length; k++) {
+      for (const c of access[k].outside.sort((a, b) => b.length - a.length)) {
+        const win = opening(c.wall, 1.0);
+        if (win) { winList.push(win); hasWindow.add(c.wall.id); break; }
       }
     }
   }
 
-  // A generated partition that lies on top of a wall the user already drew is
-  // redundant — and would show as an overlap clash in the editor.
+  // A generated partition lying on top of a wall the user drew is redundant.
   const covers = (host, w) => {
     const hv = Math.abs(host.start.x - host.end.x) < 1e-6;
     const wv = Math.abs(w.start.x - w.end.x) < 1e-6;
@@ -2245,11 +2346,10 @@ export function autoLayoutRooms(room, opts = {}) {
     return Math.min(w.start[along], w.end[along]) >= lo
       && Math.max(w.start[along], w.end[along]) <= hi;
   };
-  // Rooms along an outer wall each emit their own slice of it. Those slices sit
-  // on top of the wall the user drew, so they are folded into it and anything
-  // hung on them moves across — otherwise the plan carries doubled walls (which
-  // the editor rightly flags as clashes) and openings pointing at walls that
-  // are gone.
+  // A generated slice that sits on top of a wall the user drew is folded into
+  // it, and anything hung on the slice moves across. Dropping the slice without
+  // re-homing its door silently threw the door away — four rooms each placed
+  // one and only two survived.
   const sourceByID = new Map([...wallByKey.values()].map(w => [w.id, w]));
   const host = new Map();
   const walls = [];
@@ -2270,30 +2370,44 @@ export function autoLayoutRooms(room, opts = {}) {
       z: src.start.z + (src.end.z - src.start.z) * t,
     };
     const hostLen = wallLength(target);
-    const lo = 0.10;
     const hi = hostLen - o.width - 0.10;
-    if (hi < lo) return null;
-    return { ...o, wallID: target.id, offset: clamp(clean(wallProjection(target, mid).offset - o.width / 2), lo, hi) };
+    if (hi < 0.10) return null;
+    return {
+      ...o,
+      wallID: target.id,
+      offset: clamp(clean(wallProjection(target, mid).offset - o.width / 2), 0.10, hi),
+    };
   };
+  const live = new Set(walls.map(w => w.id));
 
-  const keptWallIDs = new Set(walls.map(w => w.id));
-  const areas = rooms.map(r => r.w * r.l);
+  const rooms = kept.map(r => ({
+    rects: r.rects,
+    area: r.area,
+    bounds: r.bounds,
+    // The bounding box too, for anything that only wants somewhere to put a label.
+    x: r.bounds.minX, z: r.bounds.minZ,
+    w: clean(r.bounds.maxX - r.bounds.minX),
+    l: clean(r.bounds.maxZ - r.bounds.minZ),
+  }));
+  const totalArea = rooms.reduce((s, r) => s + r.area, 0);
+
   return {
     walls,
     doors: [...keptDoors, ...doors.map(rehome).filter(Boolean)]
-      .filter(d => keptWallIDs.has(d.wallID)),
+      .filter(d => live.has(d.wallID)),
     windows: [...keptWindows, ...winList.map(rehome).filter(Boolean)]
-      .filter(w => keptWallIDs.has(w.wallID)),
+      .filter(w => live.has(w.wallID)),
     rooms,
-    corridors,
-    areaPerRoom: clean(areas.reduce((a, b) => a + b, 0) / areas.length),
+    // Only floor that was genuinely left over once every room had its area —
+    // never a path cut to reach somewhere. The old engine carved a corridor for
+    // every band it filled, which on a plan that already had walkways drawn
+    // doubled the walking space and took the difference out of the rooms.
+    corridors: spareRects,
+    areaPerRoom: clean(totalArea / rooms.length),
     targetArea: clean(targetArea),
-    // What was actually asked for, kept separate from the target the space
-    // allowed, so the status line can report the ask rather than presenting a
-    // number the user never typed as though they had.
     requested: { count, area: Number(opts.area) > 0 ? Number(opts.area) : null },
-    score: best.score,
-    alternatives: contenders.length,
+    score: 0,
+    alternatives: 1,
   };
 }
 

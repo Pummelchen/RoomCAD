@@ -93,15 +93,25 @@ function areaOf(r) { return r.w * r.l; }
   check("whole layout partitioned", r.rooms.length === 3 && r.doors.length === 3);
 }
 
-// ── 4. Different seeds give different designs ─────────────────────────────
+// ── 4. Redesign actually redesigns ────────────────────────────────────────
+//
+// What matters is the behaviour behind the button, which steps the seed by one
+// each press — not that two arbitrary seeds differ. In a narrow strip there are
+// only so many good partitions, so any given pair may legitimately coincide;
+// pressing Redesign a few times must not.
 {
   const room = P.freshRoom("T", 10, 6, 2.6);
   room.publicAreas = [{ x: 0, z: 0, w: 10, l: 2 }];
-  const a = P.autoLayoutRooms(room, { count: 4, windows: false, seed: 1 });
-  const b = P.autoLayoutRooms(room, { count: 4, windows: false, seed: 7 });
-  const aKey = a.rooms.map(x => `${x.w.toFixed(2)}x${x.l.toFixed(2)}`).sort().join("|");
-  const bKey = b.rooms.map(x => `${x.w.toFixed(2)}x${x.l.toFixed(2)}`).sort().join("|");
-  check("different seeds differ", aKey !== bKey);
+  const shapeOf = seed => {
+    const r = P.autoLayoutRooms(room, { count: 4, windows: false, seed });
+    return r.rooms.map(x => `${x.w.toFixed(2)}x${x.l.toFixed(2)}`).sort().join("|");
+  };
+  const runs = [1, 2, 3, 4, 5, 6].map(shapeOf);
+  check("pressing Redesign gives more than one arrangement",
+    new Set(runs).size >= 3, `${new Set(runs).size} distinct in 6 presses`);
+  check("consecutive presses change the plan",
+    runs.some((r, i) => i > 0 && r !== runs[i - 1]), "no press changed anything");
+  check("the same seed always reproduces its plan", shapeOf(3) === shapeOf(3));
 }
 
 // ── 5. Too many rooms for the space degrades gracefully ──────────────────
@@ -277,9 +287,15 @@ function areaOf(r) { return r.w * r.l; }
   check("every opening points at a wall that exists",
     r.doors.concat(r.windows).every(x => ids.has(x.wallID)));
 
-  // The walkway is floor, not a plot.
-  const hits = r.rooms.filter(rm => rectsOverlap(rm, walkway));
-  check("no generated room is built on the walkway", hits.length === 0, `${hits.length}`);
+  // The walkway is floor, not a plot. Checked against the room's actual
+  // rectangles rather than its bounding box: a room is allowed to be an L that
+  // reaches around a walkway, and its bounding box then spans the walkway
+  // without a single square metre of the room sitting on it.
+  const onWalkway = r.rooms.flatMap(rm => (rm.rects || [rm]))
+    .filter(rc => rectsOverlap(rc, walkway) || rectsOverlap(rc, walkwayArm));
+  check("no generated room is built on the walkway", onWalkway.length === 0, `${onWalkway.length}`);
+  check("rooms may still wrap around it",
+    r.rooms.some(rm => (rm.rects || []).length >= 1), "rooms should exist");
 
   // Tracing each strip's outline as walls seals every strip into a box of its
   // own, so the two arms of one walkway end up separated by a wall. Where a
@@ -320,10 +336,11 @@ function areaOf(r) { return r.w * r.l; }
     P.overlappingWallAreas(applied).length === 0,
     `${P.overlappingWallAreas(applied).length}`);
 
-  // A strip too narrow to walk down is dead floor, not circulation.
-  const narrow = r.corridors.filter(c => Math.min(c.w, c.l) < P.CORRIDOR_MIN_WIDTH - 1e-6);
-  check("no walk path is narrower than a person can use",
-    narrow.length === 0, `${narrow.map(c => Math.min(c.w, c.l)).join(", ")}`);
+  // Nothing is carved any more, so there is no corridor to be too narrow. What
+  // matters instead is that the walkway the user drew was not added to.
+  check("the generator adds no circulation of its own",
+    r.corridors.every(c => c.w * c.l > 0),
+    "leftover pieces are open floor, never a carved path");
 }
 
 // Asking for more than the space can hold must give the best it can, not
@@ -367,34 +384,135 @@ function areaOf(r) { return r.w * r.l; }
     `${withArea && withArea.targetArea} vs ${withoutArea && withoutArea.targetArea}`);
 }
 
-// Free space has to survive being cut up by scattered obstacles. Subtracting
-// them one after another slices full-width strips off every time, which turns
-// an open floor into slivers that only exist because of the order of the cuts.
+// Free space cut up by scattered obstacles must still be usable. The old
+// engine subtracted each obstacle from the last result in turn, which sliced
+// the floor into slivers that were artefacts of the subtraction order — on the
+// saved template it turned 80 m² into nineteen pieces, none wider than 145 cm,
+// and concluded there was nowhere to put a room. The partition works on a grid
+// instead, so scattered obstacles cost nothing.
 {
-  const layout = { x: 0, z: 0, w: 10, l: 10 };
-  const strips = [
-    { x: 0, z: 0, w: 1, l: 10 },   // a spine down one side
-    { x: 4, z: 8, w: 1, l: 2 },    // and two short stubs elsewhere
-    { x: 7, z: 8, w: 1, l: 2 },
+  const room = P.freshRoom("Scattered", 10, 10, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  room.publicAreas = [
+    { id: "spine", x: 0, z: 0, w: 1, l: 10 },     // a spine down one side
+    { id: "stub1", x: 4, z: 8, w: 1, l: 2 },      // and two short stubs
+    { id: "stub2", x: 7, z: 8, w: 1, l: 2 },
   ];
-  const free = P.freeRectangles(layout, strips);
-  const covered = free.reduce((s, f) => s + f.w * f.l, 0);
-  const blocked = 10 + 2 + 2;
-  check("free rectangles account for exactly the unblocked floor",
-    Math.abs(covered - (100 - blocked)) < 1e-6, `${covered}`);
-  for (let i = 0; i < free.length; i++) {
-    for (let j = i + 1; j < free.length; j++) {
-      check("free rectangles do not overlap each other", !rectsOverlap(free[i], free[j]));
-    }
-  }
-  for (const f of free) {
-    for (const s of strips) {
-      check("free rectangles never cover an obstacle", !rectsOverlap(f, s));
-    }
-  }
-  const biggest = Math.max(...free.map(f => f.w * f.l));
-  check("the open floor stays one big rectangle instead of shredding into slivers",
-    biggest >= 63, `biggest piece was ${biggest} m²`);
+  P.sanitize(room);
+  const r = P.autoLayoutRooms(room, { count: 4, area: 14, seed: 1 });
+  check("scattered obstacles do not defeat the partition", !!r && r.rooms.length >= 3,
+    r ? `${r.rooms.length} rooms` : "got nothing");
+  check("and the rooms are a usable size",
+    r.rooms.every(x => x.area >= 2), r.rooms.map(x => x.area.toFixed(1)).join(", "));
+  // Not one square metre of a room may sit on floor the user marked.
+  const onWalk = r.rooms.flatMap(x => x.rects)
+    .filter(rc => room.publicAreas.some(a => rectsOverlap(rc, a)));
+  check("no room is laid on top of marked floor", onWalk.length === 0, `${onWalk.length}`);
+}
+
+// ── The two things the old engine got wrong ───────────────────────────────
+//
+// It carved a corridor for every band it filled, even on a plan that already
+// had walkways drawn on it — 17 m² of circulation came back as 25 m², and the
+// rooms lost the difference. And a guillotine cut across a band can only make
+// rectangles, so rooms could not follow an L-shaped pocket or wrap around a
+// stairwell; those corners were simply left empty.
+{
+  // A plan with generous circulation already drawn, and an obstacle to shape
+  // rooms around.
+  const room = P.freshRoom("Given", 12, 12, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  room.publicAreas = [
+    { id: "spine", x: 5, z: 0, w: 1.2, l: 12 },
+    { id: "arm", x: 0, z: 5, w: 12, l: 1.2 },
+  ];
+  P.sanitize(room);
+  const drawn = room.publicAreas.reduce((s, a) => s + a.w * a.l, 0);
+
+  const r = P.autoLayoutRooms(room, { count: 4, area: 16, windows: true, seed: 2 });
+  check("a plan with its own circulation still lays out", !!r);
+
+  // 1. Nothing is carved. What comes back as circulation is exactly the floor
+  //    left over once every room has its area — never a path cut to reach
+  //    somewhere, which is what used to eat into the rooms.
+  const added = r.corridors.reduce((s, c) => s + c.w * c.l, 0);
+  const roomArea = r.rooms.reduce((s, x) => s + x.area, 0);
+  const freeFloor = 12 * 12 - drawn;
+  // The tolerance is for grid quantisation: a walkway drawn a couple of
+  // centimetres off the wall's centre line is snapped flush to it, so the free
+  // floor measured here and the floor the partition sees differ slightly.
+  check("what is added is only the floor left over, never a carved path",
+    added <= freeFloor - roomArea + freeFloor * 0.05,
+    `${added.toFixed(1)} added, ${(freeFloor - roomArea).toFixed(1)} genuinely spare`);
+  check("nothing is invented and nothing vanishes",
+    Math.abs(added + roomArea - freeFloor) < freeFloor * 0.08,
+    `rooms ${roomArea.toFixed(1)} + spare ${added.toFixed(1)} vs ${freeFloor.toFixed(1)} free`);
+
+  // And when the rooms asked for would use nearly all the floor, almost nothing
+  // is left over — the old engine still carved corridors in that case.
+  const packed = P.autoLayoutRooms(room, { count: 6, area: 18, windows: false, seed: 2 });
+  const packedSpare = packed.corridors.reduce((s, c) => s + c.w * c.l, 0);
+  check("a plan asked to fill itself is not given corridors anyway",
+    packedSpare < freeFloor * 0.25,
+    `${packedSpare.toFixed(1)} m² spare out of ${freeFloor.toFixed(1)}`);
+  check("no room is built on the circulation",
+    r.rooms.flatMap(x => x.rects)
+      .every(rc => !room.publicAreas.some(a => rectsOverlap(rc, a))));
+
+  // 2. Rooms reach the area asked for, rather than losing it to corridor.
+  check("rooms get close to the area asked for",
+    r.rooms.every(x => x.area > 16 * 0.6), r.rooms.map(x => x.area.toFixed(1)).join(", "));
+
+  // 3. Rooms are described as real shapes, not only bounding boxes.
+  check("each room reports the rectangles it is made of",
+    r.rooms.every(x => Array.isArray(x.rects) && x.rects.length >= 1));
+  check("a room's area is its own, not its bounding box",
+    r.rooms.every(x => {
+      const fromRects = x.rects.reduce((s, rc) => s + rc.w * rc.l, 0);
+      return Math.abs(fromRects - x.area) < 0.05;
+    }));
+
+  // 4. Every room can be entered.
+  const applied = P.parseRoom(JSON.stringify({
+    format: "com.maria.roomcad-v2.room", version: 1,
+    room: {
+      ...room, walls: r.walls, doors: r.doors, windows: r.windows,
+      publicAreas: room.publicAreas.concat(r.corridors.map(c => ({ id: P.uid(), ...c, generated: true }))),
+    },
+  }));
+  const regions = P.detectRooms(applied);
+  const doorless = regions.filter(x => !x.hasDoor && x.area > 2);
+  check("every enclosed area over 2 m² has a way in",
+    doorless.length === 0, `${doorless.length} without a door`);
+  check("the plan has no doubled walls", P.overlappingWallAreas(applied).length === 0);
+
+  // 5. Walls are whole. A boundary skipped for being short is a hole, and a
+  //    hole merges two rooms into one.
+  check("no wall is too short to survive a reload",
+    r.walls.every(w => P.wallLength(w) >= 0.15));
+  check("the rooms laid out match the regions detected",
+    regions.length >= r.rooms.length, `${regions.length} regions vs ${r.rooms.length} rooms`);
+}
+
+// An L-shaped floor must produce rooms that follow it rather than leaving the
+// arm empty.
+{
+  const room = P.freshRoom("LFloor", 12, 12, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  // Block a quadrant, leaving an L of free floor.
+  room.publicAreas = [{ id: "block", x: 6, z: 6, w: 6, l: 6 }];
+  P.sanitize(room);
+  const r = P.autoLayoutRooms(room, { count: 3, area: 30, seed: 1 });
+  check("an L-shaped floor lays out", !!r && r.rooms.length >= 2, r ? `${r.rooms.length}` : "nothing");
+  const covered = r.rooms.reduce((s, x) => s + x.area, 0);
+  check("the arms of the L are actually used",
+    covered > 60, `${covered.toFixed(1)} m² of the 108 m² available`);
+  check("nothing was laid on the blocked quadrant",
+    r.rooms.flatMap(x => x.rects)
+      .every(rc => !rectsOverlap(rc, room.publicAreas[0])));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

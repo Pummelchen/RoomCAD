@@ -52,7 +52,11 @@ const checkInvariants = (op) => {
   const b = P.wallsBounds(r);
   if (b && (Math.abs((b.maxX-b.minX) - r.width) > 1e-6 || Math.abs((b.maxZ-b.minZ) - r.length) > 1e-6))
     fail("size disagrees with the walls", `${op}: ${r.width}x${r.length}`);
-  for (const w of r.walls) if (P.wallLength(w) < P.MIN_WALL_LENGTH - 1e-6) fail("wall shorter than the minimum", op);
+  // The threshold that matters is what sanitize keeps: a wall below it is
+  // dropped on the next load, which turns a boundary into a hole and merges two
+  // rooms into one. Genuinely short jogs in existing geometry are legitimate,
+  // so this is not MIN_WALL_LENGTH.
+  for (const w of r.walls) if (P.wallLength(w) < 0.15 - 1e-6) fail("wall too short to survive a reload", op);
 };
 const ops = [
   () => { const a = pt(), b = { x: a.x + (rnd()<.5?2:0), z: a.z + (rnd()<.5?0:2) }; store.addWall(a, b); return "addWall"; },
@@ -100,7 +104,7 @@ const INVARIANTS = [
   "duplicate labels ids",
   "save/load is not stable",
   "size disagrees with the walls",
-  "wall shorter than the minimum",
+  "wall too short to survive a reload",
   "operation threw",
   "invariant check threw",
 ];

@@ -231,14 +231,18 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("detected areas account for the whole floor",
     Math.abs(regions.reduce((s, r) => s + r.area, 0) - 140) < 1,
     String(regions.reduce((s, r) => s + r.area, 0)));
+  // A room's own area, not its bounding box: a room may be an L now, and then
+  // the two differ.
   check("detected areas match what the generator laid out",
-    gen.rooms.every(g => regions.some(r => Math.abs(r.area - g.w * g.l) < 0.15)));
+    gen.rooms.every(g => regions.some(r => Math.abs(r.area - g.area) < 0.15)));
 
   // Doors are walls, not gaps: a doorway must not merge two rooms into one.
   check("a doorway does not merge the rooms it links", regions.length > 2, `${regions.length}`);
 
   const captions = P.roomCaptions(room, 0.9, 0.32);
-  check("a caption for each room with a door", captions.length === gen.rooms.length,
+  // Every generated room, plus any floor left over — which is a real enclosed
+  // area that rooms open onto, and worth showing the size of.
+  check("a caption for each room with a door", captions.length >= gen.rooms.length,
     `${captions.length} vs ${gen.rooms.length}`);
   check("circulation gets no caption",
     !captions.some(c => Math.abs(c.area - gen.corridors.reduce((s, x) => s + x.w * x.l, 0)) < 0.5));
