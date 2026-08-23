@@ -103,3 +103,99 @@ export function coplanarClashes(group, { meshNames = null, minArea = 0.02, toler
   }
   return clashes;
 }
+
+/// The same question, asked of the triangles inside ONE merged geometry.
+///
+/// The instanced check above cannot see in here: a vehicle body is a single
+/// geometry built from many parts, and once they are merged the parts are gone.
+/// So the surfaces are recovered from the triangles — every triangle lying in
+/// an axis-aligned plane is grouped with the others in that plane, and two
+/// facing the SAME way that overlap are two surfaces the depth buffer will have
+/// to choose between.
+///
+/// The overlap has to be measured exactly. Comparing bounding boxes does not
+/// work: the end cap of a cylinder is a fan of triangles that share edges but
+/// never overlap, and their boxes all cover the middle of the cap, so every
+/// wheel in the city reads as hundreds of clashes. The real intersection area
+/// is computed instead, by clipping one triangle against the other.
+
+/// Area of the intersection of two convex polygons, by Sutherland–Hodgman.
+function clippedArea(subject, clip) {
+  let out = subject;
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const a = clip[i];
+    const b = clip[(i + 1) % clip.length];
+    const edge = [b[0] - a[0], b[1] - a[1]];
+    const inside = q => edge[0] * (q[1] - a[1]) - edge[1] * (q[0] - a[0]) >= -1e-12;
+    const next = [];
+    for (let k = 0; k < out.length; k++) {
+      const cur = out[k];
+      const prev = out[(k + out.length - 1) % out.length];
+      const curIn = inside(cur);
+      const prevIn = inside(prev);
+      if (curIn !== prevIn) {
+        const d = [cur[0] - prev[0], cur[1] - prev[1]];
+        const denom = edge[0] * d[1] - edge[1] * d[0];
+        if (Math.abs(denom) > 1e-15) {
+          const t = (edge[0] * (prev[1] - a[1]) - edge[1] * (prev[0] - a[0])) / -denom;
+          next.push([prev[0] + d[0] * t, prev[1] + d[1] * t]);
+        }
+      }
+      if (curIn) next.push(cur);
+    }
+    out = next;
+  }
+  let area = 0;
+  for (let i = 0; i < out.length; i++) {
+    const [x1, y1] = out[i];
+    const [x2, y2] = out[(i + 1) % out.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(area) / 2;
+}
+
+/// Triangles in the same plane, facing the same way, that actually overlap.
+export function coplanarInGeometry(geometry, { minArea = 0.0015, tolerance = 0.0005 } = {}) {
+  const p = geometry.attributes.position;
+  const n = geometry.attributes.normal;
+  const index = geometry.index;
+  const count = index ? index.count : p.count;
+  const planes = new Map();
+
+  for (let t = 0; t < count; t += 3) {
+    const v = [0, 1, 2].map(k => (index ? index.getX(t + k) : t + k));
+    const nx = n.getX(v[0]);
+    const ny = n.getY(v[0]);
+    const nz = n.getZ(v[0]);
+    let axis = -1;
+    let sign = 0;
+    if (Math.abs(Math.abs(nx) - 1) < 1e-4) { axis = 0; sign = Math.sign(nx); }
+    else if (Math.abs(Math.abs(ny) - 1) < 1e-4) { axis = 1; sign = Math.sign(ny); }
+    else if (Math.abs(Math.abs(nz) - 1) < 1e-4) { axis = 2; sign = Math.sign(nz); }
+    if (axis < 0) continue;
+
+    const get = (i, a) => (a === 0 ? p.getX(i) : a === 1 ? p.getY(i) : p.getZ(i));
+    const at = get(v[0], axis);
+    if (Math.abs(get(v[1], axis) - at) > tolerance || Math.abs(get(v[2], axis) - at) > tolerance) continue;
+
+    const others = [0, 1, 2].filter(a => a !== axis);
+    const tri = v.map(i => [get(i, others[0]), get(i, others[1])]);
+    const key = axis + ":" + sign + ":" + Math.round(at / tolerance);
+    if (!planes.has(key)) planes.set(key, []);
+    planes.get(key).push({ axis, sign, at, tri });
+  }
+
+  const clashes = [];
+  for (const [, faces] of planes) {
+    if (faces.length < 2) continue;
+    for (let i = 0; i < faces.length; i++) {
+      for (let j = i + 1; j < faces.length; j++) {
+        const area = clippedArea(faces[i].tri, faces[j].tri);
+        if (area > minArea) {
+          clashes.push({ axis: "xyz"[faces[i].axis], at: faces[i].at, sign: faces[i].sign, area });
+        }
+      }
+    }
+  }
+  return clashes;
+}

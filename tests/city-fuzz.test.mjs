@@ -18,11 +18,11 @@
 
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
-import { coplanarClashes } from "./harness/coplanar.mjs";
+import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
 
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
-  ROOM_SLAB_THICKNESS, WEATHER_KINDS, seedFromString,
+  ROOM_SLAB_THICKNESS, WEATHER_KINDS, NEAR_SIDE_TURN, CROSSING_TURN, seedFromString,
 } = await loadWebModule("city.js");
 
 // Derived rather than exported: the carriageway sits one kerb below the
@@ -559,6 +559,45 @@ for (const [w, l, label] of [
   city.dispose();
 }
 
+// ── Which side of the road ────────────────────────────────────────────────
+//
+// Right-hand traffic, as in the United States and Germany. The side is decided
+// in exactly one function; the stop lines and signal heads derive theirs from
+// it rather than working it out again, because a stop line painted in the
+// oncoming lane is not obviously wrong until you go looking for it.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  // Facing east your right is south, facing south your right is west, and so
+  // on round the compass. +x is east and +z is south.
+  const expected = [
+    ["x", 1, "south", off => off > 0],
+    ["x", -1, "north", off => off < 0],
+    ["z", 1, "west", off => off < 0],
+    ["z", -1, "east", off => off > 0],
+  ];
+  for (const [axis, dir, side, ok] of expected) {
+    check(`traffic heading ${axis === "x" ? (dir > 0 ? "east" : "west") : (dir > 0 ? "south" : "north")} keeps to the ${side}`,
+      ok(City.laneOffset(axis, dir)), `offset ${City.laneOffset(axis, dir)}`);
+  }
+  // And the vehicles really are on that side, not merely told to be.
+  let wrongSide = 0;
+  for (const v of city.cars) {
+    const road = v.fixed - City.laneOffset(v.axis, v.dir);
+    const off = v.fixed - road;
+    const want = City.laneOffset(v.axis, v.dir);
+    if (Math.sign(off) !== Math.sign(want)) wrongSide++;
+  }
+  check("every vehicle is in a lane on that side", wrongSide === 0, `${wrongSide} on the wrong side`);
+  // The turn that crosses oncoming traffic is the LEFT one now.
+  // right(A) = (-az, ax) is a right turn. On the right-hand side of the road
+  // that one crosses nothing; the left turn is the one that has to give way.
+  check("the give-way turn is the left one, as it is on the right-hand side",
+    NEAR_SIDE_TURN === 1 && CROSSING_TURN === -1,
+    `near ${NEAR_SIDE_TURN}, crossing ${CROSSING_TURN}`);
+  city.dispose();
+}
+
 // ── Traffic signals ───────────────────────────────────────────────────────
 //
 // The lights are not decoration timed to look plausible: they read the same
@@ -694,6 +733,42 @@ for (const [w, l, label] of [
       new Set(Array.from({ length: mesh.geometry.attributes.color.count },
         (_, i) => mesh.geometry.attributes.color.getX(i).toFixed(2))).size >= 3);
   }
+  // Nothing inside a body may share a depth with anything else in it. The
+  // instanced check cannot see in here — a body is one merged geometry, and
+  // the parts are gone once it is built — so the surfaces are recovered from
+  // the triangles. This is what the flickering wheels were: the tyres ended at
+  // 0.44W + 0.06W, which is exactly 0.5W, the plane of the car's own flank.
+  for (const kind of kinds) {
+    const mesh = city.vehicleMeshes[kind];
+    if (!mesh) continue;
+    const clashes = coplanarInGeometry(mesh.geometry);
+    check(`a ${kind} has no two surfaces at the same depth`,
+      clashes.length === 0,
+      clashes.length
+        ? `${clashes.length} overlaps, e.g. ${clashes[0].axis} = ${clashes[0].at.toFixed(3)}`
+        : "");
+  }
+
+  // Round wheels. A GPU draws triangles and nothing else, so "round" means
+  // enough of them, shaded smoothly — twelve sides reads as a dodecagon.
+  for (const kind of kinds) {
+    const mesh = city.vehicleMeshes[kind];
+    if (!mesh) continue;
+    const p = mesh.geometry.attributes.position;
+    const n = mesh.geometry.attributes.normal;
+    // Wheel barrels are the only surfaces whose normals are neither axis
+    // aligned nor shared between all three corners of a triangle.
+    let smoothRound = 0;
+    for (let t = 0; t < p.count; t += 3) {
+      const same = Math.abs(n.getX(t) - n.getX(t + 1)) < 1e-6
+        && Math.abs(n.getY(t) - n.getY(t + 1)) < 1e-6
+        && Math.abs(n.getZ(t) - n.getZ(t + 1)) < 1e-6;
+      if (!same) smoothRound++;
+    }
+    check(`a ${kind}'s wheels are smooth-shaded, not faceted`, smoothRound > 100,
+      `${smoothRound} smoothly shaded triangles`);
+  }
+
   // One instance per vehicle, so the detail costs nothing per frame.
   const instances = kinds.reduce((n, k) => n + (city.vehicleMeshes[k] ? city.vehicleMeshes[k].count : 0), 0);
   check("a vehicle is one instance, not a pile of parts written every frame",

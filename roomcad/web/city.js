@@ -142,10 +142,11 @@ const LIGHT_AMBER = 2.4;
 const LIGHT_CLEAR = 3.5;
 const TURN_RADIUS = 5.4;
 const INDICATE_FROM = 24;       // metres before a junction the indicator starts
-// Which way round a turn is, given traffic keeps left: one crosses the
-// oncoming lane and has to give way, the other does not.
-const NEAR_SIDE_TURN = -1;
-const CROSSING_TURN = 1;
+// Which way round a turn is, given traffic keeps right: turning right stays on
+// your own side of the road, turning left cuts across the oncoming lane and has
+// to give way to it. Reversed from what these were when traffic kept left.
+export const NEAR_SIDE_TURN = 1;
+export const CROSSING_TURN = -1;
 const BLINK_HZ = 1.5;
 const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
 // Junction furniture. A driver meets the stop line, then the crossing, then
@@ -374,7 +375,11 @@ function partBuilder() {
   };
 
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
-  const wheelGeo = new THREE.CylinderGeometry(1, 1, 1, 12);
+  // A GPU only ever draws triangles, so "round" is a question of how many and
+  // whether they are shaded smoothly. Twelve sides read as a dodecagon at any
+  // distance you can see a wheel from; twenty-four does not, and Three.js gives
+  // the barrel smooth normals, which the merge preserves.
+  const wheelGeo = new THREE.CylinderGeometry(1, 1, 1, 24);
 
   return {
     /// A box, optionally pitched about Z (for a raked windscreen).
@@ -390,9 +395,11 @@ function partBuilder() {
       _scale.set(r, width, r);
       _q.setFromEuler(_euler.set(Math.PI / 2, 0, 0));
       push(wheelGeo, new THREE.Matrix4().compose(_pos, _q, _scale), TYRE);
-      // Hub, so a wheel is not a plain black cylinder end-on.
-      _pos.set(x, y, z + (width / 2 + 0.01) * Math.sign(z || 1));
-      _scale.set(r * 0.45, 0.03, r * 0.45);
+      // Hub, so a wheel is not a plain black cylinder end-on. It stands clear
+      // of the tyre's outer face rather than starting exactly on it — two
+      // surfaces at one depth is the whole reason the wheels used to flicker.
+      _pos.set(x, y, z + (width / 2 + 0.02) * Math.sign(z || 1));
+      _scale.set(r * 0.5, 0.024, r * 0.5);
       push(wheelGeo, new THREE.Matrix4().compose(_pos, _q, _scale), TRIM);
     },
     build() {
@@ -407,50 +414,65 @@ function partBuilder() {
   };
 }
 
-/// A saloon: stepped bonnet and boot, a greenhouse narrower than the body,
-/// raked screens, door shut lines and handles, bumpers and mirrors.
+/// A wedge: low, wide, cab-forward, with the roofline falling straight into the
+/// rear deck. Everything about it is angled — there is no horizontal bonnet and
+/// no upright screen — which is what separates a supercar silhouette from a
+/// saloon at the distance you actually see these from.
+///
+/// The wheels sit PROUD of the bodywork. They used to end exactly on the body's
+/// side plane, which put two surfaces at one depth and made them flicker.
 function buildCarGeometry(L, W, wheelR) {
   const b = partBuilder();
-  const floor = wheelR * 0.55;
-  const bodyH = 0.62;
-  const bodyY = floor + bodyH / 2;
-  const sill = floor + 0.08;
+  const floor = wheelR * 0.42;
+  const sill = floor + 0.10;
 
-  b.box(0, bodyY, 0, L * 0.96, bodyH, W, PAINT);                       // main body
-  b.box(L * 0.34, bodyY + 0.30, 0, L * 0.28, 0.14, W * 0.95, PAINT);   // bonnet
-  b.box(-L * 0.38, bodyY + 0.28, 0, L * 0.20, 0.12, W * 0.95, PAINT);  // boot lid
+  // Lower body: a shallow slab, with the rear third flared out over the back
+  // wheels the way a mid-engined car is.
+  b.box(L * 0.02, floor + 0.34, 0, L * 0.94, 0.50, W * 0.92, PAINT);
+  b.box(-L * 0.24, floor + 0.36, 0, L * 0.42, 0.52, W, PAINT);          // haunches
+  // Nose: a low wedge running down to the splitter.
+  b.box(L * 0.40, floor + 0.26, 0, L * 0.22, 0.26, W * 0.86, PAINT, -0.12);
+  b.box(L * 0.485, floor + 0.13, 0, 0.16, 0.09, W * 0.9, TRIM);          // splitter
 
-  // Greenhouse, stepped in from the body on both sides.
-  const roofY = bodyY + bodyH / 2 + 0.24;
-  b.box(-L * 0.04, roofY, 0, L * 0.46, 0.48, W * 0.86, PAINT);
-  b.box(-L * 0.04, roofY + 0.25, 0, L * 0.40, 0.05, W * 0.80, PAINT);  // roof panel
+  // The wedge: a raked upper surface from the nose to the base of the screen,
+  // then the roof, then the deck falling away behind it.
+  const cowlY = floor + 0.60;
+  b.box(L * 0.24, cowlY, 0, L * 0.30, 0.10, W * 0.84, PAINT, -0.16);
+  const roofY = floor + 0.92;
+  b.box(-L * 0.06, roofY, 0, L * 0.30, 0.06, W * 0.62, PAINT);           // roof
+  b.box(-L * 0.30, cowlY + 0.16, 0, L * 0.26, 0.09, W * 0.80, PAINT, 0.20); // rear deck
 
-  // Glass: raked front and rear screens, and a window down each side.
-  b.box(L * 0.21, roofY + 0.02, 0, 0.06, 0.46, W * 0.80, GLASS, -0.42);
-  b.box(-L * 0.29, roofY + 0.02, 0, 0.06, 0.42, W * 0.80, GLASS, 0.5);
+  // Glass. A steeply raked screen, a short backlight over the engine, and a
+  // side window that tapers into the C-pillar.
+  b.box(L * 0.10, floor + 0.80, 0, 0.07, 0.46, W * 0.72, GLASS, -0.62);
+  b.box(-L * 0.21, floor + 0.86, 0, 0.06, 0.30, W * 0.64, GLASS, 0.66);
   for (const s of [-1, 1]) {
-    b.box(-L * 0.04, roofY + 0.04, s * W * 0.435, L * 0.40, 0.32, 0.04, GLASS);
+    b.box(-L * 0.05, floor + 0.80, s * W * 0.34, L * 0.26, 0.24, 0.05, GLASS);
+    // Buttress from the roof down to the haunch — the shape that makes the
+    // profile read as mid-engined rather than as a fastback.
+    b.box(-L * 0.19, floor + 0.80, s * W * 0.33, L * 0.16, 0.26, 0.10, PAINT, 0.30);
   }
 
-  // Door shut lines and handles.
+  // Side intake ahead of the rear wheel, door shut line, mirror on a stalk.
   for (const s of [-1, 1]) {
-    for (const at of [L * 0.13, -L * 0.13]) {
-      b.box(at, bodyY, s * W * 0.502, 0.035, bodyH * 0.9, 0.03, TRIM);
-    }
-    b.box(-L * 0.02, bodyY + 0.12, s * W * 0.508, 0.22, 0.05, 0.04, TRIM);
-    // Mirror on its stalk.
-    b.box(L * 0.16, roofY - 0.12, s * W * 0.56, 0.09, 0.07, 0.12, TRIM);
+    b.box(-L * 0.10, floor + 0.34, s * W * 0.465, L * 0.20, 0.20, 0.06, GRILLE);
+    b.box(L * 0.05, floor + 0.34, s * W * 0.463, 0.04, 0.44, 0.04, TRIM);
+    b.box(L * 0.14, floor + 0.66, s * W * 0.52, 0.16, 0.05, 0.11, TRIM);
   }
 
-  // Bumpers, grille and a sill strip.
-  b.box(L * 0.485, floor + 0.30, 0, 0.10, 0.20, W * 0.97, TRIM);
-  b.box(-L * 0.485, floor + 0.30, 0, 0.10, 0.20, W * 0.97, TRIM);
-  b.box(L * 0.47, floor + 0.46, 0, 0.06, 0.14, W * 0.62, GRILLE);
-  for (const s of [-1, 1]) b.box(0, sill, s * W * 0.5, L * 0.7, 0.07, 0.04, TRIM);
-
-  for (const ax of [L * 0.31, -L * 0.31]) {
-    for (const s of [-1, 1]) b.wheel(ax, wheelR, s * W * 0.44, wheelR, W * 0.12);
+  // Tail: a fixed wing on two uprights, a diffuser and quad exhausts.
+  for (const s of [-1, 1]) b.box(-L * 0.40, floor + 0.72, s * W * 0.30, 0.06, 0.20, 0.06, TRIM);
+  b.box(-L * 0.41, floor + 0.84, 0, 0.26, 0.05, W * 0.74, TRIM);
+  b.box(-L * 0.47, floor + 0.16, 0, 0.14, 0.16, W * 0.7, GRILLE);
+  for (const s of [-1, 1]) {
+    b.box(-L * 0.475, floor + 0.30, s * W * 0.16, 0.10, 0.07, 0.07, TRIM);
   }
+
+  for (const s of [-1, 1]) b.box(L * 0.02, sill, s * W * 0.47, L * 0.5, 0.06, 0.05, TRIM);
+
+  // Rear wheels wider than the front, and both standing proud of the body.
+  for (const s of [-1, 1]) b.wheel(L * 0.32, wheelR, s * W * 0.46, wheelR, W * 0.12);
+  for (const s of [-1, 1]) b.wheel(-L * 0.30, wheelR * 1.06, s * W * 0.46, wheelR * 1.06, W * 0.15);
   return b.build();
 }
 
@@ -1363,10 +1385,14 @@ export class City {
         : boxMatrix(rx + off, y, rz + at, CROSS_BAR, 0.04, CROSS_DEPTH), MARKING_COLOR);
     }
 
-    // The stop line covers the approaching half of the carriageway only —
-    // traffic keeps left, so that is the half on the near side of the arm.
+    // The stop line covers the approaching half of the carriageway only. Which
+    // half that is comes from laneOffset — the same function the vehicles use
+    // to decide where to drive — so the paint cannot end up in the oncoming
+    // lane if the driving side ever changes.
+    const approach = -dir;
+    const offset = City.laneOffset(alongX ? "x" : "z", approach);
+    const side = Math.sign(offset);
     const lane = ROAD_WIDTH / 4;
-    const side = alongX ? -arm.dx : arm.dz;
     const at = dir * (far + STOP_LINE_W / 2);
     flats.add(alongX
       ? boxMatrix(rx + at, y, rz + side * lane, STOP_LINE_W, 0.04, ROAD_WIDTH / 2 - 0.25)
@@ -1389,11 +1415,11 @@ export class City {
         for (const arm of [{ dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }]) {
           const alongX = arm.dx !== 0;
           const axis = alongX ? "x" : "z";
-          // The signal faces the traffic coming IN along this arm, and stands
-          // on that traffic's left — which is the kerb side where traffic
-          // keeps left.
+          // The signal faces the traffic coming IN along this arm and stands on
+          // that traffic's own kerb, which is whichever side laneOffset puts
+          // its lane on.
           const dir = -(alongX ? arm.dx : arm.dz);      // direction of approach
-          const side = alongX ? -dir : dir;
+          const side = Math.sign(City.laneOffset(axis, dir));
           const px = alongX ? rx + arm.dx * reach : rx + side * (ROAD_WIDTH / 2 + 1.1);
           const pz = alongX ? rz + side * (ROAD_WIDTH / 2 + 1.1) : rz + arm.dz * reach;
           const heading = alongX ? (dir > 0 ? 0 : Math.PI) : (dir > 0 ? Math.PI / 2 : -Math.PI / 2);
@@ -1470,18 +1496,23 @@ export class City {
 
   // MARK: - Traffic
 
-  /// Which side of the centreline a lane sits on. Traffic keeps LEFT, which is
-  /// what Singapore does — and the sun in walk3d is a Singapore sun, so the
-  /// streets may as well agree with the sky. Heading east that puts you on the
-  /// northern side of the road, and so on round.
+  /// Which side of the centreline a lane sits on. Traffic keeps RIGHT, as it
+  /// does in the United States and Germany: heading east that puts you on the
+  /// southern side of the road, and so on round.
+  ///
+  /// This is the ONLY place the driving side is decided. The stop lines and the
+  /// signal heads both derive their side from this rather than working it out
+  /// again from the arm direction — hand-computed signs in three places is
+  /// three chances to get one of them backwards, and a stop line painted in the
+  /// oncoming lane is not obviously wrong until you look for it.
   static laneOffset(axis, dir) {
-    return axis === "x" ? -LANE_OFFSET * dir : LANE_OFFSET * dir;
+    return axis === "x" ? LANE_OFFSET * dir : -LANE_OFFSET * dir;
   }
 
   /// Unit vector for a lane direction. Turns are described relative to travel
-  /// by rotating it: turning(A, +1) = (-az, ax) swings east to south, which
-  /// with traffic keeping left is the turn ACROSS the oncoming lane; -1 is the
-  /// near-side turn that crosses nothing.
+  /// by rotating it: turning(A, +1) = (-az, ax) swings east to south — a right
+  /// turn, which with traffic keeping right crosses nothing; -1 is the left
+  /// turn, across the oncoming lane.
   static forwardOf(axis, dir) {
     return axis === "x" ? { x: dir, z: 0 } : { x: 0, z: dir };
   }
