@@ -701,5 +701,79 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     P.clamp(5, 2, 20) === 5 && P.clamp(1, 2, 20) === 2 && P.clamp(99, 2, 20) === 20);
 }
 
+// ── Which walls face the open air ─────────────────────────────────────────
+//
+// The outer skin is held still so that rearranging the inside of a plan cannot
+// quietly reshape the building's footprint. Deciding what counts as "outer"
+// from a bounding box would be wrong for anything that is not a plain
+// rectangle, so it comes from the same flood fill that finds the rooms: the
+// walls the outside region ran into.
+{
+  const rect = P.freshRoom("R", 6, 4, 2.6);
+  P.centerRoom(rect);
+  check("every wall of a plain rectangle faces out",
+    P.outsideFacingWalls(rect).size === 4, `${P.outsideFacingWalls(rect).size}`);
+
+  // A wall through the middle is enclosed on both sides.
+  const o = P.roomOrigin(rect);
+  rect.walls.push({ id: "divider", start: { x: o.x + 3, z: o.z }, end: { x: o.x + 3, z: o.z + 4 } });
+  const withDivider = P.outsideFacingWalls(rect);
+  check("an interior divider does not face out", !withDivider.has("divider"));
+  check("adding a divider does not change the skin", withDivider.size === 4, `${withDivider.size}`);
+
+  // An L-shape: a bounding box would call the notch walls interior. They are not.
+  const L = P.freshRoom("L", 8, 8, 2.6);
+  P.centerRoom(L);
+  const q = P.roomOrigin(L);
+  const seg = (id, ax, az, bx, bz) => ({ id, start: { x: q.x + ax, z: q.z + az }, end: { x: q.x + bx, z: q.z + bz } });
+  L.walls = [
+    seg("n", 0, 0, 8, 0), seg("e", 8, 0, 8, 4), seg("notchS", 8, 4, 4, 4),
+    seg("notchW", 4, 4, 4, 8), seg("s", 4, 8, 0, 8), seg("w", 0, 8, 0, 0),
+  ];
+  const skin = P.outsideFacingWalls(L);
+  check("both walls of an L-shaped notch face out",
+    skin.has("notchS") && skin.has("notchW"), [...skin].join(","));
+  check("an L-shape has every wall on its skin", skin.size === 6, `${skin.size}`);
+
+  // Locking follows from that, and one wall can opt out.
+  const outer = L.walls.find(w => skin.has(w.id));
+  const inner = { id: "stub", start: { x: q.x + 1, z: q.z + 1 }, end: { x: q.x + 3, z: q.z + 1 } };
+  L.walls.push(inner);
+  check("an outer wall is locked by default", P.wallDragLocked(L, outer));
+  check("an inner wall is never locked", !P.wallDragLocked(L, inner));
+  check("dragUnlocked frees exactly that wall",
+    !P.wallDragLocked(L, { ...outer, dragUnlocked: true }));
+  check("wallDragLocked tolerates a missing wall", !P.wallDragLocked(L, null));
+}
+
+// ── Moving a wall keeps its length ────────────────────────────────────────
+//
+// Clamping the two endpoints separately lets one stop at the edge of the plate
+// while the other keeps going, which shortens the wall — and a wall that gets
+// shorter can drop a door that no longer fits on it.
+{
+  const w = { id: "t", start: { x: 0.2, z: 1 }, end: { x: 3.2, z: 1 } };
+  const len = P.wallLength(w);
+  const shoved = P.translateWall(w, -5, 0, 25, 25);
+  check("a wall shoved past the edge keeps its length",
+    near(P.wallLength(shoved), len, 1e-9), `${P.wallLength(shoved)} vs ${len}`);
+  check("and stops at the edge", near(Math.min(shoved.start.x, shoved.end.x), 0, 1e-9));
+
+  const far = P.translateWall(w, 100, 100, 25, 25);
+  check("the same holds at the far edge", near(P.wallLength(far), len, 1e-9));
+  check("it stays on the plate", Math.max(far.start.x, far.end.x) <= 25 + 1e-9
+    && Math.max(far.start.z, far.end.z) <= 25 + 1e-9);
+
+  const free = P.translateWall(w, 0.5, 0.25, 25, 25);
+  check("an unobstructed move is exact",
+    near(free.start.x, 0.7) && near(free.start.z, 1.25) && near(free.end.x, 3.7));
+
+  // A wall longer than the plate must not be flung across it.
+  const huge = { id: "h", start: { x: 0, z: 2 }, end: { x: 30, z: 2 } };
+  const nudged = P.translateWall(huge, 1, 0, 25, 25);
+  check("a wall wider than the plate is left where it is",
+    near(nudged.start.x, 0) && near(nudged.end.x, 30));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

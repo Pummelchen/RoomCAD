@@ -304,14 +304,49 @@ export const store = {
     }
   },
 
+  /// True if this wall is part of the outer skin and has not been unlocked.
+  wallIsLocked(id) {
+    const wall = this.room.walls.find(w => w.id === id);
+    return P.wallDragLocked(this.room, wall);
+  },
+
   moveWall(id, dx, dz) {
     const index = this.room.walls.findIndex(w => w.id === id);
-    if (index < 0) return;
+    if (index < 0) return false;
+    // An outer wall holds the footprint of the building. Moving one by accident
+    // while rearranging the inside is the mistake this prevents; the wall says
+    // how to allow it rather than just refusing.
+    if (this.wallIsLocked(id)) {
+      this.status = "Outside wall is fixed — right-click it and choose Unlock Drag";
+      this.emit();
+      return false;
+    }
     this.beginDrag();
     const canvas = P.canvasOf(this.room);
+    // Doors and windows are positioned along their wall, so moving the wall
+    // carries them with it: nothing to update here, as long as the wall keeps
+    // its identity and its length (see translateWall).
     this.room.walls[index] = P.translateWall(
       this.room.walls[index], dx, dz, canvas.width, canvas.length
     );
+    return true;
+  },
+
+  /// Lets one outer wall be dragged, or puts it back under lock.
+  setWallDragUnlocked(id, unlocked) {
+    const wall = this.room.walls.find(w => w.id === id);
+    if (!wall) return;
+    if (!!wall.dragUnlocked === !!unlocked) return;
+    this.commit(unlocked ? "Unlocked an outside wall" : "Locked an outside wall", room => {
+      const w = room.walls.find(x => x.id === id);
+      if (!w) return;
+      if (unlocked) w.dragUnlocked = true;
+      else delete w.dragUnlocked;
+    });
+    this.status = unlocked
+      ? "Outside wall unlocked — drag it, or right-click to lock it again"
+      : "Outside wall locked again";
+    this.emit();
   },
 
   // MARK: Doors and windows

@@ -359,11 +359,24 @@ function attachAlongAxis(room, end, fixed, excludeWallID) {
     : point(fixed.x, clean(attach.z));
 }
 
+/// Moves a whole wall, keeping its length.
+///
+/// The movement is clamped, not the two endpoints separately: clamping each end
+/// on its own lets one stop at the edge of the plate while the other keeps
+/// going, which silently shortens the wall — and a wall that gets shorter can
+/// drop a door that no longer fits on it.
 export function translateWall(w, dx, dz, width, length) {
+  const minX = Math.min(w.start.x, w.end.x);
+  const maxX = Math.max(w.start.x, w.end.x);
+  const minZ = Math.min(w.start.z, w.end.z);
+  const maxZ = Math.max(w.start.z, w.end.z);
+  const room = (lo, hi) => (lo > hi ? 0 : null);
+  const moveX = room(-minX, width - maxX) ?? clamp(dx, -minX, width - maxX);
+  const moveZ = room(-minZ, length - maxZ) ?? clamp(dz, -minZ, length - maxZ);
   return {
     ...w,
-    start: { x: clamp(w.start.x + dx, 0, width), z: clamp(w.start.z + dz, 0, length) },
-    end: { x: clamp(w.end.x + dx, 0, width), z: clamp(w.end.z + dz, 0, length) },
+    start: { x: clean(w.start.x + moveX), z: clean(w.start.z + moveZ) },
+    end: { x: clean(w.end.x + moveX), z: clean(w.end.z + moveZ) },
   };
 }
 
@@ -887,7 +900,7 @@ export function resizePublicArea(a, corner, raw, room) {
 // MARK: - Enclosed rooms
 
 const MAX_ROOM_CELLS = 60000;   // decomposition guard for pathological plans
-let _roomCache = { key: null, rooms: null };
+let _roomCache = { key: null, rooms: null, outsideWalls: null };
 
 function roomSignature(room) {
   // Exported and callable on a half-built room (an import mid-parse, a caller
@@ -915,7 +928,7 @@ export function detectRooms(room) {
   const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
   const result = [];
   if (walls.length < 3) {
-    _roomCache = { key, rooms: result };
+    _roomCache = { key, rooms: result, outsideWalls: new Set() };
     return result;
   }
 
@@ -939,7 +952,7 @@ export function detectRooms(room) {
   const nx = xs.length - 1;
   const nz = zs.length - 1;
   if (nx < 1 || nz < 1 || nx * nz > MAX_ROOM_CELLS) {
-    _roomCache = { key, rooms: result };
+    _roomCache = { key, rooms: result, outsideWalls: new Set() };
     return result;
   }
 
@@ -1004,6 +1017,12 @@ export function detectRooms(room) {
 
   // Whatever contains the margin corner is the outside.
   const outside = owner[at(0, 0)];
+  // The walls that region ran into are the ones facing the open air — the
+  // building's skin, whatever shape it is. An L, a courtyard and a plain
+  // rectangle all fall out of this correctly, which a bounding-box test would
+  // not manage.
+  const outsideWalls = new Set(
+    (regions.find(r => r.id === outside) || { wallIDs: new Set() }).wallIDs);
   const doorWalls = new Set((room.doors || []).map(d => d.wallID));
   for (const region of regions) {
     if (region.id === outside) continue;
@@ -1028,8 +1047,25 @@ export function detectRooms(room) {
       hasDoor,
     });
   }
-  _roomCache = { key, rooms: result };
+  _roomCache = { key, rooms: result, outsideWalls };
   return result;
+}
+
+/// The ids of the walls that face the open air.
+///
+/// These are the building's outer skin. They are held still by default so that
+/// editing the inside of a plan cannot accidentally reshape its footprint;
+/// `dragUnlocked` on a wall overrides that for that one wall.
+export function outsideFacingWalls(room) {
+  detectRooms(room);
+  return _roomCache.outsideWalls || new Set();
+}
+
+/// Whether this wall refuses to be dragged: an outer wall the user has not
+/// explicitly unlocked.
+export function wallDragLocked(room, wall) {
+  if (!wall || wall.dragUnlocked) return false;
+  return outsideFacingWalls(room).has(wall.id);
 }
 
 /// Where a room's area caption can sit without landing on anything.

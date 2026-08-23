@@ -472,7 +472,15 @@ export class Editor2D {
       title = "Window";
       items.push({ label: "Delete window", danger: true, action: "delete" });
     } else if (store.selectedWallID) {
-      title = "Wall";
+      const wall = store.selectedWall();
+      const outer = wall && P.outsideFacingWalls(store.room).has(wall.id);
+      title = outer ? "Outside wall" : "Wall";
+      if (wall) items.push({ label: P.cm(P.wallLength(wall)), action: null });
+      if (outer) {
+        items.push(wall.dragUnlocked
+          ? { label: "Lock Drag", action: "lock-wall" }
+          : { label: "Unlock Drag", action: "unlock-wall" });
+      }
       items.push({ label: "Delete wall", danger: true, action: "delete" });
     }
     return { title, items };
@@ -491,6 +499,12 @@ export class Editor2D {
         if (id) store.toggleDoorOpen(id);
         break;
       }
+      case "unlock-wall":
+        if (store.selectedWallID) store.setWallDragUnlocked(store.selectedWallID, true);
+        break;
+      case "lock-wall":
+        if (store.selectedWallID) store.setWallDragUnlocked(store.selectedWallID, false);
+        break;
       case "delete":
         store.deleteSelection();
         break;
@@ -598,7 +612,9 @@ export class Editor2D {
     }
 
     const wall = store.selectedWall();
-    if (wall) {
+    // A wall that cannot move offers no grab handles; showing them would invite
+    // a drag that is then refused.
+    if (wall && !P.wallDragLocked(store.room, wall)) {
       if (P.distance(wall.start, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "start" };
       if (P.distance(wall.end, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "end" };
     }
@@ -652,6 +668,13 @@ export class Editor2D {
       // Select the wall so it turns green and its length shows while resizing.
       store.clearSelection();
       store.selectedWallID = wall.id;
+      if (P.wallDragLocked(store.room, wall)) {
+        // Select it and say how to free it, rather than moving the footprint of
+        // the building because someone meant to grab the wall behind it.
+        store.status = "Outside wall is fixed — right-click it and choose Unlock Drag";
+        store.emit();
+        return { type: "click" };
+      }
       store.beginDrag();
       const startDist = P.distance(wall.start, p);
       const endDist = P.distance(wall.end, p);
@@ -971,6 +994,12 @@ export class Editor2D {
       }
     }
 
+    // Which walls face the open air — worked out once per frame and reused by
+    // the drawing, the handles and the hit-testing, so they cannot disagree.
+    this._lockedWalls = new Set();
+    for (const wall of room.walls) {
+      if (P.wallDragLocked(room, wall)) this._lockedWalls.add(wall.id);
+    }
     for (const wall of room.walls) {
       this.drawWall(wall, wall.id === store.selectedWallID);
     }
@@ -1246,7 +1275,9 @@ export class Editor2D {
       }
     }
     const wall = store.selectedWall();
-    if (wall) {
+    // No red grab handles on a wall that is held still — they would promise a
+    // drag that is then refused.
+    if (wall && !P.wallDragLocked(store.room, wall)) {
       this.drawHandle(wall.start);
       this.drawHandle(wall.end);
     }
@@ -1474,7 +1505,13 @@ export class Editor2D {
     const ctx = this.ctx;
     const room = store.room;
     const thickness = selected ? 9 : 7;
-    const color = selected ? "#2ecc40" : "#4a90e2";
+    // Outer walls are held still, and look it: light brown rather than the blue
+    // of a wall you can move. Unlocking one returns it to the normal colour, so
+    // the plan shows at a glance which parts of the shell are in play.
+    const locked = this._lockedWalls && this._lockedWalls.has(wall.id);
+    const color = selected
+      ? (locked ? "#e0b877" : "#2ecc40")
+      : (locked ? "#c8a06a" : "#4a90e2");
 
     const doorSpans = room.doors
       .filter(d => d.wallID === wall.id)

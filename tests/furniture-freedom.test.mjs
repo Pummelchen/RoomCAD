@@ -198,5 +198,80 @@ const isValid = item => P.isFurniturePlacementValid(store.room, item, new Set([i
     !noAreaText.includes("null") && !noAreaText.includes("NaN"), noAreaText);
 }
 
+const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
+
+// ── Dragging a wall carries what is mounted on it ─────────────────────────
+//
+// Doors and windows are positioned along their wall, so moving the wall should
+// take them with it — provided the wall keeps its identity and its length.
+{
+  const room = P.freshRoom("Drag", 8, 6, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 20, length: 20 };
+  const divider = { id: "divider", start: P.point(4, 0), end: P.point(4, 6) };
+  room.walls.push(divider);
+  room.doors = [{ id: "d1", wallID: "divider", offset: 2.0, width: 0.9, open: true, swingInside: true }];
+  const outerWall = room.walls[0];
+  room.windows = [{ id: "n1", wallID: outerWall.id, offset: 1.0, width: 1.2, open: true, swingInside: true }];
+  store.room = P.parseRoom(P.serializeRoom(room));
+
+  const centreOf = (list, id) => {
+    const o = store.room[list].find(x => x.id === id);
+    const w = store.room.walls.find(x => x.id === o.wallID);
+    const t = (o.offset + o.width / 2) / P.wallLength(w);
+    return { x: w.start.x + (w.end.x - w.start.x) * t, z: w.start.z + (w.end.z - w.start.z) * t };
+  };
+
+  check("the divider is not part of the skin", !store.wallIsLocked("divider"));
+  check("the outer wall is locked", store.wallIsLocked(outerWall.id));
+
+  // Locked: refused, and nothing moves.
+  const beforeOuter = { ...store.room.walls.find(w => w.id === outerWall.id).start };
+  check("moving a locked wall is refused", store.moveWall(outerWall.id, 0.5, 0.5) === false);
+  const afterOuter = store.room.walls.find(w => w.id === outerWall.id).start;
+  check("a refused move leaves the wall alone",
+    afterOuter.x === beforeOuter.x && afterOuter.z === beforeOuter.z);
+  check("the refusal explains how to allow it", /Unlock Drag/.test(store.status), store.status);
+
+  // The divider moves, and its door goes along.
+  const wallBefore = { ...store.room.walls.find(w => w.id === "divider").start };
+  const lenBefore = P.wallLength(store.room.walls.find(w => w.id === "divider"));
+  const doorBefore = centreOf("doors", "d1");
+  check("an inside wall moves", store.moveWall("divider", 0.30, 0.20) === true);
+  const wallAfter = store.room.walls.find(w => w.id === "divider").start;
+  const doorAfter = centreOf("doors", "d1");
+  check("the wall moved by what was asked",
+    near(wallAfter.x - wallBefore.x, 0.30) && near(wallAfter.z - wallBefore.z, 0.20),
+    `${wallAfter.x - wallBefore.x}, ${wallAfter.z - wallBefore.z}`);
+  check("the wall kept its length",
+    near(P.wallLength(store.room.walls.find(w => w.id === "divider")), lenBefore, 1e-9));
+  check("the door is still on the wall", !!store.room.doors.find(d => d.id === "d1"));
+  check("the door travelled with the wall",
+    near(doorAfter.x - doorBefore.x, 0.30) && near(doorAfter.z - doorBefore.z, 0.20),
+    `${doorAfter.x - doorBefore.x}, ${doorAfter.z - doorBefore.z}`);
+
+  // Unlock the outer wall, then it moves and keeps its window.
+  store.setWallDragUnlocked(outerWall.id, true);
+  check("unlocking is reflected in the model",
+    store.room.walls.find(w => w.id === outerWall.id).dragUnlocked === true);
+  check("an unlocked outer wall is no longer locked", !store.wallIsLocked(outerWall.id));
+  const winBefore = centreOf("windows", "n1");
+  check("an unlocked outer wall moves", store.moveWall(outerWall.id, 0, 0.25) === true);
+  const winAfter = centreOf("windows", "n1");
+  check("its window came too", near(winAfter.z - winBefore.z, 0.25), `${winAfter.z - winBefore.z}`);
+
+  // And it can be locked again.
+  store.setWallDragUnlocked(outerWall.id, false);
+  check("locking again sticks",
+    store.room.walls.find(w => w.id === outerWall.id).dragUnlocked === undefined);
+  check("and it refuses to move once more", store.moveWall(outerWall.id, 0.4, 0) === false);
+
+  // The flag has to survive a save/load round trip, or a reopened plan forgets.
+  store.setWallDragUnlocked(outerWall.id, true);
+  const reloaded = P.parseRoom(P.serializeRoom(store.room));
+  check("dragUnlocked survives a save and reload",
+    reloaded.walls.find(w => w.id === outerWall.id).dragUnlocked === true);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

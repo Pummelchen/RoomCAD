@@ -76,5 +76,34 @@ check("fit solves for the scale that makes geometry plus annotations fill the vi
 check("fit accounts for a rotated plan",
   /fit\(\)[\s\S]{0,900}store\.rotation === 90 \|\| store\.rotation === 270/.test(editor));
 
+// Outer walls are held still and look it. The colour, the handles and the
+// hit-testing must all agree about which walls those are, or the plan invites
+// a drag it then refuses.
+check("the locked set is worked out once per frame and shared",
+  editor.includes("this._lockedWalls = new Set()") && /P\.wallDragLocked\(room, wall\)/.test(editor));
+check("an outer wall is drawn light brown, not the blue of a movable one",
+  /locked \? "#c8a06a" : "#4a90e2"/.test(editor));
+check("selecting an outer wall keeps it visibly different",
+  /locked \? "#e0b877" : "#2ecc40"/.test(editor));
+check("a fixed wall shows no grab handles",
+  /!P\.wallDragLocked\(store\.room, wall\)\)[\s\S]{0,200}drawHandle\(wall\.start\)/.test(editor));
+check("a fixed wall's endpoints are not hit-testable",
+  /!P\.wallDragLocked\(store\.room, wall\)\)[\s\S]{0,240}kind: "wallEnd"/.test(editor));
+check("pressing on a fixed wall selects it instead of starting a drag",
+  /wallDragLocked[\s\S]{0,400}return \{ type: "click" \}/.test(editor));
+check("and says how to free it", /Unlock Drag/.test(editor));
+
+// The menu is where the lock is lifted, and it has to toggle both ways.
+check("an outer wall gets its own menu title", /title = outer \? "Outside wall" : "Wall"/.test(editor));
+check("the menu offers Unlock Drag when locked",
+  /label: "Unlock Drag", action: "unlock-wall"/.test(editor));
+check("and Lock Drag once unlocked",
+  /label: "Lock Drag", action: "lock-wall"/.test(editor));
+check("only outer walls offer the lock toggle",
+  /if \(outer\) \{[\s\S]{0,220}Unlock Drag/.test(editor));
+check("both menu actions reach the store",
+  /case "unlock-wall"[\s\S]{0,200}setWallDragUnlocked\(store\.selectedWallID, true\)/.test(editor)
+  && /case "lock-wall"[\s\S]{0,200}setWallDragUnlocked\(store\.selectedWallID, false\)/.test(editor));
+
 console.log(`${passed} passed, ${failed} failed — 2D editor behaviour contracts`);
 if (failed) process.exit(1);
