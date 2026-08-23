@@ -594,6 +594,83 @@ for (const [w, l, label] of [
   city.dispose();
 }
 
+// ── How fast each vehicle goes ────────────────────────────────────────────
+//
+// The kind sets a base speed — a bus is not a hatchback — and each driver has
+// their own pace on top of it, redrawn every time they come out of a turn. A
+// lane of one kind used to move as a single block, which is the thing that
+// makes model traffic look modelled.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+
+  // A fixed total, shared over the lanes — so changing how many streets are
+  // populated cannot silently change how much traffic there is.
+  check("the fleet is the size it is meant to be", city.cars.length === 80,
+    `${city.cars.length} vehicles`);
+  check("the fleet is spread over every lane, not just the middle few",
+    new Set(city.cars.map(v => `${v.lane.axis}${v.lane.dir}${v.lane.roadIndex}`)).size >= 20,
+    `${new Set(city.cars.map(v => `${v.lane.axis}${v.lane.dir}${v.lane.roadIndex}`)).size} lanes in use`);
+
+  let outOfRange = 0;
+  let mismatched = 0;
+  for (const v of city.cars) {
+    if (v.pace < 0.9 - 1e-9 || v.pace > 1.2 + 1e-9) outOfRange++;
+    if (Math.abs(v.cruise - v.spec.cruise * v.pace) > 1e-9) mismatched++;
+  }
+  check("every vehicle's pace is inside the range", outOfRange === 0, `${outOfRange} outside`);
+  check("and its speed is that pace applied to its kind's base",
+    mismatched === 0, `${mismatched} disagree`);
+
+  // The spread is the pace and nothing else, so it is exactly what the
+  // constants say. Compounding a per-kind range with it gave cars anything
+  // from 34 to 58 km/h.
+  for (const kind of ["car", "truck", "bus"]) {
+    const speeds = city.cars.filter(v => v.kind === kind).map(v => v.cruise);
+    if (speeds.length < 4) continue;
+    const spread = Math.max(...speeds) / Math.min(...speeds);
+    check(`${kind}s vary in speed, but only within the pace range`,
+      spread > 1.05 && spread <= 1.2 / 0.9 + 1e-6,
+      `fastest is ${((spread - 1) * 100).toFixed(0)}% quicker than the slowest`);
+  }
+
+  // A fresh pace out of every corner, so the order of a queue keeps changing.
+  const watched = city.cars.find(v => v.kind === "car");
+  const paces = [watched.pace];
+  let turns = 0;
+  let wasTurning = false;
+  for (let f = 0; f < 54000; f++) {
+    city.update(1 / 60, viewer);
+    if (wasTurning && !watched.arc) { turns++; paces.push(watched.pace); }
+    wasTurning = !!watched.arc;
+  }
+  check("a vehicle takes several turns in fifteen minutes", turns >= 4, `${turns} turns`);
+  check("and picks a new pace coming out of each one",
+    new Set(paces.map(p => p.toFixed(6))).size === paces.length,
+    `${new Set(paces.map(p => p.toFixed(6))).size} distinct over ${paces.length}`);
+  check("every one of them is still inside the range",
+    paces.every(p => p >= 0.9 - 1e-9 && p <= 1.2 + 1e-9),
+    `${Math.min(...paces).toFixed(2)}-${Math.max(...paces).toFixed(2)}`);
+
+  // Drawn from the vehicle's own stream, so the city is still reproducible.
+  const twin = new City();
+  twin.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const twinWatched = twin.cars.find(v => v.kind === "car");
+  const twinPaces = [twinWatched.pace];
+  wasTurning = false;
+  for (let f = 0; f < 54000; f++) {
+    twin.update(1 / 60, viewer);
+    if (wasTurning && !twinWatched.arc) twinPaces.push(twinWatched.pace);
+    wasTurning = !!twinWatched.arc;
+  }
+  check("the same city still behaves identically every time it is opened",
+    JSON.stringify(paces) === JSON.stringify(twinPaces),
+    `${paces.length} vs ${twinPaces.length} changes`);
+  twin.dispose();
+  city.dispose();
+}
+
 // ── Which side of the road ────────────────────────────────────────────────
 //
 // Right-hand traffic, as in the United States and Germany. The side is decided

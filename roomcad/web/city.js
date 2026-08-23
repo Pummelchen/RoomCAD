@@ -134,12 +134,17 @@ const GLASS_COLOR = 0x2a3038;
 // Traffic.
 const LANE_OFFSET = 3.1;        // lane centre from the road centreline
 const LIGHT_CYCLE = 30;         // seconds for a full two-phase cycle
-const LIGHT_AMBER = 2.4;
+const LIGHT_AMBER = 2.0;
 // All-red after the amber. A bus entering on the last of the green needs
 // several seconds to drag twelve metres of itself out of a thirteen-metre
 // box; without this interval the crossing traffic is released while it is
 // still in there.
-const LIGHT_CLEAR = 3.5;
+// Two seconds, not the three and a half it started at. Nothing enters a
+// junction it cannot clear before the crossing direction is released — that is
+// checked per vehicle, against its own length and speed — so this interval is
+// a margin rather than the thing keeping the junction safe, and every second of
+// it is a second in which nobody moves.
+const LIGHT_CLEAR = 2.0;
 const TURN_RADIUS = 5.4;
 const INDICATE_FROM = 24;       // metres before a junction the indicator starts
 // Which way round a turn is, given traffic keeps right: turning right stays on
@@ -149,6 +154,14 @@ export const NEAR_SIDE_TURN = 1;
 export const CROSSING_TURN = -1;
 const BLINK_HZ = 1.5;
 const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
+// Every driver has their own pace. The kind of vehicle sets the base speed —
+// a bus is not a hatchback — and this is the multiplier on top of it, so some
+// press on and some dawdle. Without it a lane of the same kind moves as one
+// block, which is the thing that makes model traffic look modelled.
+const PACE_SLOWEST = 0.90;
+const PACE_FASTEST = 1.20;
+// How many vehicles are on the streets altogether, spread over every lane.
+const FLEET_SIZE = 80;
 // Junction furniture. A driver meets the stop line, then the crossing, then
 // the carriageway, so the crossing sits between the line and the junction.
 const CROSS_GAP = 0.6;          // carriageway edge to the near edge of the crossing
@@ -180,6 +193,11 @@ const PRECIP_HEIGHT = 30;
 /// The kinds of vehicle on the streets. `share` is how common each is; the
 /// rest is what makes them behave differently — a bus pulls away from a light
 /// far more slowly than a hatchback, and needs a great deal more room to stop.
+///
+/// `cruise` is the base speed for the KIND, in metres per second. The spread
+/// within a kind comes entirely from each driver's own pace, so the two do not
+/// compound: a range here multiplied by a range there gave cars anything from
+/// 34 to 58 km/h, which is a wider gap than the streets should have.
 const VEHICLE_REF = {
   car: { L: 4.45, W: 1.78, wheelR: 0.34, lampY: 0.62 },
   truck: { L: 9.7, W: 2.42, wheelR: 0.5, lampY: 0.86 },
@@ -190,17 +208,17 @@ const VEHICLE_KINDS = [
   {
     kind: "car", share: 0.66, length: [4.0, 4.9], width: 1.78,
     bodyH: 0.70, roofH: 0.58, roofFrac: 0.52, axles: 2,
-    cruise: [9.5, 13.5], accel: 2.8, brake: 5.6, colors: CAR_COLORS,
+    cruise: 11.5, accel: 2.8, brake: 5.6, colors: CAR_COLORS,
   },
   {
     kind: "truck", share: 0.2, length: [8.4, 11.0], width: 2.42,
     bodyH: 1.18, roofH: 1.25, roofFrac: 0.3, axles: 3,
-    cruise: [7.5, 10.0], accel: 1.5, brake: 4.2, colors: TRUCK_COLORS,
+    cruise: 8.8, accel: 1.5, brake: 4.2, colors: TRUCK_COLORS,
   },
   {
     kind: "bus", share: 0.14, length: [10.5, 12.2], width: 2.5,
     bodyH: 2.05, roofH: 0.5, roofFrac: 0.9, axles: 3,
-    cruise: [7.0, 10.0], accel: 1.4, brake: 4.0, colors: BUS_COLORS,
+    cruise: 8.5, accel: 1.4, brake: 4.0, colors: BUS_COLORS,
   },
 ];
 
@@ -1559,21 +1577,31 @@ export class City {
       makeLane("z", -1, i);
     }
 
-    // Populate only the roads near enough to be seen through the fog.
+    // Every lane in the grid, not just the middle few. Traffic used to be
+    // confined to the roads within a block and a half of the room, on the
+    // grounds that the rest was lost in fog — but the fog now reaches past the
+    // hills, so those streets are plainly visible and were conspicuously
+    // empty. Spreading the same fleet over the whole grid also keeps it
+    // moving: packed onto four roads, adding vehicles made the traffic slower
+    // rather than busier, which is what saturation does.
     const populated = [];
     for (let i = 0; i < this.roadZ.length; i++) {
-      if (Math.abs(this.roadZ[i] - cz) > span * 1.6) continue;
       populated.push(this.lanes.get(`x|1|${i}`), this.lanes.get(`x|-1|${i}`));
     }
     for (let i = 0; i < this.roadX.length; i++) {
-      if (Math.abs(this.roadX[i] - cx) > span * 1.6) continue;
       populated.push(this.lanes.get(`z|1|${i}`), this.lanes.get(`z|-1|${i}`));
     }
 
-    const PER_LANE = 4;
+    // The fleet, shared out over every lane as evenly as it divides. Sized as
+    // a total rather than a per-lane count so that changing how many streets
+    // are populated does not silently change how much traffic there is.
     this.cars = [];
     let id = 0;
-    for (const lane of populated) {
+    for (let li = 0; li < populated.length; li++) {
+      const lane = populated[li];
+      const share = Math.floor(FLEET_SIZE / populated.length)
+        + (li < FLEET_SIZE % populated.length ? 1 : 0);
+      if (!share) continue;
       // Somewhere to put them that is not in a junction. Nudging a vehicle out
       // of one is not enough on its own: several in the same lane get nudged
       // to the same side of the same junction and start life on top of each
@@ -1586,12 +1614,16 @@ export class City {
         if (!crossing.some(road => Math.abs(a - road) < clearOf)) slots.push(a);
       }
       if (!slots.length) continue;
-      for (let k = 0; k < PER_LANE; k++) {
-        const pick = Math.floor((k + 0.2 + rnd() * 0.6) * slots.length / PER_LANE);
+      for (let k = 0; k < share; k++) {
+        const pick = Math.floor((k + 0.2 + rnd() * 0.6) * slots.length / share);
         const along = slots[Math.max(0, Math.min(slots.length - 1, pick))];
         const spec = City.pickKind(rnd());
         const length = spec.length[0] + rnd() * (spec.length[1] - spec.length[0]);
-        const cruise = spec.cruise[0] + rnd() * (spec.cruise[1] - spec.cruise[0]);
+        // The kind's base speed, times this driver's own pace. All of the
+        // variation within a kind is the pace, so the spread is exactly the
+        // one the constants describe.
+        const pace = PACE_SLOWEST + rnd() * (PACE_FASTEST - PACE_SLOWEST);
+        const cruise = spec.cruise * pace;
         const forward = City.forwardOf(lane.axis, lane.dir);
         const v = {
           id: id++,
@@ -1608,6 +1640,7 @@ export class City {
           heading: Math.atan2(forward.z, forward.x),
           // Everything starts off slowly and works up to its cruising speed,
           // rather than the whole city being at full tilt on frame one.
+          pace,
           speed: cruise * (0.15 + rnd() * 0.3),
           cruise,
           accel: spec.accel,
@@ -2056,6 +2089,14 @@ export class City {
     v.turn = 0;
     v.indicate = 0;
     v.turnDecidedAt = -1;
+    // A fresh pace out of every corner. A vehicle keeps one speed for the
+    // length of a street and then picks another, so the same car is the one
+    // holding everyone up on one road and the one pressing on down the next —
+    // the traffic keeps rearranging itself instead of settling into a fixed
+    // order. Drawn from the vehicle's own deterministic stream, so a given
+    // city still behaves identically every time it is opened.
+    v.pace = PACE_SLOWEST + v.rng() * (PACE_FASTEST - PACE_SLOWEST);
+    v.cruise = v.spec.cruise * v.pace;
     return false;
   }
 
