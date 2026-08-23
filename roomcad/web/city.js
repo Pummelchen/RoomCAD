@@ -85,7 +85,13 @@ const ROOM_DEPTH = 2.6;         // how far a room reaches back from its window
 const WIN_W = 1.25;
 const WIN_H = 1.55;
 const WIN_SILL = 0.85;
-const WIN_PITCH = 2.5;          // horizontal spacing between window centres
+const WIN_PITCH = 2.1;          // horizontal spacing between window centres
+// Clearance between the back of a room and the solid middle of the building.
+// Without it the two surfaces land on exactly the same plane, both get drawn —
+// the core's face towards the viewer, the room's back wall away from it — and
+// the depth buffer cannot choose between them. That is the flicker you see
+// through every window of every building.
+const CORE_CLEAR = 0.16;
 const INTERIOR_COLOR = 0x5d564c;
 const INTERIOR_LIT_COLOR = 0x7a6a55;
 const INTERIOR_GLOW = 0xffd9a2;
@@ -638,6 +644,10 @@ export class City {
   _hollowBuilding(sets, x, z, w, d, storeys, baseY, color, rnd) {
     const h = storeys * FLOOR_HEIGHT;
     const t = CITY_WALL_T;
+    // Rooms are shallower in a small building, so that the ones behind facing
+    // walls cannot meet in the middle.
+    const depth = Math.min(ROOM_DEPTH, Math.min(w, d) / 4.2);
+    const roomW = WIN_W + 0.35;
 
     // Where the windows sit vertically. The top storey stops short of the
     // parapet so there is always a band of wall under it.
@@ -650,16 +660,29 @@ export class City {
 
     for (const face of [{ nx: 0, nz: 1 }, { nx: 0, nz: -1 }, { nx: 1, nz: 0 }, { nx: -1, nz: 0 }]) {
       const alongX = face.nz !== 0;
-      const span = alongX ? w : d;
       const other = alongX ? d : w;
+      // The two side walls stop short of the front and back ones instead of
+      // running the full depth. Four walls each taking the whole length all
+      // meet in the corners, where their outer faces share a plane and fight
+      // over it.
+      const span = alongX ? w : d - t * 2;
+      if (span <= 0.5) continue;
       // Centre of the wall slab, half a thickness in from the outer face.
       const wallX = alongX ? x : x + face.nx * (other / 2 - t / 2);
       const wallZ = alongX ? z + face.nz * (other / 2 - t / 2) : z;
 
-      const count = Math.max(1, Math.floor((span - 1.8) / WIN_PITCH));
-      const step = span / (count + 1);
+      // Window centres are confined so that a room never reaches into the
+      // depth the return wall's own rooms occupy — two rooms sharing a corner
+      // interpenetrate, and their ceilings land on the same plane.
+      const half = span / 2 - depth - roomW / 2;
       const centres = [];
-      for (let i = 1; i <= count; i++) centres.push(-span / 2 + step * i);
+      if (half > 0) {
+        let count = Math.max(1, Math.floor((half * 2) / WIN_PITCH));
+        // And no two rooms along this same wall may touch either.
+        while (count > 1 && (half * 2) / (count + 1) < roomW + 0.12) count--;
+        const step = (half * 2) / (count + 1);
+        for (let i = 1; i <= count; i++) centres.push(-half + step * i);
+      }
 
       // Piers: the full-height masonry between and beside the window columns.
       let cursor = -span / 2;
@@ -705,25 +728,24 @@ export class City {
       // face and reaches back, so there is no gap at the reveal, and it is
       // drawn from the inside — its front face is culled, and what you see
       // through the window is its back and side walls.
-      const roomW = WIN_W + 1.2;
       const roomH = FLOOR_HEIGHT - 0.35;
       for (const c of centres) {
         for (let r = 0; r < rowsY.length; r++) {
           const lit = rnd() < 0.34;
           const roomCY = baseY + r * FLOOR_HEIGHT + roomH / 2 + 0.12;
-          const back = other / 2 - ROOM_DEPTH / 2;
+          const back = other / 2 - depth / 2;
           const rx = alongX ? x + c : x + face.nx * back;
           const rz = alongX ? z + face.nz * back : z + c;
           const box = boxMatrix(
             rx, roomCY, rz,
-            alongX ? roomW : ROOM_DEPTH, roomH, alongX ? ROOM_DEPTH : roomW
+            alongX ? roomW : depth, roomH, alongX ? depth : roomW
           );
           (lit ? sets.roomsLit : sets.roomsDark).add(box);
           if (lit) {
             // The bulb hangs a little back from the glass, near the ceiling,
             // so it reads as the source of the light rather than as a sticker
             // on the window.
-            const bulbIn = other / 2 - ROOM_DEPTH * 0.55;
+            const bulbIn = other / 2 - depth * 0.55;
             sets.bulbs.add(boxMatrix(
               alongX ? x + c : x + face.nx * bulbIn,
               roomCY + roomH / 2 - 0.34,
@@ -736,9 +758,10 @@ export class City {
     }
 
     // A solid middle, so the building is not a lantern you can see straight
-    // through from one street to the next.
-    const coreW = w - 2 * ROOM_DEPTH;
-    const coreD = d - 2 * ROOM_DEPTH;
+    // through from one street to the next. It stops clear of the backs of the
+    // rooms rather than meeting them exactly.
+    const coreW = w - 2 * (depth + CORE_CLEAR);
+    const coreD = d - 2 * (depth + CORE_CLEAR);
     if (coreW > 0.2 && coreD > 0.2) {
       sets.facades.add(boxMatrix(x, baseY + h / 2, z, coreW, h, coreD), CORE_COLOR);
     }

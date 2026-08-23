@@ -18,6 +18,7 @@
 
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
+import { coplanarClashes } from "./harness/coplanar.mjs";
 
 const { City, BLOCK_SIZE, ROAD_WIDTH, GRID_RADIUS, ROOM_SLAB_THICKNESS, WEATHER_KINDS, seedFromString } =
   await loadWebModule("city.js");
@@ -258,6 +259,36 @@ check("nothing lands far outside the neighbourhood",
   check("the neighbourhood keeps clear of the building's own footprint",
     intruders === 0,
     `${intruders} pieces intrude, worst ${worst.toFixed(3)} m² (${worstMesh})`);
+}
+
+// ── Nothing shares a depth with anything else ─────────────────────────────
+//
+// Two surfaces at exactly the same depth, both drawn, and the depth buffer has
+// no basis to pick between them: the winner changes per pixel and per frame,
+// and the result flickers. A screenshot will not show it and no invariant
+// about positions or sizes will either — which is how the building interiors
+// shipped with every window flickering. The solid middle of each building sat
+// on precisely the plane of the backs of its rooms.
+//
+// Checked over a range of building sizes, because the layout is derived from
+// them and a clash can exist at one size and not another.
+{
+  const inspected = ["city-facades", "city-rooms-dark", "city-rooms-lit", "city-roofs"];
+  let worst = null;
+  let total = 0;
+  for (const [w, l, seed] of [[9, 7, 2718], [4, 4, 11], [22, 6, 99], [14, 14, 4242], [6, 19, 555]]) {
+    const city = new City();
+    city.build(boundsFor(0, 0, w, l), seed, 0);
+    const clashes = coplanarClashes(city.group, { meshNames: inspected });
+    total += clashes.length;
+    for (const c of clashes) {
+      if (!worst || c.area > worst.area) worst = c;
+    }
+    city.dispose();
+  }
+  check("no two surfaces in the city share a depth and both get drawn",
+    total === 0,
+    worst ? `${total} clashes, worst ${worst.area.toFixed(2)} m² on ${worst.axis} between ${worst.between}` : "");
 }
 
 // ── The land under the city ───────────────────────────────────────────────
