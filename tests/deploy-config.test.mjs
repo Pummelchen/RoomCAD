@@ -56,11 +56,36 @@ check("production terminates TLS itself", /^\s*tls\s+\S+fullchain\.pem\s+\S+priv
 check("production serves RoomCAD on its own host and port",
   /roomcad\.[\d.]+\.nip\.io:\d+\s*\{/.test(prod));
 
-// RoomCAD is Caddy-only: nothing about it belongs in nginx.
-check("no nginx site ships with RoomCAD", !existsSync(join(root, "roomcad", "server", "nginx-roomcad.conf")));
-check("deploy installs no nginx site", !/sites-available\/roomcad\.conf/.test(deploy) || /rm -f/.test(deploy));
-check("deploy retires the old nginx site rather than installing one",
+// nginx does not serve RoomCAD. The one block that remains only forwards the
+// old address — without it that hostname matches no server block, falls through
+// to nginx's catch-all default, and serves a different application entirely to
+// anyone with an old bookmark.
+check("the old proxying site is gone for good",
+  !existsSync(join(root, "roomcad", "server", "nginx-roomcad.conf")));
+check("deploy no longer installs a proxying site",
   !/scp[^\n]*nginx-roomcad\.conf/.test(deploy));
+check("deploy removes the old proxying site", /rm -f \/etc\/nginx\/sites-enabled\/roomcad\.conf/.test(deploy));
+{
+  const redirectPath = join(root, "roomcad", "server", "nginx-roomcad-redirect.conf");
+  check("a redirect-only block ships", existsSync(redirectPath));
+  const redirect = existsSync(redirectPath) ? readFileSync(redirectPath, "utf8") : "";
+  // Directives only: the comments in that file talk about proxy_pass precisely
+  // to explain why there isn't one.
+  const directives = redirect.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+  check("it serves nothing itself — no proxy, no root",
+    !/proxy_pass/.test(directives) && !/^\s*root\s/m.test(directives), "it should only redirect");
+  check("it redirects to the Caddy port",
+    /return 30[18] https:\/\/\$host:\d+\$request_uri/.test(redirect));
+  check("it preserves the method, so a deep link or API call is not turned into a GET",
+    /return 308/.test(redirect));
+  check("it covers plain HTTP as well as HTTPS",
+    /listen 80;/.test(redirect) && /listen 443 ssl;/.test(redirect));
+  check("it answers for the RoomCAD hostname only",
+    (redirect.match(/server_name\s+roomcad\.[\d.]+\.nip\.io;/g) || []).length === 2);
+  check("deploy installs it", /nginx-roomcad-redirect\.conf/.test(deploy));
+  check("deploy checks the old URL actually redirects",
+    /expected a redirect to :8443/.test(deploy));
+}
 
 // HSTS, on the host Caddy now owns end to end.
 check("production sends HSTS", /Strict-Transport-Security\s+"max-age=\d+/.test(prod));

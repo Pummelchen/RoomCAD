@@ -12,6 +12,7 @@ from scratch if the VPS is ever lost. The web app itself lives in
 | `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078` |
 | `Caddyfile` | production Caddy config — terminates TLS, serves the web app, proxies `/api/*` to the API |
 | `certbot-deploy-hook.sh` | copies the certificate somewhere the `caddy` user can read, on every renewal |
+| `nginx-roomcad-redirect.conf` | sends the old `:443` address to `:8443` — nginx serves nothing of RoomCAD |
 | `schema.sql` | SQLite schema (versioned rooms plus hashed browser session records) |
 | `rooms.db.sql` | full SQL dump of the rooms database (structure + content), restorable |
 | `deploy.sh` | one-command deploy of the web app + API to the VPS |
@@ -41,6 +42,15 @@ The entry point is **https://roomcad.91.99.176.243.nip.io:8443/** (a nip.io
 wildcard that resolves to the VPS IP). Caddy serves it end to end: it terminates
 TLS, serves `web/` and forwards `/api/*` to the Python API. Nothing else is in
 the request path — RoomCAD does not use nginx.
+
+There is one exception, and it is not in the request path. nginx owns ports 80
+and 443 on this host, and its default server answers for **any** hostname that
+matches nothing else. So a hostname with no server block of its own does not
+404 — it quietly serves whatever that default is, which here is an unrelated
+application. `nginx-roomcad-redirect.conf` therefore keeps a block for this
+name whose entire content is a 308 to port 8443. It has no `proxy_pass` and no
+`root`; it exists so an old bookmark lands on RoomCAD instead of somewhere
+else. `deploy.sh` installs it and then checks the old URL really does redirect.
 
 The port is 8443 rather than 443 because an unrelated service already holds 80
 and 443 on this host. That also rules out Caddy running ACME for itself, since

@@ -77,16 +77,23 @@ if ! ssh "$HOST" "systemctl is-active --quiet caddy"; then
 fi
 
 # RoomCAD used to be published through an nginx site that proxied to Caddy.
-# Caddy now terminates TLS itself, so that site is dead weight — and it is the
-# only thing RoomCAD ever put in nginx. Retire it, once, and leave nginx alone
-# from here on. Anything else nginx serves on this host is untouched.
-if ssh "$HOST" "test -L /etc/nginx/sites-enabled/roomcad.conf"; then
-  echo "Retiring the leftover nginx site (RoomCAD is served by Caddy now) …"
-  if ssh "$HOST" "rm -f /etc/nginx/sites-enabled/roomcad.conf && nginx -t && systemctl reload nginx"; then
-    echo "  nginx no longer publishes RoomCAD."
-  else
-    echo "  WARNING: could not reload nginx; the old site may still be enabled." >&2
-  fi
+# Caddy now terminates TLS itself, so that site is retired. In its place goes a
+# block that does nothing but redirect to the real address.
+#
+# That redirect is not optional. nginx owns 80 and 443 here and its default
+# server answers for ANY hostname that matches nothing else, so with no block
+# for this name RoomCAD's old address falls through to that default and serves a
+# completely different application to anyone with an old bookmark. The block
+# contains no proxy_pass, no root, and no RoomCAD configuration — only a 308.
+echo "Pointing the old address at the real one …"
+scp -q "$SERVER_DIR/nginx-roomcad-redirect.conf" "$HOST:/etc/nginx/sites-available/roomcad-redirect.conf"
+if ssh "$HOST" "rm -f /etc/nginx/sites-enabled/roomcad.conf && \
+  ln -sf /etc/nginx/sites-available/roomcad-redirect.conf /etc/nginx/sites-enabled/roomcad-redirect.conf && \
+  nginx -t && systemctl reload nginx" >/dev/null 2>&1; then
+  echo "  the old URL now redirects to port 8443."
+else
+  echo "  WARNING: nginx would not reload — the old URL may still land elsewhere." >&2
+  ssh "$HOST" "rm -f /etc/nginx/sites-enabled/roomcad-redirect.conf; nginx -t && systemctl reload nginx" >/dev/null 2>&1 || true
 fi
 
 # The shared password lives in a host-local env file, never in git.
@@ -131,5 +138,13 @@ else
   echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."
 fi
 
-echo "Deployed. roomcad and caddy are running; nginx is not involved."
+# The old address must land on RoomCAD, not on whatever nginx serves by default.
+legacy="$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 \
+  https://roomcad.91.99.176.243.nip.io/ || echo "000")"
+case "$legacy" in
+  30*\ *:8443/*) echo "Old URL redirects correctly: $legacy" ;;
+  *) echo "WARNING: the old URL answered '$legacy' — expected a redirect to :8443." >&2 ;;
+esac
+
+echo "Deployed. roomcad and caddy serve the app; nginx only forwards the old URL."
 echo "RoomCAD: $SITE/"
