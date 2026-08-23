@@ -12,6 +12,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const walk = readFileSync(join(root, "roomcad", "web", "walk3d.js"), "utf8");
 const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
+const store = readFileSync(join(root, "roomcad", "web", "store.js"), "utf8");
 
 let failed = 0;
 let passed = 0;
@@ -54,7 +55,14 @@ check("pavement tops out at the room's own floor level",
   city.includes("const PAVEMENT_Y = 0;") && city.includes("const ROAD_Y = PAVEMENT_Y - KERB_HEIGHT;"));
 check("the city sits in the scene, never in the floor-lifted room group",
   walk.includes("this.scene.add(this.city.group)") && !walk.includes("roomGroup.add(this.city"));
-check("traffic is animated from the render loop", walk.includes("this.city.update(dt);"));
+// The city is driven from the render loop, and it is handed the camera as
+// well as the frame length: the weather falls around the viewer rather than
+// over some fixed patch of the neighbourhood, so it needs to know where they
+// are standing.
+check("traffic and weather are animated from the render loop",
+  walk.includes("this.city.update(dt, this.camera.position);"));
+check("the city knows where the viewer is, so weather follows them",
+  city.includes("update(dt, viewer = null)") && city.includes("this._viewer.copy(viewer)"));
 check("city lighting follows the same daylight as the sun",
   walk.includes("this.city.applyTimeOfDay(dayAmount * (day ? 1 : 0));"));
 
@@ -70,6 +78,48 @@ check("the slab thickness the tower avoids matches the one walk3d builds",
   walk.includes("new THREE.BoxGeometry(building.width, 0.06, building.length)"));
 check("the tower keeps a positive height even for a shallow lift",
   city.includes("Math.max(0.05, floorLift - ROOM_SLAB_THICKNESS - TOWER_REVEAL)"));
+
+// — What the city is now responsible for ————————————————————————
+//
+// These are the pieces that make it read as a place rather than a backdrop.
+// Each is cheap to delete by accident and expensive to notice missing.
+check("the ground is terrain, not a slab", city.includes("_terrain(cx, cz, reach, span, seed)"));
+check("the terrain is deterministic in the seed, like everything else",
+  city.includes("function valueNoise(") && city.includes("function latticeHash("));
+check("the streets themselves stay flat, whatever the land does",
+  city.includes("TERRAIN_FLAT_MARGIN") && /const d = Math\.max\(Math\.abs\(lx\), Math\.abs\(lz\)\)/.test(city));
+check("hills sit inside the fog, or they are invisible",
+  /HILL_REACH = (\d+)/.test(city) && Number(/HILL_REACH = (\d+)/.exec(city)[1]) <= 140,
+  "further out than the fog reaches and the ridge is just fog-coloured nothing");
+check("walk3d's fog reaches past the hills",
+  /FOG_FAR = (\d+)/.test(walk) && Number(/FOG_FAR = (\d+)/.exec(walk)[1]) >= 300);
+check("and stops inside the camera's far plane, so clipped corners never show",
+  Number(/FOG_FAR = (\d+)/.exec(walk)[1]) <= 400);
+
+check("nearby buildings are hollow, with rooms behind the windows",
+  city.includes("_hollowBuilding(") && city.includes("ROOM_DEPTH"));
+check("a room is seen from the inside, which is what gives the window depth",
+  /roomsDark[\s\S]{0,400}side: THREE\.BackSide/.test(city));
+check("lit rooms have a bulb in them rather than a glowing pane",
+  city.includes("sets.bulbs.add(") && city.includes("this.bulbs.material.emissiveIntensity"));
+
+check("there are trucks and buses, not only cars",
+  /kind: "truck"/.test(city) && /kind: "bus"/.test(city));
+check("traffic stops at lights rather than driving through them",
+  city.includes("_isGreen(") && city.includes("LIGHT_CYCLE"));
+check("vehicles keep their distance from the one in front",
+  city.includes("_leader(") && city.includes("BRAKE_MAX"));
+check("brake lights and indicators are driven by the model, not animated",
+  /if \(v\.braking\)/.test(city) && /if \(v\.indicate !== 0 && blinkOn\)/.test(city));
+check("a lamp that is off is not drawn at all",
+  city.includes("head.count = heads") && city.includes("brake.count = brakes"));
+
+check("weather is a state of the whole scene", city.includes("setWeather(kind)") &&
+  city.includes("atmosphere()") && walk.includes("this.city.setWeather(store.weather)"));
+check("the weather setting lives in the store like the time of day",
+  store.includes("setWeather(kind)") && store.includes("stepWeather(delta)"));
+check("weather is a view setting, never saved into the plan",
+  !/weather/.test(store.slice(store.indexOf("serializeRoom"), store.indexOf("serializeRoom") + 400)));
 
 // — The render loop must not churn the heap ————————————————————
 // The traffic runs every frame. Allocating a fresh matrix per car per part was

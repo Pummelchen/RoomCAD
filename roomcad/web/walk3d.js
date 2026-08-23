@@ -25,8 +25,18 @@ const LIGHT_METAL = 0x33363c;
 const DAY_BACKGROUND = 0x8fb8e0;
 const DAY_FOG = 0xcfe0f0;
 const TWILIGHT_BACKGROUND = 0x6a4a5a; // warm purple-pink dusk sky
+const OVERCAST_SKY = 0x9aa3ad;        // flat grey the sky washes towards in weather
 const NIGHT_BACKGROUND = 0x0a0e1a;
 const NIGHT_FOG = 0x0a0e1a;
+// Fog range. This used to end at 130 m, which is inside the city — the outer
+// blocks dissolved into flat colour and the world simply stopped. It now
+// reaches past the hills the city builds behind itself, so distance reads as
+// haze over a horizon instead of as a wall. It stays inside the camera's far
+// plane, so the corners of the terrain square are fully fogged before they
+// clip. Weather pulls the far edge in; rain closes the view down to a couple
+// of streets.
+const FOG_NEAR = 45;
+const FOG_FAR = 380;
 
 // Player capsule dimensions (metres).
 const PLAYER_RADIUS = 0.20;
@@ -318,7 +328,7 @@ export class Walk3D {
 
     // Sky and atmospheric depth (switches to night when placed-lights mode).
     scene.background = new THREE.Color(this.lightsOn ? DAY_BACKGROUND : NIGHT_BACKGROUND);
-    scene.fog = new THREE.Fog(this.lightsOn ? DAY_FOG : NIGHT_FOG, 40, 130);
+    scene.fog = new THREE.Fog(this.lightsOn ? DAY_FOG : NIGHT_FOG, FOG_NEAR, FOG_FAR);
     this.buildSky(room);
 
     // Daylight: a bright warm sun, soft sky bounce, image-based lighting for
@@ -1121,17 +1131,32 @@ export class Walk3D {
     this.sunTarget.updateMatrixWorld();
 
     const day = this.lightsOn;
-    this.sun.intensity = 2.8 * dayAmount * (day ? 1 : 0);
+    // Weather first: the city owns it, and the sun, fog and cloud deck all
+    // have to agree with what is falling out of the sky.
+    this.city.setWeather(store.weather);
+    const air = this.city.atmosphere();
+    this.sun.intensity = 2.8 * dayAmount * (day ? 1 : 0) * (1 - air.dim);
     // Ambient sky keeps the interior readable at twilight and night.
-    if (this.hemisphere) this.hemisphere.intensity = 0.55 * (0.06 + 0.94 * dayAmount);
+    // Overcast loses the sun but gains bounced light off the cloud base, which
+    // is why a grey day is flat rather than simply dark.
+    if (this.hemisphere) {
+      this.hemisphere.intensity = 0.55 * (0.06 + 0.94 * dayAmount) * (1 + air.dim * 0.5);
+    }
     if (this.fill) this.fill.intensity = 0.35 * dayAmount * (day ? 1 : 0);
 
     // Sky + fog colour: day → warm twilight → deep night.
     const sky = new THREE.Color(DAY_BACKGROUND)
       .lerp(new THREE.Color(TWILIGHT_BACKGROUND), twilight)
       .lerp(new THREE.Color(NIGHT_BACKGROUND), nightAmount * (1 - twilight * 0.5));
+    // Weather washes the colour out of the sky towards flat grey, and closes
+    // the fog in around the viewer.
+    if (air.haze > 0) sky.lerp(new THREE.Color(OVERCAST_SKY), air.haze * 0.55 * dayAmount);
     this.scene.background = sky;
-    if (this.scene.fog) this.scene.fog.color.copy(sky);
+    if (this.scene.fog) {
+      this.scene.fog.color.copy(sky);
+      this.scene.fog.near = FOG_NEAR * (1 - air.haze * 0.5);
+      this.scene.fog.far = FOG_FAR * (1 - air.haze * 0.62);
+    }
     if (this.skyMesh) this.skyMesh.visible = dayAmount > 0.3;
 
     // Clouds stay in the sky after dark, but as dim silhouettes rather than
@@ -1141,7 +1166,7 @@ export class Walk3D {
       .lerp(new THREE.Color(0x2a3346), nightAmount * (1 - twilight * 0.6));
     for (const layer of this.cloudLayers || []) {
       layer.mat.color.copy(cloudColor);
-      layer.mat.opacity = layer.base * (0.30 + 0.70 * dayAmount);
+      layer.mat.opacity = Math.min(1, layer.base * (0.30 + 0.70 * dayAmount) * (1 + air.haze * 1.4));
     }
 
     // Image-based lighting only while the sun is actually up.
@@ -1771,7 +1796,7 @@ export class Walk3D {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.tick(dt);
     this.updatePaintballs(dt);
-    this.city.update(dt);
+    this.city.update(dt, this.camera.position);
     this.updateClouds(dt);
 
     const now = performance.now();

@@ -43,6 +43,7 @@ export const store = {
   serverLatency: null, // round-trip ms to the server (from the status poll)
   serverOffline: false, // true only after a status poll actually failed (network)
   timeOfDay: 15, // hour of day (0–24, 24 h clock) driving the 3D sun + city lights
+  weather: "clear", // "clear" | "cloudy" | "rain" | "snow" — drives the 3D sky, fog and city
   layoutSeed: 1, // seed for the auto room layout; "redesign" bumps it for a new variant
   layoutCount: 3, // how many private rooms to generate
   layoutArea: 12, // target m² per room (guide for the layout)
@@ -948,6 +949,22 @@ export const store = {
     this.timeOfDay = ((Math.round(hour) % 24) + 24) % 24;
     this.status = "Time " + this.timeOfDay + ":00";
     this.emit();
+  },
+
+  /// Steps through the weather. It is a view setting like the time of day, not
+  /// part of the plan: it changes what the walkthrough looks like out of the
+  /// window and is never saved with the room.
+  setWeather(kind) {
+    const list = ["clear", "cloudy", "rain", "snow"];
+    this.weather = list.includes(kind) ? kind : "clear";
+    this.status = "Weather: " + this.weather;
+    this.emit();
+  },
+
+  stepWeather(delta) {
+    const list = ["clear", "cloudy", "rain", "snow"];
+    const at = Math.max(0, list.indexOf(this.weather));
+    this.setWeather(list[((at + delta) % list.length + list.length) % list.length]);
   },
 
   /// Adds a user-drawn rectangle to the shared (public) floor space. Public

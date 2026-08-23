@@ -470,6 +470,13 @@ function roomSection() {
     `<span class="floor-value">${String((Math.round(store.timeOfDay) % 24 + 24) % 24).padStart(2, "0")}:00</span>` +
     `<button class="inspector-button floor-btn" data-action="time-up" title="Later hour">&gt;</button>` +
     `</div></div>`;
+  html += `<div class="floor-row">` +
+    `<label>Weather</label>` +
+    `<div class="floor-control">` +
+    `<button class="inspector-button floor-btn" data-action="weather-prev" title="Previous weather">&lt;</button>` +
+    `<span class="floor-value">${store.weather.charAt(0).toUpperCase() + store.weather.slice(1)}</span>` +
+    `<button class="inspector-button floor-btn" data-action="weather-next" title="Next weather">&gt;</button>` +
+    `</div></div>`;
   html += `<div class="inspector-sep"></div>`;
   html += `<h4>Auto layout</h4>`;
   html += `<div class="field"><label>Rooms</label><div class="value-row">` +
@@ -569,6 +576,10 @@ inspectorContent.addEventListener("click", e => {
     store.setTimeOfDay(store.timeOfDay + 1);
   } else if (t.dataset.action === "time-down") {
     store.setTimeOfDay(store.timeOfDay - 1);
+  } else if (t.dataset.action === "weather-next") {
+    store.stepWeather(1);
+  } else if (t.dataset.action === "weather-prev") {
+    store.stepWeather(-1);
   } else if (t.dataset.action === "layout-generate") {
     store.generateLayout({ count: store.layoutCount, area: store.layoutArea, windows: store.layoutWindows });
   } else if (t.dataset.action === "layout-redesign") {

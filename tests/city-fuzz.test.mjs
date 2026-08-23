@@ -17,8 +17,9 @@
 // Run:  node tests/city-fuzz.test.mjs
 
 import { loadWebModule } from "./harness/load-web-module.mjs";
+import { vehiclesOverlap } from "./harness/overlap.mjs";
 
-const { City, BLOCK_SIZE, ROAD_WIDTH, GRID_RADIUS, ROOM_SLAB_THICKNESS, seedFromString } =
+const { City, BLOCK_SIZE, ROAD_WIDTH, GRID_RADIUS, ROOM_SLAB_THICKNESS, WEATHER_KINDS, seedFromString } =
   await loadWebModule("city.js");
 
 let passed = 0;
@@ -172,27 +173,33 @@ for (let trial = 0; trial < 120; trial++) {
   // capped — plus larger and negative ones as headroom in case that clamp
   // is ever relaxed. NaN is not in the sweep because nothing can deliver it;
   // that the clamp exists at all is checked separately below.
-  for (const dt of [0, 1 / 120, 1 / 60, 0.05, 0.1, 1, 5, -1]) {
-    try { city.update(dt); }
+  for (const dt of [0, 1 / 120, 1 / 60, 0.05, 0.1, 1, 5, -1, NaN]) {
+    try { city.update(dt, { x: centerX, y: 1.6, z: centerZ }); }
     catch (err) { note("update threw", `dt ${dt}: ${err.message}`); }
   }
-  // A car runs along one axis: `pos` is how far down the lane it is, `fixed`
-  // is the other coordinate. After any number of frames it must still be on
-  // its own lane, between the two ends it wraps between.
+  // A vehicle has a world position and a heading, and belongs to a lane. While
+  // it is not part-way round a turn it must be exactly on that lane, pointing
+  // along it, at a speed it is actually capable of.
   for (const car of city.cars) {
-    if (!finite(car.pos) || !finite(car.fixed)) { note("a car at a non-finite position", car.axis); continue; }
-    const start = car.center - car.reach;
-    const limit = car.center + car.reach;
-    if (car.pos < start - 1e-6 || car.pos > limit + 1e-6) {
-      note("a car driven off the end of its lane", `${car.pos.toFixed(0)} outside ${start.toFixed(0)}..${limit.toFixed(0)}`);
+    if (!finite(car.x) || !finite(car.z) || !finite(car.heading)) {
+      note("a car at a non-finite position", car.kind);
+      continue;
     }
-    const x = car.axis === "x" ? car.pos : car.fixed;
-    const z = car.axis === "x" ? car.fixed : car.pos;
-    if (Math.abs(x - centerX) > reach * 2 || Math.abs(z - centerZ) > reach * 2) {
-      note("a car driven off the map", `${x.toFixed(0)},${z.toFixed(0)}`);
+    if (!finite(car.speed) || car.speed < -1e-9) note("a car in reverse", String(car.speed));
+    if (car.speed > car.cruise + 0.01) note("a car above its own top speed", `${car.speed} > ${car.cruise}`);
+    if (Math.abs(car.x - centerX) > reach * 2 || Math.abs(car.z - centerZ) > reach * 2) {
+      note("a car driven off the map", `${car.x.toFixed(0)},${car.z.toFixed(0)}`);
     }
-    if (!(car.speed > 0)) note("a car that never moves", String(car.speed));
     if (car.dir !== 1 && car.dir !== -1) note("a car with no direction", String(car.dir));
+    if (!car.arc) {
+      const cross = car.axis === "x" ? car.z : car.x;
+      if (Math.abs(cross - car.fixed) > 1e-6) {
+        note("a car that has drifted out of its lane", (cross - car.fixed).toExponential(1));
+      }
+      if (car.lane.axis !== car.axis || car.lane.dir !== car.dir) {
+        note("a car whose lane disagrees with where it is pointing", car.kind);
+      }
+    }
   }
 
   // Rebuilding the same thing must be recognised as unnecessary.
@@ -232,6 +239,10 @@ check("nothing lands far outside the neighbourhood",
     const fz0 = bounds.minZ + 0.05, fz1 = bounds.maxZ - 0.05;
     for (const s of placements(city.group)) {
       if (!s.box) continue;
+      // The terrain is a single mesh spanning the whole world, so its bounding
+      // box says nothing useful about the footprint — its hills are hundreds
+      // of metres away. It gets its own check below, against real vertices.
+      if (s.mesh === "city-terrain") continue;
       // Only geometry at floor level can fight with the room's own floor;
       // a roof passing overhead is not an intrusion.
       if (s.box.hi[1] < -ROOM_SLAB_THICKNESS - 0.01 || s.box.lo[1] > bounds.maxY) continue;
@@ -247,6 +258,77 @@ check("nothing lands far outside the neighbourhood",
   check("the neighbourhood keeps clear of the building's own footprint",
     intruders === 0,
     `${intruders} pieces intrude, worst ${worst.toFixed(3)} m² (${worstMesh})`);
+}
+
+// ── The land under the city ───────────────────────────────────────────────
+//
+// Terrain is the one thing that could put ground THROUGH the room: a hill
+// wandering into the street grid would come up under the floor. So the flat
+// region is checked vertex by vertex rather than taken on trust, and the hills
+// are checked to actually exist — a "terrain" that came out perfectly flat
+// would pass every other test in this file.
+{
+  const bounds = boundsFor(0, 0, 9, 7);
+  const city = new City();
+  city.build(bounds, 3141, 0);
+  const land = city.group.children.find(n => n.name === "city-terrain");
+  check("the city builds terrain", !!land);
+  if (land) {
+    const pos = land.geometry.attributes.position;
+    // The city's own outer extent, worked out the way city.js does: the
+    // outermost road centre plus half a carriageway. Sampling beyond this is
+    // sampling the countryside, which is supposed to have bumps in it.
+    const span = BLOCK_SIZE + ROAD_WIDTH;
+    const reach = GRID_RADIUS * span + BLOCK_SIZE / 2 + ROAD_WIDTH;
+    let bumpsInTown = 0;
+    let worstBump = 0;
+    let highest = 0;
+    let lowest = Infinity;
+    let nonFinite = 0;
+    let coloured = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      if (!finite(x) || !finite(y) || !finite(z)) { nonFinite++; continue; }
+      highest = Math.max(highest, y);
+      lowest = Math.min(lowest, y);
+      // Anywhere a street could be, the ground must be exactly level: the
+      // room's own floor sits on this datum.
+      if (Math.max(Math.abs(x), Math.abs(z)) <= reach) {
+        if (Math.abs(y) > 1e-9) { bumpsInTown++; worstBump = Math.max(worstBump, Math.abs(y)); }
+      }
+    }
+    const colour = land.geometry.attributes.color;
+    for (let i = 0; colour && i < colour.count; i++) {
+      if (finite(colour.getX(i)) && colour.getX(i) >= 0 && colour.getX(i) <= 1) coloured++;
+    }
+    check("no terrain vertex is non-finite", nonFinite === 0, `${nonFinite} of ${pos.count}`);
+    check("the ground under every street is dead level",
+      bumpsInTown === 0, `${bumpsInTown} bumps, worst ${worstBump.toFixed(3)} m`);
+    // Never below the street datum either: ground that dips under the
+    // pavement opens a gap at the edge of the city. The tolerance is for
+    // floating point, not for slack — a real dip is metres, not nanometres.
+    check("the land never drops below the level the streets sit on",
+      lowest >= -1e-6 && lowest <= 1e-6, `lowest vertex ${lowest}`);
+    check("there are actual hills, not a flat plane called terrain",
+      highest > 25, `highest ${highest.toFixed(1)} m`);
+    check("the hills are not so tall they read as a wall",
+      highest < 120, `highest ${highest.toFixed(1)} m`);
+    check("the terrain is coloured per vertex, so it is not one flat green",
+      !!colour && coloured === colour.count, `${coloured} of ${colour ? colour.count : 0}`);
+    // Two cities from the same seed must be identical, hills included.
+    const twin = new City();
+    twin.build(bounds, 3141, 0);
+    const twinLand = twin.group.children.find(n => n.name === "city-terrain");
+    let differs = 0;
+    for (let i = 0; i < pos.count; i += 37) {
+      if (twinLand.geometry.attributes.position.getY(i) !== pos.getY(i)) differs++;
+    }
+    check("the same seed gives the same hills", differs === 0, `${differs} vertices differ`);
+    twin.dispose();
+  }
+  city.dispose();
 }
 
 // ── Rebuilding does not accumulate ────────────────────────────────────────
@@ -288,6 +370,185 @@ for (const [w, l, label] of [
   city.dispose();
 }
 
+// ── The traffic, driven for a quarter of an hour ──────────────────────────
+//
+// The point of the model is that everything visible falls out of it: the queue
+// at a red light, the brake lights coming on down that queue, the indicator
+// before a turn. So it is run properly and checked for the things that would
+// give it away — a vehicle sliding sideways out of its lane, two of them
+// occupying the same junction from crossing directions, a brake light on a
+// vehicle that is accelerating.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const kinds = new Set();
+  let worstConflict = "";
+  let movingTotal = 0;
+  let movingSamples = 0;
+  let distanceDriven = 0;
+  let brakeMismatch = 0;
+  let indicatorMismatch = 0;
+  let lampOverflow = 0;
+  let turnsCompleted = 0;
+  let sawStopped = 0;
+  let sawCruising = 0;
+  let sawBraking = 0;
+  let sawIndicating = 0;
+  let overlapping = 0;
+  const turning = new Set();
+  const seenPairs = new Set();
+  const parts = () => city.carParts;
+
+  for (const v of city.cars) kinds.add(v.kind);
+
+  const FRAMES = 54000;  // fifteen minutes at 60 fps
+  for (let f = 0; f < FRAMES; f++) {
+    const was = city.cars.map(v => ({ x: v.x, z: v.z }));
+    city.update(1 / 60, viewer);
+    for (let i = 0; i < city.cars.length; i++) {
+      distanceDriven += Math.hypot(city.cars[i].x - was[i].x, city.cars[i].z - was[i].z);
+    }
+
+    for (const v of city.cars) {
+      if (v.arc) { turning.add(v.id); continue; }
+      if (turning.delete(v.id)) turnsCompleted++;
+    }
+    // Contacts are brief — a vehicle clips another and is past it inside a
+    // second — so this runs on almost every frame. Sampling it as rarely as
+    // the checks below simply does not see them: at one sample every 90
+    // frames, removing the model's ability to see vehicles part-way round a
+    // turn went completely unnoticed.
+    if (f % 3 === 0) {
+      for (let i = 0; i < city.cars.length; i++) {
+        for (let j = i + 1; j < city.cars.length; j++) {
+          const A = city.cars[i];
+          const B = city.cars[j];
+          const key = i + ":" + j;
+          if (Math.hypot(A.x - B.x, A.z - B.z) > 20) { seenPairs.delete(key); continue; }
+          if (vehiclesOverlap(A, B)) {
+            if (!seenPairs.has(key)) {
+              seenPairs.add(key);
+              overlapping++;
+              if (!worstConflict) {
+                worstConflict = `${A.kind}${A.arc ? " mid-turn" : ""} and `
+                  + `${B.kind}${B.arc ? " mid-turn" : ""}`;
+              }
+            }
+          } else seenPairs.delete(key);
+        }
+      }
+    }
+
+    if (f % 90 === 0) {
+      sawStopped += city.cars.filter(v => v.speed < 0.15).length ? 1 : 0;
+      sawCruising += city.cars.filter(v => v.speed > v.cruise * 0.9).length ? 1 : 0;
+      sawBraking += city.cars.filter(v => v.braking).length ? 1 : 0;
+      sawIndicating += city.cars.filter(v => v.indicate !== 0).length ? 1 : 0;
+      movingTotal += city.cars.filter(v => v.speed > 0.3).length;
+      movingSamples++;
+
+      // The lamps drawn have to match the model's own state exactly: a brake
+      // light that is not tied to braking is decoration, not behaviour.
+      const p = parts();
+      const braking = city.cars.filter(v => v.braking).length;
+      if (p.brake.count !== braking * 2) brakeMismatch++;
+      if (p.brake.count > p.brake.instanceMatrix.count) lampOverflow++;
+      if (p.head.count > p.head.instanceMatrix.count) lampOverflow++;
+      if (p.indicator.count > p.indicator.instanceMatrix.count) lampOverflow++;
+      const signalling = city.cars.filter(v => v.indicate !== 0).length;
+      if (p.indicator.count !== 0 && p.indicator.count !== signalling * 2) indicatorMismatch++;
+    }
+  }
+
+  check("all three kinds of vehicle are on the streets",
+    kinds.has("car") && kinds.has("truck") && kinds.has("bus"), [...kinds].join(", "));
+  check("vehicles complete turns at junctions", turnsCompleted > 50, `${turnsCompleted} turns`);
+
+  check("traffic comes to a stop somewhere, at some point", sawStopped > 10, `${sawStopped} samples`);
+  check("and gets back up to speed", sawCruising > 10, `${sawCruising} samples`);
+  check("brake lights are on when something is braking", sawBraking > 10, `${sawBraking} samples`);
+  check("indicators are used", sawIndicating > 10, `${sawIndicating} samples`);
+  check("every brake light drawn belongs to a vehicle that is braking",
+    brakeMismatch === 0, `${brakeMismatch} frames disagreed`);
+  check("every indicator drawn belongs to a vehicle that is signalling",
+    indicatorMismatch === 0, `${indicatorMismatch} frames disagreed`);
+  check("no lamp buffer is ever overrun", lampOverflow === 0, `${lampOverflow} frames`);
+  // A vehicle joining a lane out of a turn, and a queue forming exactly as
+  // one wraps back in, are both discontinuous — they put a vehicle somewhere
+  // it was not a moment before. Measured across seeds at one to eight brief
+  // contacts per fifteen minutes of city time; this is the ceiling on that,
+  // not a target. It was two hundred before the model could see vehicles that
+  // were part-way round a turn.
+  check("vehicles almost never end up inside one another",
+    overlapping <= 14, `${overlapping} contacts in 15 minutes: ${worstConflict}`);
+  check("the traffic never gridlocks",
+    movingSamples > 0 && movingTotal / movingSamples > 64 / 4,
+    `${(movingTotal / Math.max(1, movingSamples)).toFixed(1)} of ${city.cars.length} moving on average`);
+  check("and it covers real distance", distanceDriven > 100_000,
+    `${(distanceDriven / 1000).toFixed(0)} km driven`);
+
+  // Headlights follow the time of day rather than being always on.
+  city.applyTimeOfDay(1);
+  city.update(1 / 60, viewer);
+  check("headlights are off in daylight", parts().head.count === 0, `${parts().head.count} lit`);
+  city.applyTimeOfDay(0);
+  city.update(1 / 60, viewer);
+  check("and on after dark", parts().head.count === city.cars.length * 2,
+    `${parts().head.count} of ${city.cars.length * 2}`);
+  city.dispose();
+}
+
+// ── Weather ───────────────────────────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 6, 5), 1234, 0);
+  for (const kind of WEATHER_KINDS) {
+    city.setWeather(kind);
+    const viewer = { x: 12, y: 1.7, z: -8 };
+    for (let f = 0; f < 120; f++) city.update(1 / 60, viewer);
+    const mesh = city.precipitation;
+    const air = city.atmosphere();
+    check(`${kind}: the atmosphere it reports is sane`,
+      air.kind === kind && finite(air.haze) && air.haze >= 0 && air.haze <= 1
+      && finite(air.dim) && air.dim >= 0 && air.dim <= 1, JSON.stringify(air));
+    const falling = kind === "rain" || kind === "snow";
+    check(`${kind}: ${falling ? "something falls" : "nothing falls"}`,
+      falling ? mesh.count > 200 : mesh.count === 0, `${mesh.count} drops`);
+    if (!falling) continue;
+
+    // Every drop must be finite and in the box around the viewer — weather
+    // that stays where the room used to be is worse than no weather at all.
+    const e = mesh.instanceMatrix.array;
+    let strays = 0;
+    let bad = 0;
+    for (let i = 0; i < mesh.count; i++) {
+      const o = i * 16;
+      const x = e[o + 12];
+      const y = e[o + 13];
+      const z = e[o + 14];
+      if (!finite(x) || !finite(y) || !finite(z)) { bad++; continue; }
+      if (Math.abs(x - viewer.x) > 40 || Math.abs(z - viewer.z) > 40 || Math.abs(y - viewer.y) > 45) strays++;
+    }
+    check(`${kind}: no drop is non-finite`, bad === 0, `${bad} of ${mesh.count}`);
+    check(`${kind}: the weather stays around the viewer`, strays === 0, `${strays} strays`);
+
+    // And it follows when they walk away.
+    const moved = { x: viewer.x + 200, y: viewer.y, z: viewer.z - 150 };
+    for (let f = 0; f < 60; f++) city.update(1 / 60, moved);
+    let near = 0;
+    for (let i = 0; i < mesh.count; i++) {
+      const o = i * 16;
+      if (Math.abs(e[o + 12] - moved.x) < 40 && Math.abs(e[o + 14] - moved.z) < 40) near++;
+    }
+    check(`${kind}: it follows the viewer when they move`, near === mesh.count,
+      `${near} of ${mesh.count} drops came along`);
+  }
+  check("an unknown weather falls back to clear rather than throwing",
+    (() => { city.setWeather("hurricane"); return city.atmosphere().kind === "clear"; })());
+  city.dispose();
+}
+
 // ── The frame length the city is actually given ───────────────────────────
 //
 // The sweep above assumes dt arrives finite and capped. That is walk3d's job,
@@ -308,8 +569,8 @@ for (const [w, l, label] of [
   check("the cap is short enough that a stalled tab does not teleport the world",
     !!line && (Number((/0?\.\d+/.exec(line[1]) || [])[0]) || 1) <= 0.05,
     line ? line[1] : "");
-  check("the city is driven with that same capped value",
-    /this\.city\.update\(dt\)/.test(walk));
+  check("the city is driven with that same capped value, and told where the viewer is",
+    /this\.city\.update\(dt, this\.camera\.position\)/.test(walk));
 }
 
 const EXPECTED = [
@@ -325,9 +586,11 @@ const EXPECTED = [
   "update threw",
   "a car at a non-finite position",
   "a car driven off the map",
-  "a car driven off the end of its lane",
-  "a car that never moves",
+  "a car in reverse",
+  "a car above its own top speed",
   "a car with no direction",
+  "a car that has drifted out of its lane",
+  "a car whose lane disagrees with where it is pointing",
   "a city does not recognise its own inputs",
   "a city claims to match a different seed",
 ];
