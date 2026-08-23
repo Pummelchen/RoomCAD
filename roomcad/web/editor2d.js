@@ -36,7 +36,7 @@ export class Editor2D {
     this.pointers = new Map();
     this.pinch = null;
     this.contextMenu = document.getElementById("context-menu");
-    this.dimensionBoxes = [];  // screen boxes already taken by a readout this frame
+    this.dimensionBoxes = [];  // screen boxes already taken by a readout or caption
     this.measureDrag = null;   // { start, end } while dragging the measure tool
     this.measureResult = null; // last measured { start, end } (stays on screen)
     this.zoomEl = document.getElementById("zoom-level");
@@ -1211,8 +1211,14 @@ export class Editor2D {
       const c = this.screen({ x: cap.x, z: cap.z });
       const text = cap.area.toFixed(1) + " m²";
       const w = ctx.measureText(text).width;
+      const box = { x: c.x - w / 2 - 5, y: c.y - CAPTION_PX * 0.72, w: w + 10, h: CAPTION_PX * 1.44 };
+      // Claim the space before any dimension readout is drawn. Readouts already
+      // give way to each other when they would collide; a room's area is the
+      // more useful of the two, so it goes down first and the readout under it
+      // steps aside instead of printing one number on top of the other.
+      this.dimensionBoxes.push(box);
       ctx.fillStyle = "rgba(14, 14, 16, 0.55)";
-      ctx.fillRect(c.x - w / 2 - 5, c.y - CAPTION_PX * 0.72, w + 10, CAPTION_PX * 1.44);
+      ctx.fillRect(box.x, box.y, box.w, box.h);
       ctx.fillStyle = CAPTION_COLOR;
       ctx.fillText(text, c.x, c.y);
     }

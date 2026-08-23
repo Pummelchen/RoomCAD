@@ -1279,6 +1279,37 @@ function updateVersionBadge() {
   appVersion.innerHTML = html;
 }
 
+// The status poll reschedules itself from the moment the previous one FINISHES.
+// On a plain setInterval an await that outlives the interval lets the next poll
+// start anyway, so a server that has become slow — exactly when this matters —
+// collects a growing pile of overlapping requests from every open tab and gets
+// slower still. Backing off while the server is unreachable also keeps a
+// restart from being met with a request storm from every client at once.
+//
+// Polling deliberately continues in a hidden tab: the server counts a client as
+// present from its requests, so pausing would drop people out of the
+// collaborator count whenever they switched tabs. Browsers already throttle
+// background timers, which is the right amount of restraint here.
+const STATUS_INTERVAL_MS = 3000;
+const STATUS_BACKOFF_MAX_MS = 30000;
+let statusTimer = null;
+let statusBackoff = STATUS_INTERVAL_MS;
+
+function scheduleStatus(delay) {
+  if (statusTimer) clearTimeout(statusTimer);
+  statusTimer = setTimeout(runStatusPoll, delay);
+}
+
+async function runStatusPoll() {
+  statusTimer = null;
+  const offline = await pollStatus();
+  statusBackoff = offline
+    ? Math.min(statusBackoff * 2, STATUS_BACKOFF_MAX_MS)
+    : STATUS_INTERVAL_MS;
+  scheduleStatus(statusBackoff);
+}
+
+/// Polls the server once. Resolves true if the server could not be reached.
 async function pollStatus() {
   const t0 = performance.now();
   try {
@@ -1286,7 +1317,7 @@ async function pollStatus() {
     const ms = Math.round(performance.now() - t0);
     if (res.status === 401) {
       if (window.__roomcadShowLogin) window.__roomcadShowLogin();
-      return;
+      return false;
     }
     const data = await res.json();
     store.presenceCount = data.count || 1;
@@ -1295,9 +1326,13 @@ async function pollStatus() {
   } catch {
     store.serverLatency = null;
     store.serverOffline = true;
+    updateVersionBadge();
+    renderLiveButton();
+    return true;
   }
   updateVersionBadge();
   renderLiveButton();
+  return false;
 }
 
 let livePushTimer = null;
@@ -1362,6 +1397,13 @@ renderToolbar();
 renderRooms();
 document.title = (store.documentName || store.room.name) + " — RoomCAD";
 updateVersionBadge();
-pollStatus();
+runStatusPoll();
 resumeLastRoom();
-setInterval(pollStatus, 3000);
+// Coming back to a backgrounded tab should show the truth immediately rather
+// than after the next tick of whatever backoff it had drifted into.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    statusBackoff = STATUS_INTERVAL_MS;
+    scheduleStatus(0);
+  }
+});

@@ -52,5 +52,5 @@ check("the mark is yellow", /CLASH_FILL = "rgba\(255, 214, 0/.test(editor));
 check("nothing about the overlap blocks the edit",
   !/canStartWallAt[\s\S]{0,400}overlappingWallAreas/.test(editor));
 
+console.log(`${passed} passed, ${failed} failed — 2D editor behaviour contracts`);
 if (failed) process.exit(1);
-console.log(`${passed} passed, 0 failed — 2D editor behaviour contracts`);

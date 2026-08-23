@@ -11,11 +11,14 @@ const appSrc = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
 const html = readFileSync(join(root, "roomcad", "web", "index.html"), "utf8");
 
 let failed = 0;
+let passed = 0;
 function check(name, condition) {
   if (!condition) {
     failed++;
     console.error("FAIL: " + name);
+    return;
   }
+  passed++;
 }
 
 const match = versionSrc.match(/export const APP_VERSION = "(\d+)\.(\d+)";/);
@@ -26,5 +29,5 @@ check("server-status footer also uses the shared version", appSrc.includes('let 
 check("app has no hard-coded release tag", !/\bv\d+\.\d+\b/.test(appSrc));
 check("HTML does not hard-code an old visible version", !/id="app-version"[^>]*>v\d/.test(html));
 
+console.log(`${passed} passed, ${failed} failed — v${match ? match[1] + "." + match[2] : "?"}`);
 if (failed) process.exit(1);
-console.log("6 passed, 0 failed — v" + match[1] + "." + match[2]);

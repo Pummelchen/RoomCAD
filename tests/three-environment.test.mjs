@@ -96,5 +96,5 @@ check("solar position is calculated from the chosen hour",
 check("sun position continues to follow the calculated direction",
   walk.includes("this.sun.position.set(cx + dir.x * dist"));
 
+console.log(`${passed} passed, ${failed} failed — city + 3D environment contracts`);
 if (failed) process.exit(1);
-console.log(`${passed} passed, 0 failed — city + 3D environment contracts`);

@@ -639,5 +639,61 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("detectRooms survives a room with no walls or no doors", threw === null, threw || "");
 }
 
+// ── A malformed document must come back usable, not full of NaN ───────────
+//
+// sanitize() is built on clamp(), and Math.min(Math.max(NaN, lo), hi) is NaN.
+// So one bad field — a string where a number belongs, a null from an older
+// build, a NaN from a peer — used to spread across every coordinate it touched
+// and survive sanitising, leaving a document that could not be repaired by
+// loading it again.
+{
+  const junk = {
+    format: "com.maria.roomcad-v2.room", version: 1,
+    room: {
+      id: "x", name: "Bad", width: "wide", length: null, height: {},
+      canvas: { width: "big", length: 25 }, origin: { x: "here", z: 4 },
+      grid: "oneCentimeter",
+      walls: [
+        { id: "w1", start: { x: "a", z: 0 }, end: { x: 5, z: 0 } },
+        { id: "w2", start: { x: 0, z: 0 }, end: { x: 0, z: 5 } },
+      ],
+      doors: [{ id: "d1", wallID: "w2", offset: "mid", width: NaN, open: true, swingInside: true }],
+      windows: [{ id: "n1", wallID: "w2", offset: Infinity, width: "wide" }],
+      furniture: [{ id: "f1", kind: "bed", center: { x: "?", z: 2 }, rotationDegrees: "turn" }],
+      publicAreas: [{ id: "p1", x: null, z: 1, w: "wide", l: 2 }],
+      labels: [{ id: "l1", text: "Hi", center: { x: NaN, z: 1 }, rotationDegrees: undefined, size: "big" }],
+    },
+  };
+  let room = null;
+  let threw = null;
+  try { room = P.parseRoom(JSON.stringify(junk)); } catch (e) { threw = e.message; }
+  check("a document full of bad values still parses", threw === null, threw || "");
+
+  const bad = [];
+  const walk = (o, path) => {
+    if (typeof o === "number") {
+      if (!Number.isFinite(o)) bad.push(`${path} = ${o}`);
+      return;
+    }
+    if (o && typeof o === "object") for (const k of Object.keys(o)) walk(o[k], `${path}.${k}`);
+  };
+  walk(room, "room");
+  check("no non-finite number survives sanitising", bad.length === 0, bad.slice(0, 6).join(", "));
+
+  check("the room comes back with usable dimensions",
+    room.width >= 2 && room.length >= 2 && room.height >= 2.2,
+    `${room.width} × ${room.length} × ${room.height}`);
+  check("a rotation that is not a number reads as no rotation",
+    room.furniture.every(f => f.rotationDegrees === 0)
+    && room.labels.every(l => l.rotationDegrees === 0));
+
+  // clamp() itself is the guard, so state its contract directly.
+  check("clamp sends a non-number to the low bound", P.clamp("nonsense", 2, 20) === 2);
+  check("clamp still reads a numeric string", P.clamp("7", 2, 20) === 7);
+  check("clamp sends infinity to the low bound", P.clamp(Infinity, 2, 20) === 2);
+  check("clamp is unchanged for ordinary numbers",
+    P.clamp(5, 2, 20) === 5 && P.clamp(1, 2, 20) === 2 && P.clamp(99, 2, 20) === 20);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

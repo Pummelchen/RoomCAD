@@ -40,8 +40,24 @@ export const LABEL_DEFAULT_SIZE = 0.22;   // cap height in metres
 export const ROOM_FILE_FORMAT = "com.maria.roomcad-v2.room";
 export const ROOM_FILE_VERSION = 1;
 
+/// Clamps `v` into [min, max]. A value that is not a finite number — a string
+/// from a hand-edited file, a null from a peer running an older build, or a
+/// NaN produced further up the chain — clamps to `min` rather than passing
+/// through. sanitize() is built on this, so without the guard a single bad
+/// field spreads NaN across every coordinate it touches and the document
+/// cannot be repaired by re-sanitising it.
 export function clamp(v, min, max) {
-  return Math.min(Math.max(v, min), max);
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(Math.max(n, min), max);
+}
+
+/// The nearest quarter turn in [0, 360). Anything that is not a finite number
+/// reads as no rotation at all.
+export function quarterTurn(degrees) {
+  const n = Number(degrees);
+  if (!Number.isFinite(n)) return 0;
+  return ((Math.round(n / 90) * 90) % 360 + 360) % 360;
 }
 
 export function clean(v) {
@@ -1470,7 +1486,7 @@ export function sanitize(room) {
   });
 
   room.furniture = room.furniture.map(item => {
-    item.rotationDegrees = ((Math.round(item.rotationDegrees / 90) * 90) % 360 + 360) % 360;
+    item.rotationDegrees = quarterTurn(item.rotationDegrees);
     const kind = FURNITURE_KINDS[item.kind];
     const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
     const w = swaps ? kind.d : kind.w;
@@ -1508,7 +1524,7 @@ export function sanitize(room) {
         x: clamp(l.center.x, 0, canvas.width),
         z: clamp(l.center.z, 0, canvas.length),
       },
-      rotationDegrees: ((Math.round((l.rotationDegrees || 0) / 90) * 90) % 360 + 360) % 360,
+      rotationDegrees: quarterTurn(l.rotationDegrees),
       size: clamp(Number(l.size) || LABEL_DEFAULT_SIZE, 0.08, 1.0),
     }));
 }

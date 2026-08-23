@@ -141,21 +141,42 @@ export function roomToSVG(room, options = {}) {
     }
   }
 
+  // Text already placed on the sheet. An area caption and a wall's dimension
+  // can easily want the same few square millimetres — an interior wall's
+  // readout is offset away from the middle of the plan, which puts it inside
+  // whatever room is on that side. Two numbers printed on top of each other are
+  // worse than one number missing, so captions and the user's labels claim
+  // their space first and a colliding readout is dropped.
+  const taken = [];
+  const textBox = (cx, cy, text, size, rotated) => {
+    const long = text.length * size * 0.58 + 1.5;
+    const short = size * 1.35;
+    const w = rotated ? short : long;
+    const h = rotated ? long : short;
+    return { x: cx - w / 2, y: cy - h / 2, w, h };
+  };
+  const isFree = b => !taken.some(o =>
+    b.x < o.x + o.w && o.x < b.x + b.w && b.y < o.y + o.h && o.y < b.y + b.h);
+
   // --- room areas -----------------------------------------------------------
   if (options.areas !== false) {
     for (const region of P.detectRooms(room)) {
       if (!region.hasDoor) continue;
       const spot = P.captionSpot(room, region, 1.1 * denom / 100, 0.45 * denom / 100)
         || { x: (region.bounds.minX + region.bounds.maxX) / 2, z: (region.bounds.minZ + region.bounds.maxZ) / 2 };
+      const caption = `${region.area.toFixed(1)} m²`;
+      taken.push(textBox(X(spot.x), Y(spot.z), caption, 3, false));
       push(`<text x="${n(X(spot.x))}" y="${n(Y(spot.z))}"`,
         ` font-family="Helvetica, Arial, sans-serif" font-size="3" fill="#2b3138"`,
-        ` text-anchor="middle">${esc(region.area.toFixed(1))} m²</text>\n`);
+        ` text-anchor="middle">${esc(caption)}</text>\n`);
     }
   }
 
   // --- the user's own labels ------------------------------------------------
   for (const label of room.labels || []) {
     const size = Math.max(2.2, (label.size || P.LABEL_DEFAULT_SIZE) * k);
+    const turned = label.rotationDegrees === 90 || label.rotationDegrees === 270;
+    taken.push(textBox(X(label.center.x), Y(label.center.z), label.text || "", size, turned));
     push(`<text x="${n(X(label.center.x))}" y="${n(Y(label.center.z) + size * 0.35)}"`,
       ` font-family="Helvetica, Arial, sans-serif" font-size="${n(size)}" fill="#1b2027"`,
       ` text-anchor="middle" transform="rotate(${n(label.rotationDegrees)} ${n(X(label.center.x))} ${n(Y(label.center.z))})"`,
@@ -183,8 +204,12 @@ export function roomToSVG(room, options = {}) {
       const tx = (x1 + x2) / 2;
       const ty = (y1 + y2) / 2;
       const rot = horizontal ? 0 : -90;
+      const readout = P.cm(len);
+      const box = textBox(tx, ty - 0.9, readout, 2.4, !horizontal);
+      if (!isFree(box)) continue;
+      taken.push(box);
       push(`<text x="${n(tx)}" y="${n(ty - 0.9)}" transform="rotate(${rot} ${n(tx)} ${n(ty)})"`,
-        ` stroke="none">${esc(P.cm(len))}</text>\n`);
+        ` stroke="none">${esc(readout)}</text>\n`);
     }
     push(`</g>\n`);
   }

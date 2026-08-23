@@ -90,5 +90,75 @@ check("furniture is drawn", svg.includes('stroke="#7c8794"'));
   check("a plan with no walls still exports", S.roomToSVG(empty, {}).trim().endsWith("</svg>"));
 }
 
+// ── Nothing on the sheet is printed on top of anything else ───────────────
+//
+// Wall readouts are offset away from the middle of the plan, which for an
+// interior wall lands the number inside whichever room is on that side —
+// straight through that room's area caption. Two numbers stacked on each other
+// are worse than one number missing.
+{
+  // Every <text> the export emits, as the box it actually occupies on the sheet.
+  const textBoxes = out => [...out.matchAll(
+    /<text x="([-\d.]+)" y="([-\d.]+)"([^>]*)>([^<]*)<\/text>/g)].map(m => {
+      const attrs = m[3];
+      const spin = Math.abs(Number(/rotate\((-?[\d.]+)/.exec(attrs)?.[1] ?? 0)) % 180;
+      const size = Number(/font-size="([\d.]+)"/.exec(attrs)?.[1] ?? 2.4);
+      const text = m[4];
+      const along = text.length * size * 0.58 + 1.5;
+      const across = size * 1.35;
+      const turned = Math.abs(spin - 90) < 1;
+      const w = turned ? across : along;
+      const h = turned ? along : across;
+      return { x: Number(m[1]) - w / 2, y: Number(m[2]) - h / 2, w, h, text };
+    }).filter(b => b.text.trim());
+
+  const collisions = boxes => {
+    const hits = [];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+          hits.push(`"${a.text}" over "${b.text}"`);
+        }
+      }
+    }
+    return hits;
+  };
+
+  const demoHits = collisions(textBoxes(svg));
+  check("the demo plan prints no text on top of other text",
+    demoHits.length === 0, demoHits.slice(0, 3).join("; "));
+
+  // A plan with interior walls, a walkway and labels — where readouts, area
+  // captions and labels all compete for the middle of the sheet.
+  const room = P.freshRoom("Sheet", 10, 12, 2.6);
+  P.centerRoom(room);
+  const o = P.roomOrigin(room);
+  room.publicAreas = [{ id: P.uid(), x: o.x + 4, z: o.z, w: 1.2, l: 12 }];
+  room.labels = [
+    { id: P.uid(), text: "Stairs Down", center: { x: o.x + 2, z: o.z + 6 }, rotationDegrees: 270, size: 0.22 },
+    { id: P.uid(), text: "Hall", center: { x: o.x + 7, z: o.z + 3 }, rotationDegrees: 0, size: 0.22 },
+  ];
+  const laid = P.autoLayoutRooms(room, { count: 4, area: 9, windows: true, seed: 3 });
+  check("the busy sheet fixture lays out", !!laid);
+  const filled = P.parseRoom(JSON.stringify({
+    format: "com.maria.roomcad-v2.room", version: 1,
+    room: {
+      ...room, walls: laid.walls, doors: laid.doors, windows: laid.windows,
+      publicAreas: room.publicAreas.concat(
+        laid.corridors.map(c => ({ id: P.uid(), ...c, generated: true }))),
+    },
+  }));
+  const busy = textBoxes(S.roomToSVG(filled, {}));
+  check("a busy plan still puts text on the sheet", busy.length > 8, `${busy.length}`);
+  const hits = collisions(busy);
+  check("a busy plan prints no text on top of other text",
+    hits.length === 0, hits.slice(0, 3).join("; "));
+
+  // Dropping a colliding readout must not silently drop them all.
+  const readouts = busy.filter(b => /^\d+ cm$/.test(b.text));
+  check("wall readouts survive the collision pass", readouts.length >= 6, `${readouts.length}`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
