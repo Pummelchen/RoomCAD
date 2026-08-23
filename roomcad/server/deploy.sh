@@ -138,15 +138,17 @@ else
   echo "NOTE: local curl has no HTTP/3 support, so QUIC reachability was not checked."
 fi
 
-# The old address is forwarded by nginx, which belongs to another project and
-# is no longer this script's business to configure. It is still worth reporting,
-# because a stale bookmark landing on someone else's application is confusing —
-# but it is a note, not a verdict on this deploy.
-legacy="$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 \
+# The old :443 address used to be forwarded here by nginx. nginx has since been
+# stopped — its config directory was a dangling symlink into a third project's
+# tree and could not be rebuilt — so ports 80 and 443 are now unserved and the
+# old address simply does not answer. That is a fact about the host, not a
+# failure of this deploy, so it is reported and nothing more.
+legacy="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \
   https://roomcad.91.99.176.243.nip.io/ || echo "000")"
 case "$legacy" in
-  30*\ *:8443/*) echo "Old URL still redirects here: $legacy" ;;
-  *) echo "NOTE: the old URL answered '$legacy'. It is forwarded by nginx, which" ;;
+  30*) echo "Old URL still redirects here ($legacy) — something is serving :443 again." ;;
+  000) echo "Old URL (:443) does not answer: nothing serves port 443 on this host." ;;
+  *) echo "NOTE: the old URL answered '$legacy' — something else now serves :443." ;;
 esac
 
 echo "Deployed. RoomCAD runs its own web server (roomcad-caddy) on its own port."
