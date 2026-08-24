@@ -452,6 +452,14 @@ body.resizing-sidebars * {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Same again: two buttons and a label that would not shrink, so on a narrow
+     panel the right-hand button hung 14 px past the scrollbar. */
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.floor-control > * {
+  min-width: 0;
 }
 
 .floor-control .floor-btn {
@@ -464,7 +472,10 @@ body.resizing-sidebars * {
 }
 
 .floor-value {
-  flex: 1;
+  flex: 1 1 0;
+  /* Allowed to shrink between the two buttons rather than holding the row
+     open at its text width. */
+  min-width: 0;
   text-align: center;
   font-size: 13px;
   font-weight: 600;
@@ -686,6 +697,21 @@ body.resizing-sidebars * {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* The panel is resizable, and these rows could not shrink: an input at its
+     content width plus a 58 px readout is wider than a narrow sidebar, so the
+     row overflowed — under the scrollbar and out past the edge of the panel.
+     Measured at the minimum width, the readout ended 24 px BEYOND the
+     scrollbar. Wrapping is what a row of controls should do when the space runs
+     out; padding that holds text off the scrollbar only works if the content
+     stays inside it. */
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* A flex item's default minimum size is its own content, which is what stops
+   these shrinking at all. */
+.field .value-row > * {
+  min-width: 0;
 }
 
 .field input[type="range"] {
@@ -694,7 +720,11 @@ body.resizing-sidebars * {
 }
 
 .field .readout {
-  min-width: 58px;
+  /* A floor of nothing, not a fixed width: it may shrink when the panel is
+     narrow rather than push the row past the edge. */
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
