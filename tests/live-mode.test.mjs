@@ -25,7 +25,7 @@ function check(name, condition) {
 check("toolbar exposes a Join Live button", html.includes('id="live-room"') && html.includes(">Join Live</button>"));
 check("toolbar exposes the red leave action", html.includes('id="leave-live-room"') && html.includes(">Leave Live Mode</button>"));
 check("second-session invitation uses Join Live text", app.includes('liveButton.textContent = store.live ? "Live Active" : "Join Live";'));
-check("live drafts wait safely for an explicit join", app.includes("let pendingLiveDraft = null;") && app.includes("pendingLiveDraft = { room, version: data.version }"));
+check("live drafts wait safely for an explicit join", app.includes("let pendingLiveDraft = null;") && app.includes("pendingLiveDraft = { room, version }"));
 check("joining never pushes stale local data immediately", !app.includes("pushLiveDraft(); // publish our current state right away"));
 check("leave saves before detaching the watcher", app.includes("const saved = await saveRoom({ watch: false });") && app.includes("stopWatching({ detached: true });"));
 check("leave failure keeps the editor live", app.includes("still in Live Active"));
@@ -86,31 +86,31 @@ check("floor area is the enclosed floor, not width times length",
   const draft = (over = {}) => ({ name: "flat", clientId: "them", live: true, version: 3, ...over });
 
   check("a live draft from a teammate is applied",
-    liveUpdateAction(draft(), me) === "live");
+    liveUpdateAction(draft(), me).action === "live");
   // The bug, stated as its own case.
   check("a live draft is applied even when the versions differ",
-    liveUpdateAction(draft({ version: 7 }), me) === "live");
+    liveUpdateAction(draft({ version: 7 }), me).action === "live");
   check("and when the sender has no version at all",
-    liveUpdateAction(draft({ version: null }), me) === "live");
+    liveUpdateAction(draft({ version: null }), me).action === "live");
   check("a draft for another room is ignored",
-    liveUpdateAction(draft({ name: "attic" }), me) === "ignore");
+    liveUpdateAction(draft({ name: "attic" }), me).action === "ignore");
   check("our own echo is ignored",
-    liveUpdateAction(draft({ clientId: "me" }), me) === "ignore");
+    liveUpdateAction(draft({ clientId: "me" }), me).action === "ignore");
   check("nothing lands mid-drag",
-    liveUpdateAction(draft(), { ...me, dragTransactionActive: true }) === "ignore");
+    liveUpdateAction(draft(), { ...me, dragTransactionActive: true }).action === "ignore");
   check("a draft is held, not applied, before joining live",
-    liveUpdateAction(draft(), { ...me, live: false }) === "hold");
+    liveUpdateAction(draft(), { ...me, live: false }).action === "hold");
   check("and held whatever version it carries",
-    liveUpdateAction(draft({ version: 9 }), { ...me, live: false }) === "hold");
+    liveUpdateAction(draft({ version: 9 }), { ...me, live: false }).action === "hold");
 
   // Saves are the other half: a new version from anyone is adopted, and the
   // version the watcher echoes back on connect is not mistaken for one.
   const save = (over = {}) => ({ name: "flat", clientId: "them", live: false, version: 4, ...over });
-  check("a teammate's save is applied", liveUpdateAction(save(), me) === "saved");
+  check("a teammate's save is applied", liveUpdateAction(save(), me).action === "saved");
   check("the version we already have is not re-applied",
-    liveUpdateAction(save({ version: 3 }), me) === "ignore");
+    liveUpdateAction(save({ version: 3 }), me).action === "ignore");
   check("a save is applied while live too",
-    liveUpdateAction(save(), { ...me, live: true }) === "saved");
+    liveUpdateAction(save(), { ...me, live: true }).action === "saved");
 }
 
 // ── Exporting writes out the design on screen ────────────────────────────

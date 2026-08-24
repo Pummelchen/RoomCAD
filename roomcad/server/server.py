@@ -23,7 +23,8 @@ DB_PATH = os.environ.get("ROOMCAD_DB_PATH", "/var/roomcad/rooms.db")
 LEGACY_DIR = os.environ.get("ROOMCAD_LEGACY_DIR", "/var/roomcad/rooms")  # old .rcad files, migrated once
 PREFIX = "ternak_room"
 HOST = "127.0.0.1"
-PORT = 8078
+# Overridable so a test can run a throwaway server beside the real one.
+PORT = int(os.environ.get("ROOMCAD_PORT", "8078"))
 
 # Shared password + login sessions. The password is injected via the
 # ROOMCAD_PASSWORD environment variable (see roomcad.service); it is never

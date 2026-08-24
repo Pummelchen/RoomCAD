@@ -827,21 +827,33 @@ function stopWatching({ detached = false } = {}) {
 /// so live editing worked right up until somebody saved and never again — which
 /// is exactly when people start collaborating.
 ///
-/// Returns one of: "ignore", "hold" (remember it in case they join), "live"
-/// (apply as a draft), "saved" (apply and adopt the version).
+/// Returns { action, version }, where action is one of: "ignore", "hold"
+/// (remember it in case they join), "live" (apply as a draft), "saved" (apply a
+/// teammate's save). `version` is the version to adopt, or null to keep the one
+/// we have.
+///
+/// The version is part of the answer rather than something the caller works out
+/// for itself. It is the second half of the same bug — a draft that arrived but
+/// left the version behind meant the audience could not see that we had moved
+/// to v3 — and a caller that decides it separately is a second copy of the rule
+/// that can disagree with this one.
 export function liveUpdateAction(data, state) {
-  if (!data || data.name !== state.serverRoomName) return "ignore";
-  if (data.clientId === state.clientId) return "ignore";   // our own echo
-  if (state.dragTransactionActive) return "ignore";        // never clobber a drag
+  const nothing = { action: "ignore", version: null };
+  if (!data || data.name !== state.serverRoomName) return nothing;
+  if (data.clientId === state.clientId) return nothing;    // our own echo
+  if (state.dragTransactionActive) return nothing;         // never clobber a drag
+  const version = data.version != null ? data.version : null;
   if (data.live) {
     // Not gated on the version. While live, the draft IS the shared state, and
-    // whoever sent it is by definition further along than we are.
-    return state.live ? "live" : "hold";
+    // whoever sent it is by definition further along than we are. It carries
+    // the sender's version, and taking it is what keeps the two sides on one
+    // baseline instead of drifting apart.
+    return { action: state.live ? "live" : "hold", version };
   }
   // A real save from anyone. The watcher sends the current version on connect,
   // so the one we already have is a no-op rather than a teammate's update.
-  if (data.version === state.serverRoomVersion) return "ignore";
-  return "saved";
+  if (data.version === state.serverRoomVersion) return nothing;
+  return { action: "saved", version };
 }
 
 function watchRoom(name) {
@@ -852,7 +864,7 @@ function watchRoom(name) {
     eventSource.onmessage = e => {
       try {
         const data = JSON.parse(e.data);
-        const action = liveUpdateAction(data, {
+        const { action, version } = liveUpdateAction(data, {
           serverRoomName: store.serverRoomName,
           serverRoomVersion: store.serverRoomVersion,
           clientId: CLIENT_ID,
@@ -864,12 +876,10 @@ function watchRoom(name) {
         if (action === "hold") {
           // Remembered while the user considers joining, so Join Live adopts
           // the teammate's work instead of overwriting it.
-          pendingLiveDraft = { room, version: data.version };
+          pendingLiveDraft = { room, version };
           return;
         }
-        // A live draft carries the sender's version; taking it keeps the two
-        // sides on the same baseline instead of drifting apart.
-        store.applyRemoteRoom(room, data.version != null ? data.version : null);
+        store.applyRemoteRoom(room, version);
       } catch (err) {
         console.warn("Live update ignored:", err);
       }
