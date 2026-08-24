@@ -71,8 +71,8 @@ const GRASS_COLOR = 0x6f9457;
 const MARKING_COLOR = 0xe6e2d4;
 const BAY_LINE_COLOR = 0xd8d3c2;    // the box a car parks inside
 const BUS_BOX_COLOR = 0xb8452f;     // bus stops are painted, and only for buses
-const BUS_LETTER_COLOR = 0xefe9dc;
 const TRUNK_COLOR = 0x6b4f36;
+const GROUND_DEPTH = 2;         // how thick the walkable ground slab is made
 const TREE_MAX_RADIUS = 1.8;    // the biggest canopy _blockTrees will draw
 const TREE_KERB_CLEAR = 0.3;    // ... and how far short of the kerb it must stop
 const CANOPY_COLORS = [0x5c8a45, 0x6f9c52, 0x4e7a3b];
@@ -760,6 +760,7 @@ export class City {
     this.junctions = [];
     this.turnControl = new Map();
     this.turnLoads = new Map();
+    this.solids = [];
     this._turnControlAt = 0;
     this._turnLookahead = 0;
     this.strays = 0;
@@ -926,6 +927,18 @@ export class City {
     this._layoutParking(cx, cz, span, block, trafficRnd);
     const laybys = this._laybyRects();
 
+    // What the player can stand on and walk into, gathered as the city is
+    // built rather than worked out again afterwards. Without it there is
+    // nothing outside the room at all: step through a broken window and you
+    // fall through the pavement you can plainly see.
+    this.solids = [];
+    // The carriageway, one slab under the whole neighbourhood. Everything else
+    // is a step up from it.
+    this.solids.push({
+      x: cx, y: ROAD_Y - GROUND_DEPTH / 2, z: cz,
+      w: reach * 2, h: GROUND_DEPTH, d: reach * 2,
+    });
+
     for (let gx = -GRID_RADIUS; gx <= GRID_RADIUS; gx++) {
       for (let gz = -GRID_RADIUS; gz <= GRID_RADIUS; gz++) {
         const bx = cx + gx * span;
@@ -1066,6 +1079,33 @@ export class City {
   /// One slab layer of a block, as up to four strips around an optional hole.
   /// The room's own plot is the hole: paving over it would push pavement up
   /// through the floor of a ground-floor room.
+  /// The level of the carriageway: the lowest thing in the city you can stand
+  /// on. Everything else is a step up from it.
+  groundY() {
+    return ROAD_Y;
+  }
+
+  /// A list of rectangles with one rectangle cut out of every one of them.
+  ///
+  /// Shared by the paving and by the collision solids, so what you walk on is
+  /// derived from the same shape as what you see. Two descriptions of one
+  /// pavement is two chances for the player to stand on air.
+  static subtractRect(pieces, cut) {
+    const out = [];
+    for (const r of pieces) {
+      const cx0 = Math.max(r.x0, Math.min(r.x1, cut.x0));
+      const cx1 = Math.max(r.x0, Math.min(r.x1, cut.x1));
+      const cz0 = Math.max(r.z0, Math.min(r.z1, cut.z0));
+      const cz1 = Math.max(r.z0, Math.min(r.z1, cut.z1));
+      if (cx1 - cx0 <= 0.01 || cz1 - cz0 <= 0.01) { out.push(r); continue; }
+      out.push({ x0: r.x0, x1: r.x1, z0: r.z0, z1: cz0 });
+      out.push({ x0: r.x0, x1: r.x1, z0: cz1, z1: r.z1 });
+      out.push({ x0: r.x0, x1: cx0, z0: cz0, z1: cz1 });
+      out.push({ x0: cx1, x1: r.x1, z0: cz0, z1: cz1 });
+    }
+    return out.filter(r => r.x1 - r.x0 > 0.01 && r.z1 - r.z0 > 0.01);
+  }
+
   _padLayer(flats, rect, hole, top, height, color, holeGrow = 0, notches = null) {
     const strip = (ax0, ax1, az0, az1) => {
       const w = ax1 - ax0;
@@ -1079,21 +1119,7 @@ export class City {
     // each, because a block can have a plot AND two laybys and the strips
     // either side of one have to be cut by the others in turn.
     let pieces = [{ ...rect }];
-    const cutAll = (cut) => {
-      const next = [];
-      for (const r of pieces) {
-        const cx0 = Math.max(r.x0, Math.min(r.x1, cut.x0));
-        const cx1 = Math.max(r.x0, Math.min(r.x1, cut.x1));
-        const cz0 = Math.max(r.z0, Math.min(r.z1, cut.z0));
-        const cz1 = Math.max(r.z0, Math.min(r.z1, cut.z1));
-        if (cx1 - cx0 <= 0.01 || cz1 - cz0 <= 0.01) { next.push(r); continue; }
-        next.push({ x0: r.x0, x1: r.x1, z0: r.z0, z1: cz0 });
-        next.push({ x0: r.x0, x1: r.x1, z0: cz1, z1: r.z1 });
-        next.push({ x0: r.x0, x1: cx0, z0: cz0, z1: cz1 });
-        next.push({ x0: cx1, x1: r.x1, z0: cz0, z1: cz1 });
-      }
-      pieces = next.filter(r => r.x1 - r.x0 > 0.01 && r.z1 - r.z0 > 0.01);
-    };
+    const cutAll = (cut) => { pieces = City.subtractRect(pieces, cut); };
 
     if (hole) {
       // Each layer cuts the plot a little differently. Cut them all to exactly
@@ -1123,6 +1149,19 @@ export class City {
   /// below the one outside it, so nothing z-fights.
   _blockPad(flats, bx, bz, block, hole, laybys = null) {
     const rect = { x0: bx - block / 2, x1: bx + block / 2, z0: bz - block / 2, z1: bz + block / 2 };
+    // The raised pavement, as something to stand on. Cut to the same shape as
+    // the paving above — the room's own plot and every bus layby taken out of
+    // it — because a kerb you can see and a kerb you can walk on that disagree
+    // is a player standing in mid-air over a layby.
+    let walkable = [rect];
+    if (hole) walkable = City.subtractRect(walkable, hole);
+    for (const notch of laybys || []) walkable = City.subtractRect(walkable, notch);
+    for (const r of walkable) {
+      this.solids.push({
+        x: (r.x0 + r.x1) / 2, y: PAVEMENT_Y - KERB_HEIGHT / 2, z: (r.z0 + r.z1) / 2,
+        w: r.x1 - r.x0, h: KERB_HEIGHT, d: r.z1 - r.z0,
+      });
+    }
     this._padLayer(flats, rect, hole, PAVEMENT_Y, KERB_HEIGHT, KERB_COLOR, 0, laybys);
     const inset = 0.35;
     this._padLayer(flats, {
@@ -1182,6 +1221,9 @@ export class City {
         // A parapet reads as a roof without modelling one, and caps the shell
         // of a hollow building so you cannot see down into it from above.
         sets.roofs.add(boxMatrix(x, PAVEMENT_Y + h + 0.25, z, w + 0.5, 0.5, d + 0.5), ROOF_COLOR);
+        // And it is solid, so the street outside is a street rather than a
+        // painted backdrop you walk straight through.
+        this.solids.push({ x, y: PAVEMENT_Y + h / 2, z, w, h, d });
       }
     }
   }
@@ -3724,23 +3766,11 @@ export class City {
           flats.add(alongX
             ? boxMatrix(bay.at, y - 0.004, mid, half * 2, 0.03, depth)
             : boxMatrix(mid, y - 0.004, bay.at, depth, 0.03, half * 2), BUS_BOX_COLOR);
-          // Three letters, as bars: B, U, S. Legible as lettering from a window
-          // without needing a texture or a font in the bundle.
-          const letters = [
-            [[0, 1], [0, 0.55], [0, 0.1], [-0.28, 0.78], [-0.28, 0.32]],   // B
-            [[-0.3, 1], [0.3, 1], [0, 0.1]],                               // U
-            [[0, 1], [-0.3, 0.78], [0, 0.55], [0.3, 0.32], [0, 0.1]],      // S
-          ];
-          const letterAt = [-2.3, 0, 2.3];
-          for (let li = 0; li < letters.length; li++) {
-            for (const [across, up] of letters[li]) {
-              const a = bay.at + letterAt[li] + across * 1.5 * lane.dir;
-              const c = kerb + side * (LAYBY_DEPTH * up * 0.82 + 0.25);
-              flats.add(alongX
-                ? boxMatrix(a, y + 0.002, c, 0.5, 0.03, 0.16)
-                : boxMatrix(c, y + 0.002, a, 0.16, 0.03, 0.5), BUS_LETTER_COLOR);
-            }
-          }
+          // No lettering. It was drawn as bars making out B, U and S, on the
+          // theory that it would read as lettering without a font in the
+          // bundle. It does not: at any angle you actually see a bus stop
+          // from, it reads as white dashes scattered across the bay. The
+          // coloured bed and the shape of the layby say what it is.
           continue;
         }
         // An ordinary space: a box open to the carriageway, as they are painted.

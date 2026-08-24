@@ -44,6 +44,10 @@ const STAND_HALF_HEIGHT = 0.55; // total standing height 1.5 m
 const CROUCH_HALF_HEIGHT = 0.25; // total crouch height 0.9 m
 const WALK_SPEED = 2.5;
 const GRAVITY = 11;
+// How far above the taller of the room and the street counts as still being in
+// the world. Enough to clear the tallest building the city puts up, so standing
+// on a roof is not mistaken for having fallen out of the simulation.
+const CITY_HEADROOM = 40;
 const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 16;
 const FLOOR_HEIGHT = 3; // metres per building floor
@@ -156,6 +160,8 @@ export class Walk3D {
     // Crouch and jump (Rapier drives the actual body once it's ready).
     this.crouching = false;
     this.jumpCount = 0;
+    // Windows shot out, as spans along their wall. Openings, not decorations.
+    this.brokenGlass = [];
     this.feetY = 0;
     this.onGround = true;
 
@@ -399,8 +405,10 @@ export class Walk3D {
     ceiling.receiveShadow = true;
     this.roomGroup.add(ceiling);
 
-    // Walls are single sealed solids with real cut-outs (windows remain
-    // transparent so a future exterior integration can show through).
+    // Walls are single sealed solids with real cut-outs. The panes are built
+    // fresh here, so whatever was shot out before belongs to glass that no
+    // longer exists — the openings go with it.
+    this.brokenGlass = [];
     for (const wall of room.walls) {
       this.addWallPlan(room, wall, room.doors, room.windows, room.height);
     }
@@ -630,8 +638,13 @@ export class Walk3D {
     if (h <= 0.001 || span.to - span.from <= 0.001) return;
     const geometry = new THREE.BoxGeometry(thickness, h, span.to - span.from);
     const mesh = new THREE.Mesh(geometry, this.glassMaterial);
-    // Marked so a paintball can tell glass from wall and break it.
+    // Marked so a paintball can tell glass from wall and break it — and which
+    // opening it is, so breaking it can be turned into a hole you climb through
+    // rather than only a hole you can see.
     mesh.userData.glass = true;
+    mesh.userData.wallID = wall.id;
+    mesh.userData.spanFrom = span.from;
+    mesh.userData.spanTo = span.to;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     const center = P.wallPointAt(wall, (span.from + span.to) / 2);
@@ -1250,46 +1263,89 @@ export class Walk3D {
     this.physicsBodies = [];
     const baseY = this.floorY(); // physics lives at the room's current floor lift
 
-    // Floor.
+    // Floor and ceiling, over the ROOM rather than over the whole plan canvas.
+    //
+    // The canvas is the drawing area and is usually much bigger than the room
+    // in it. Run out that far, the floor is an invisible platform hanging over
+    // the street — walk out of a ground-floor room and you are standing on
+    // nothing, and from an upper floor you walk out into the air and stay
+    // there. The ceiling is worse: it caps the sky for several metres in every
+    // direction outside the front door.
     const canvas = P.canvasOf(room);
+    const roomAt = P.roomOrigin(room);
+    const pad = P.WALL_THICKNESS + 0.2;      // far enough out to carry the walls
+    const fx = roomAt.x + room.width / 2;
+    const fz = roomAt.z + room.length / 2;
+    const fw = room.width / 2 + pad;
+    const fl = room.length / 2 + pad;
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.03, canvas.length / 2)
-        .setTranslation(canvas.width / 2, baseY - 0.03, canvas.length / 2)
+      RAPIER.ColliderDesc.cuboid(fw, 0.03, fl).setTranslation(fx, baseY - 0.03, fz)
     );
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(fw, 0.05, fl).setTranslation(fx, baseY + room.height + 0.025, fz)
+    );
+    void canvas;
 
-    // Ceiling (stops the player jumping through the roof).
-    this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(canvas.width / 2, 0.05, canvas.length / 2)
-        .setTranslation(canvas.width / 2, baseY + room.height + 0.025, canvas.length / 2)
-    );
-
-    // Invisible perimeter walls keep the physics simulation (and the player)
-    // inside the configured plan area while no exterior integration is active.
-    // They use the same slab-to-ceiling seal as drawn walls, rather than
-    // merely touching the floor and ceiling faces.
-    const halfT = P.WALL_THICKNESS / 2 + P.WALL_JOIN_SEAL;
-    const wallHalfHeight = room.height / 2 + WALL_VERTICAL_SEAL;
-    const pW = canvas.width;
-    const pL = canvas.length;
-    this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, wallHalfHeight, halfT).setTranslation(pW / 2, baseY + room.height / 2, 0)
-    );
-    this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(pW / 2, wallHalfHeight, halfT).setTranslation(pW / 2, baseY + room.height / 2, pL)
-    );
-    this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, wallHalfHeight, pL / 2).setTranslation(0, baseY + room.height / 2, pL / 2)
-    );
-    this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfT, wallHalfHeight, pL / 2).setTranslation(pW, baseY + room.height / 2, pL / 2)
-    );
+    // The city. Pavements, kerbs, the carriageway and every building, as the
+    // city itself laid them out — so the ground you can see through a broken
+    // window is ground you can stand on.
+    //
+    // This replaces four invisible walls that used to run round the edge of the
+    // plan area. They were there because there was nothing outside it: without
+    // them the player walked off the end of the world. There is a whole city
+    // out there now, so the cage comes down.
+    for (const solid of this.city.solids || []) {
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(solid.w / 2, solid.h / 2, solid.d / 2)
+          .setTranslation(solid.x, solid.y, solid.z)
+      );
+    }
 
     // Walls, split by open doorways so you can walk through them.
+    // A shot-out window is a hole you can climb through: the wall keeps its
+    // sill below and its head above, and the glass band between them is open.
+    // Without this the pane shatters, you can see straight out, and the wall is
+    // as solid as it ever was.
+    const sillH = Math.min(P.SILL_HEIGHT, room.height);
+    const headH = Math.min(sillH + P.GLASS_HEIGHT, room.height);
+    const openingsOn = (wallID) => this.brokenGlass.filter(g => g.wallID === wallID);
+
     for (const seg of P.wallCollisionSegments(room)) {
       const dx = seg.end.x - seg.start.x;
       const dz = seg.end.z - seg.start.z;
       const rawLength = Math.hypot(dx, dz);
       if (rawLength < 0.01) continue;
+
+      // Where this piece of wall sits along its own wall, so it can be compared
+      // with the openings, which are measured that way.
+      const wall = room.walls.find(w => w.id === seg.wallID);
+      const broken = wall ? openingsOn(wall.id) : [];
+      if (broken.length && wall) {
+        const wx = wall.end.x - wall.start.x;
+        const wz = wall.end.z - wall.start.z;
+        const wlen = Math.hypot(wx, wz) || 1;
+        const at = (pt) => ((pt.x - wall.start.x) * wx + (pt.z - wall.start.z) * wz) / wlen;
+        let solid = [{ from: at(seg.start), to: at(seg.end) }];
+        for (const hole of broken) {
+          const next = [];
+          for (const piece of solid) {
+            const lo = Math.max(piece.from, Math.min(piece.to, hole.from));
+            const hi = Math.max(piece.from, Math.min(piece.to, hole.to));
+            if (hi - lo <= 0.01) { next.push(piece); continue; }
+            if (lo - piece.from > 0.01) next.push({ from: piece.from, to: lo });
+            if (piece.to - hi > 0.01) next.push({ from: hi, to: piece.to });
+            // The sill under the opening and the head above it stay solid, so
+            // you step up and through rather than walking out at floor level.
+            this.addWallSlab(wall, lo, hi, baseY, 0, sillH);
+            this.addWallSlab(wall, lo, hi, baseY, headH, room.height + WALL_VERTICAL_SEAL);
+          }
+          solid = next;
+        }
+        for (const piece of solid) {
+          this.addWallSlab(wall, piece.from, piece.to, baseY, 0, room.height + WALL_VERTICAL_SEAL);
+        }
+        continue;
+      }
       // Extend only true wall ends, never the edge of a doorway. This makes
       // snapped wall colliders interpenetrate at corners without narrowing a
       // usable doorway.
@@ -1373,9 +1429,13 @@ export class Walk3D {
     // Player capsule: the body sits at the feet; the capsule rises from it.
     // A fresh reset spawns inside the main room; an in-place rebuild keeps the
     // player wherever they are across the full canvas.
+    // Kept where they are on a rebuild, NOT dragged back inside the plan area.
+    // The colliders are rebuilt the moment a window is shot out, so clamping to
+    // the canvas here teleported the player back indoors at exactly the moment
+    // they had made themselves a way out.
     const origin = P.roomOrigin(room);
-    const spawnX = resetPlayer ? origin.x + room.width / 2 : P.clamp(this.position.x, 0.3, canvas.width - 0.3);
-    const spawnZ = resetPlayer ? origin.z + Math.max(0.5, room.length - 0.6) : P.clamp(this.position.z, 0.3, canvas.length - 0.3);
+    const spawnX = resetPlayer ? origin.x + room.width / 2 : this.position.x;
+    const spawnZ = resetPlayer ? origin.z + Math.max(0.5, room.length - 0.6) : this.position.z;
     const spawnY = baseY + (resetPlayer ? 0.2 : Math.max(0.2, this.feetY));
     const halfH = this.crouching ? CROUCH_HALF_HEIGHT : STAND_HALF_HEIGHT;
     const body = this.world.createRigidBody(
@@ -1395,6 +1455,24 @@ export class Walk3D {
     this.playerCollider = collider;
     this.physicsBodies.push(body);
     this.onGround = false;
+  }
+
+  /// One box of wall, between two offsets along it and two heights up it. Used
+  /// for the pieces around a shot-out window: the sill under it, the head over
+  /// it, and whatever is left of the wall either side.
+  addWallSlab(wall, from, to, baseY, y0, y1) {
+    const len = to - from;
+    const h = y1 - y0;
+    if (len < 0.01 || h < 0.01) return;
+    const a = P.wallPointAt(wall, from);
+    const b = P.wallPointAt(wall, to);
+    const horizontal = Math.abs(b.z - a.z) < 0.001;
+    const t = P.WALL_THICKNESS;
+    const desc = horizontal
+      ? RAPIER.ColliderDesc.cuboid(len / 2, h / 2, t / 2)
+      : RAPIER.ColliderDesc.cuboid(t / 2, h / 2, len / 2);
+    desc.setTranslation((a.x + b.x) / 2, baseY + y0 + h / 2, (a.z + b.z) / 2);
+    this.world.createCollider(desc);
   }
 
   /// True when a support surface is within a small margin below the capsule.
@@ -1624,6 +1702,18 @@ export class Walk3D {
   breakGlass(pane) {
     if (!pane || pane.userData.broken) return;
     pane.userData.broken = true;
+
+    // The wall is still solid where the glass was. Record the opening and
+    // rebuild the colliders so it becomes something to climb through — the
+    // point of shooting a window out is to be able to leave by it.
+    if (pane.userData.wallID) {
+      this.brokenGlass.push({
+        wallID: pane.userData.wallID,
+        from: pane.userData.spanFrom,
+        to: pane.userData.spanTo,
+      });
+      if (this.physicsReady && store.room) this.buildPhysics(store.room, false);
+    }
 
     pane.geometry.computeBoundingBox();
     const box = pane.geometry.boundingBox;
@@ -2036,9 +2126,16 @@ export class Walk3D {
     const room = store.room;
     const baseY = this.floorY();
     const p = body.translation();
+    // The safety net, measured against the CITY rather than against the room.
+    // It used to fire the moment the player left the room's own height band,
+    // which is now an ordinary thing to do: step out of a ground-floor window
+    // and the street is a kerb below you, and from an upper floor it is a long
+    // way below. Being outside is not being lost — only leaving the world is.
+    const cityFloor = this.city.groundY();
+    const cityRoof = Math.max(baseY + room.height, cityFloor) + CITY_HEADROOM;
     if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z) ||
-        p.y > baseY + room.height + 3 || p.y < baseY - 10) {
-      // The body escaped the room somehow — teleport it back to the floor.
+        p.y > cityRoof || p.y < cityFloor - 10) {
+      // The body escaped the world somehow — teleport it back to the floor.
       const origin = P.roomOrigin(room);
       body.setTranslation({ x: origin.x + room.width / 2, y: baseY + 0.3, z: origin.z + Math.max(0.5, room.length - 0.6) }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);

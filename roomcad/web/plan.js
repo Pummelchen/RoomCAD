@@ -904,6 +904,9 @@ export function wallCollisionSegments(room) {
       const atWallStart = span.from <= 0.001;
       const atWallEnd = span.to >= length - 0.001;
       segments.push({
+        // Which wall this piece came from, so a caller can line it up with
+        // things measured along that wall — window openings, for one.
+        wallID: wall.id,
         start: wallPointAt(wall, span.from),
         end: wallPointAt(wall, span.to),
         atWallStart,
