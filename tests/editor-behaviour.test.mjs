@@ -80,18 +80,24 @@ check("fit accounts for a rotated plan",
 // hit-testing must all agree about which walls those are, or the plan invites
 // a drag it then refuses.
 check("the locked set is worked out once per frame and shared",
-  editor.includes("this._lockedWalls = new Set()") && /P\.wallDragLocked\(room, wall\)/.test(editor));
+  editor.includes("this._lockedWalls = new Set()") && /this\.wallHeld\(wall\)/.test(editor));
 check("an outer wall is drawn light brown, not the blue of a movable one",
   /locked \? "#c8a06a" : "#4a90e2"/.test(editor));
 check("selecting an outer wall keeps it visibly different",
   /locked \? "#e0b877" : "#2ecc40"/.test(editor));
 check("a fixed wall shows no grab handles",
-  /!P\.wallDragLocked\(store\.room, wall\)\)[\s\S]{0,200}drawHandle\(wall\.start\)/.test(editor));
+  /!this\.wallHeld\(wall\)\)[\s\S]{0,200}drawHandle\(wall\.start\)/.test(editor));
 check("a fixed wall's endpoints are not hit-testable",
-  /!P\.wallDragLocked\(store\.room, wall\)\)[\s\S]{0,240}kind: "wallEnd"/.test(editor));
+  /!this\.wallHeld\(wall\)\)[\s\S]{0,240}kind: "wallEnd"/.test(editor));
 check("pressing on a fixed wall selects it instead of starting a drag",
-  /wallDragLocked[\s\S]{0,400}return \{ type: "click" \}/.test(editor));
-check("and says how to free it", /Unlock Drag/.test(editor));
+  /wallHeld\(wall\)[\s\S]{0,400}return \{ type: "click" \}/.test(editor));
+check("and says how to free it", /free it/.test(editor));
+// One place decides whether a wall is held. Five places used to ask, two of
+// them working it out for themselves — which is how the grab handles came to
+// promise a drag that the store then refused.
+check("the editor asks the store rather than deciding for itself",
+  /wallHeld\(wall\) \{\s*\n\s*return !!wall && store\.wallIsLocked\(wall\.id\);/.test(editor)
+  && !/P\.wallDragLocked/.test(editor));
 
 // The menu is where the lock is lifted, and it has to toggle both ways.
 check("an outer wall gets its own menu title", /title = outer \? "Outside wall" : "Wall"/.test(editor));

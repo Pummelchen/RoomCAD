@@ -1267,7 +1267,11 @@ function publicCoverage(room, region) {
 export function roomCaptions(room, boxW, boxH) {
   const out = [];
   for (const region of detectRooms(room)) {
-    if (!region.hasDoor) continue;
+    // Every enclosed space is measured, door or no door. The caption used to
+    // wait for a door, which is backwards for drawing a plan by hand: the
+    // moment you close a room is the moment you want to know how big it is,
+    // and the door goes in afterwards. Floor the user has marked as
+    // circulation is still left alone — that is drawing space, not a room.
     if (publicCoverage(room, region) > 0.6) continue;
     const spot = captionSpot(room, region, boxW, boxH);
     if (!spot) continue;

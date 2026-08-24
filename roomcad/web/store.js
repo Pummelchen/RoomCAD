@@ -61,6 +61,16 @@ export const store = {
   undoStack: [],
   redoStack: [],
   dragTransactionActive: false,
+  /// Whether the outside walls are held still.
+  ///
+  /// They are, by default: editing the inside of a plan should not reshape the
+  /// building by accident. But which walls face outwards is worked out from the
+  /// plan, so a wall that was an inside wall becomes an outside one the moment
+  /// the room beyond it opens up — and locks itself, with no obvious reason and
+  /// nothing the user did. This frees the lot in one place for people who would
+  /// rather just draw. A view setting, not part of the plan: it says how you
+  /// want to work, not what the building is.
+  outsideWallsFree: false,
   furnitureFeedback: null, // { id, state: "valid" | "invalid" } during move/rotate
   furnitureGaps: null,     // { wall: {cm,dir}, furniture: {cm,kind} } for the selected/moving item
   feedbackTimer: null,
@@ -314,7 +324,10 @@ export const store = {
   },
 
   /// True if this wall is part of the outer skin and has not been unlocked.
+  /// Whether this wall is held still. The one place that decides it: the plan
+  /// says which walls face outwards, this says whether that means anything.
   wallIsLocked(id) {
+    if (this.outsideWallsFree) return false;
     const wall = this.room.walls.find(w => w.id === id);
     return P.wallDragLocked(this.room, wall);
   },
@@ -326,7 +339,8 @@ export const store = {
     // while rearranging the inside is the mistake this prevents; the wall says
     // how to allow it rather than just refusing.
     if (this.wallIsLocked(id)) {
-      this.status = "Outside wall is fixed — right-click it and choose Unlock Drag";
+      this.status = "Outside wall is fixed — right-click it to free it, "
+        + "or tick Outside walls free to drag";
       this.emit();
       return false;
     }
@@ -345,7 +359,24 @@ export const store = {
     // and an opening on a wall that got shorter is drawn past its end.
     P.fitOpeningsToWalls(this.room);
     P.syncExtent(this.room);
+    // Say so while the wall is still moving. The canvas redraws itself from the
+    // drag, but the panel does not: floor area, overall size and the room count
+    // all sat at what they were when the drag STARTED and only caught up when
+    // the mouse came up — which is exactly when you have stopped looking at
+    // them. Dragging a wall to reach an area you want needs the number to move
+    // with the wall.
+    this.emit();
     return true;
+  },
+
+  /// Frees every outside wall for dragging, or puts them all back under lock.
+  setOutsideWallsFree(free) {
+    if (this.outsideWallsFree === !!free) return;
+    this.outsideWallsFree = !!free;
+    this.status = free
+      ? "Outside walls are free to drag"
+      : "Outside walls are held still — right-click one to free just that one";
+    this.emit();
   },
 
   /// Lets one outer wall be dragged, or puts it back under lock.

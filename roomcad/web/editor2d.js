@@ -614,7 +614,7 @@ export class Editor2D {
     const wall = store.selectedWall();
     // A wall that cannot move offers no grab handles; showing them would invite
     // a drag that is then refused.
-    if (wall && !P.wallDragLocked(store.room, wall)) {
+    if (wall && !this.wallHeld(wall)) {
       if (P.distance(wall.start, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "start" };
       if (P.distance(wall.end, p) <= tol) return { kind: "wallEnd", id: wall.id, part: "end" };
     }
@@ -668,10 +668,11 @@ export class Editor2D {
       // Select the wall so it turns green and its length shows while resizing.
       store.clearSelection();
       store.selectedWallID = wall.id;
-      if (P.wallDragLocked(store.room, wall)) {
+      if (this.wallHeld(wall)) {
         // Select it and say how to free it, rather than moving the footprint of
         // the building because someone meant to grab the wall behind it.
-        store.status = "Outside wall is fixed — right-click it and choose Unlock Drag";
+        store.status = "Outside wall is fixed — right-click it to free it, "
+          + "or switch Outside walls to Free in the panel";
         store.emit();
         return { type: "click" };
       }
@@ -1009,7 +1010,7 @@ export class Editor2D {
     // the drawing, the handles and the hit-testing, so they cannot disagree.
     this._lockedWalls = new Set();
     for (const wall of room.walls) {
-      if (P.wallDragLocked(room, wall)) this._lockedWalls.add(wall.id);
+      if (this.wallHeld(wall)) this._lockedWalls.add(wall.id);
     }
     for (const wall of room.walls) {
       this.drawWall(wall, wall.id === store.selectedWallID);
@@ -1288,7 +1289,7 @@ export class Editor2D {
     const wall = store.selectedWall();
     // No red grab handles on a wall that is held still — they would promise a
     // drag that is then refused.
-    if (wall && !P.wallDragLocked(store.room, wall)) {
+    if (wall && !this.wallHeld(wall)) {
       this.drawHandle(wall.start);
       this.drawHandle(wall.end);
     }
@@ -1337,7 +1338,16 @@ export class Editor2D {
     if (selected) this.drawHandle(label.center);
   }
 
-  /// The m² caption for every enclosed room that has a door, dropped into the
+  /// Is this wall held still?
+  ///
+  /// Deferred to the store, which is where the drag itself asks the question.
+  /// Working it out here as well is how the handles came to promise a drag that
+  /// was then refused: five places asking, two of them with different answers.
+  wallHeld(wall) {
+    return !!wall && store.wallIsLocked(wall.id);
+  }
+
+  /// The m² caption for every enclosed room, dropped into the
   /// emptiest part of the floor so it never lands on furniture or a label.
   ///
   /// The caption's footprint depends on the zoom, so the search is redone when

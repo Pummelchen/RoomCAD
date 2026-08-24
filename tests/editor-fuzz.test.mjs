@@ -523,6 +523,52 @@ for (const name of EXPECTED) {
   check(`never: ${name}`, !v, v ? `${v.count} times, e.g. ${v.first}` : "");
 }
 
+// ── Dragging a wall, with the real store ─────────────────────────────────
+//
+// Two things a person doing this by hand needs: the numbers keep up with the
+// wall while it is moving, and the wall moves at all.
+{
+  store.room = P.freshRoom("Drag", 6, 4, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
+  store.outsideWallsFree = false;
+
+  const wall = store.room.walls[0];
+  check("the plan starts as one closed room", P.detectRooms(store.room).length === 1);
+  check("an outside wall is held still to begin with", store.wallIsLocked(wall.id));
+  check("and moving it is refused", store.moveWall(wall.id, 0, -0.2) === false);
+  check("with a message saying how to free it",
+    /free it|free to drag/i.test(store.status), store.status);
+
+  // Freed, in one switch rather than wall by wall.
+  store.setOutsideWallsFree(true);
+  check("freeing the outside walls unlocks this one", !store.wallIsLocked(wall.id));
+
+  // Now drag it, and watch the area while it moves.
+  let told = 0;
+  const stop = store.onChange(() => told++);
+  const areas = [];
+  for (let i = 0; i < 5; i++) {
+    if (store.moveWall(wall.id, 0, -0.1)) areas.push(P.floorArea(store.room));
+  }
+  if (typeof stop === "function") stop();
+  check("the wall actually moves", areas.length === 5, `${areas.length} of 5 steps`);
+  check("the area is recalculated at every step of the drag",
+    new Set(areas.map(a => a.toFixed(3))).size === areas.length,
+    areas.map(a => a.toFixed(2)).join(" -> "));
+  check("and it changes in one direction, as a wall being slid should",
+    areas.every((a, i) => i === 0 || a > areas[i - 1]) ||
+    areas.every((a, i) => i === 0 || a < areas[i - 1]),
+    areas.map(a => a.toFixed(2)).join(" -> "));
+  // The panel only redraws when the store says something changed. Without this
+  // the floor area sat at its pre-drag value until the mouse came up.
+  check("the panel is told while the wall is still moving", told >= 5, `${told} times`);
+
+  // And back under lock.
+  store.setOutsideWallsFree(false);
+  check("locking them again holds this one still", store.wallIsLocked(wall.id));
+}
+
 dom.restore();
 console.log(`${passed} passed, ${failed} failed — ${gestures} gestures driven through the real editor`);
 if (failed) process.exit(1);

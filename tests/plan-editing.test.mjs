@@ -247,10 +247,24 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("circulation gets no caption",
     !captions.some(c => Math.abs(c.area - gen.corridors.reduce((s, x) => s + x.w * x.l, 0)) < 0.5));
 
-  // A room with no door gets no caption.
+  // A room with no door still gets its caption. Waiting for a door is backwards
+  // for drawing a plan by hand: closing the room is the moment you want to know
+  // how big it is, and the door goes in afterwards.
   const sealed = P.freshRoom("S", 6, 4, 2.6);
   P.centerRoom(sealed);
-  check("a room with no door gets no caption", P.roomCaptions(sealed, 0.9, 0.32).length === 0);
+  const sealedCaps = P.roomCaptions(sealed, 0.9, 0.32);
+  check("a closed room is measured before it has a door", sealedCaps.length === 1,
+    `${sealedCaps.length} captions`);
+  check("and the figure is the area it encloses",
+    sealedCaps.length === 1 && Math.abs(sealedCaps[0].area - 24) < 0.2,
+    sealedCaps.length ? `${sealedCaps[0].area}` : "none");
+  // Adding a door changes nothing about the measurement.
+  const withDoor = P.parseRoom(P.serializeRoom(sealed));
+  withDoor.doors = [{ id: "d", wallID: withDoor.walls[0].id, offset: 1, width: 0.9,
+    open: true, swingInside: true }];
+  const doorCaps = P.roomCaptions(withDoor, 0.9, 0.32);
+  check("and it still reads the same once a door is in",
+    doorCaps.length === 1 && Math.abs(doorCaps[0].area - sealedCaps[0].area) < 0.01);
 
   // The caption has to dodge whatever is on the floor.
   const target = regions.find(r => r.hasDoor && r.area > 8);

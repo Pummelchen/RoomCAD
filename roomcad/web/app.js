@@ -491,6 +491,15 @@ function roomSection() {
   html += `<div class="field"><label>Overall size</label>` +
     `<div class="value-row"><span class="readout measured">${P.cm(room.width)} × ${P.cm(room.length)}</span></div>` +
     `<div class="hint">measured from the walls — drag a wall to resize</div></div>`;
+  // Which walls face outwards is worked out from the plan, so a wall can lock
+  // itself the moment the space beyond it opens up. This is the way out of
+  // that for anyone who would rather just draw.
+  html += `<div class="field"><label>Outside walls free to drag ` +
+    `<input type="checkbox" data-action="free-outside-walls" ` +
+    `${store.outsideWallsFree ? "checked" : ""}></label>` +
+    `<div class="hint">${store.outsideWallsFree
+      ? "every wall can be dragged"
+      : "held still, so the footprint cannot move by accident"}</div></div>`;
   html += `<div class="field"><label>Wall height (cm)</label><div class="value-row">` +
     `<input type="number" data-action="height" value="${Math.round(room.height * 100)}" min="220" max="500" step="1">` +
     `<span class="readout">= ${room.height.toFixed(2)} m</span></div></div>`;
@@ -603,6 +612,8 @@ inspectorContent.addEventListener("change", e => {
     store.layoutCount = Math.max(1, Math.min(20, Math.round(Number(t.value))));
   } else if (t.dataset.action === "layout-area") {
     store.layoutArea = Math.max(2, Math.min(200, Number(t.value)));
+  } else if (t.dataset.action === "free-outside-walls") {
+    store.setOutsideWallsFree(t.checked);
   } else if (t.dataset.action === "layout-windows") {
     store.layoutWindows = t.checked;
   }

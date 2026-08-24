@@ -231,7 +231,11 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   const afterOuter = store.room.walls.find(w => w.id === outerWall.id).start;
   check("a refused move leaves the wall alone",
     afterOuter.x === beforeOuter.x && afterOuter.z === beforeOuter.z);
-  check("the refusal explains how to allow it", /Unlock Drag/.test(store.status), store.status);
+  // Not the exact wording — what matters is that the refusal names a way out,
+  // and there are two now: free this one wall from its menu, or free them all
+  // from the panel.
+  check("the refusal explains how to allow it",
+    /free it/i.test(store.status) && /free to drag/i.test(store.status), store.status);
 
   // The divider moves, and its door goes along.
   const wallBefore = { ...store.room.walls.find(w => w.id === "divider").start };
