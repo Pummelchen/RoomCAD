@@ -38,6 +38,9 @@ const {
 // Derived rather than exported: the carriageway sits one kerb below the
 // pavement, and the pavement is the room's own floor datum.
 const ROAD_Y = -KERB_HEIGHT;
+// Above this, a near tower has windows but no rooms behind them, which is where
+// the dark upper floors came from.
+const ROOM_STOREYS_HEIGHT = 8 * 3;
 const WIN_W = 1.25;   // one window opening, as city.js lays them out
 
 let passed = 0;
@@ -1199,6 +1202,44 @@ for (const [w, l, label] of [
   check("and the bands are actually different brightnesses",
     new Set(brightness.map(v => v.toFixed(3))).size === brightness.length,
     brightness.map(v => v.toFixed(2)).join("/"));
+
+  // Every building has its lights on somewhere, and above the eighth floor too.
+  //
+  // Reported from a screenshot: whole towers standing black in the middle of a
+  // lit city. The near blocks are modelled with real rooms behind their glass,
+  // and rooms are only built for the storeys you could look into from the
+  // street — so from the ninth floor to the sixtieth those towers had no room,
+  // no glass and no light, while the distant ones were lit all the way up.
+  {
+    const buildings = city.solids.filter(b => b.h > 20);
+    check("there are towers to check", buildings.length > 50, `${buildings.length}`);
+    const litPer = buildings.map(() => ({ any: 0, high: 0 }));
+    const v = new THREE.Vector3();
+    const m4 = new THREE.Matrix4();
+    for (const mesh of [...(city.litWindows || []), ...(city.roomsLit || [])]) {
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        v.setFromMatrixPosition(m4);
+        for (let b = 0; b < buildings.length; b++) {
+          const box = buildings[b];
+          if (Math.abs(v.x - box.x) > box.w / 2 + 1.5) continue;
+          if (Math.abs(v.z - box.z) > box.d / 2 + 1.5) continue;
+          litPer[b].any++;
+          if (v.y > ROOM_STOREYS_HEIGHT) litPer[b].high++;
+          break;
+        }
+      }
+    }
+    const dark = litPer.filter(c => c.any === 0).length;
+    const darkAbove = litPer.filter(c => c.high === 0).length;
+    check("no tower stands with every window dark", dark === 0,
+      `${dark} of ${buildings.length}`);
+    check("and none is dark above the floors that have rooms behind the glass",
+      darkAbove === 0, `${darkAbove} of ${buildings.length}`);
+    const counts = litPer.map(c => c.any).sort((a, b) => a - b);
+    check("the lights are spread across the city, not gathered in a few towers",
+      counts[0] > 50, `the darkest tower has ${counts[0]} lit windows`);
+  }
 
   const litNow = () => city._litPopulations()
     .reduce((n, g) => n + g.lit.reduce((k, m) => k + (m ? m.count : 0), 0), 0);

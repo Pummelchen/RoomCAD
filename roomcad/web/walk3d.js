@@ -170,7 +170,12 @@ function sunForHour(hour) {
   const date = new Date();
   const wrapped = ((utc % 24) + 24) % 24;
   date.setUTCDate(date.getUTCDate() + Math.floor(utc / 24));
-  date.setUTCHours(Math.floor(wrapped), Math.floor((wrapped % 1) * 60), 0, 0);
+  // Rounded to the minute, not floored into it. An hour built from minutes is
+  // not exact in floating point — 22.95 hours is 1376.9999 minutes — so
+  // flooring dropped every other minute back onto the one before it, and the
+  // sun moved in irregular two-minute steps instead of smoothly.
+  const totalMinutes = Math.round(wrapped * 60);
+  date.setUTCHours(Math.floor(totalMinutes / 60), totalMinutes % 60, 0, 0);
   return sunAltitudeAzimuth(date);
 }
 

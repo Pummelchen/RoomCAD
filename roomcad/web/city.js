@@ -1897,11 +1897,34 @@ export class City {
         for (let r = 0; r < rowsY.length; r++) {
           // The ground floor of the door column is the lobby, not a room.
           if (ci === doorAt && r === 0) continue;
-          // Only the storeys you could see into from the street get a room
+          const lit = rnd() < 0.34;
+          const band = lit ? Math.floor(rnd() * LIT_BANDS.length) : -1;
+          const [ry0, ry1] = rowsY[r];
+          // Only the storeys you could see into from the street get a ROOM
           // behind the glass. A sixty storey tower modelled all the way up is
           // thousands of interiors for floors nobody will ever look into.
-          if (r >= ROOM_STOREYS) continue;
-          const lit = rnd() < 0.34;
+          //
+          // But the floors above still have windows, and until now they had
+          // nothing at all behind them: no room, no glass, no light. So the
+          // towers nearest the viewer — the ones filling the screen — stood
+          // black from the ninth floor to the sixtieth while the distant ones
+          // were lit all the way up. They get what the distant towers get: a
+          // pane, lit or dark, in the same proportion and the same bands.
+          if (r >= ROOM_STOREYS) {
+            const turn = alongX
+              ? (face.nz > 0 ? 0 : Math.PI)
+              : (face.nx > 0 ? Math.PI / 2 : -Math.PI / 2);
+            const paneAt = other / 2 - CITY_GLASS_INSET;
+            const pane = boxMatrix(
+              alongX ? x + c : x + face.nx * paneAt,
+              (ry0 + ry1) / 2,
+              alongX ? z + face.nz * paneAt : z + c,
+              WIN_W, ry1 - ry0, 1, turn
+            );
+            if (lit) sets.litGlass[band].add(pane);
+            else sets.darkGlass.add(pane);
+            continue;
+          }
           const roomCY = baseY + r * FLOOR_HEIGHT + roomH / 2 + 0.12;
           const back = other / 2 - depth / 2;
           const rx = alongX ? x + c : x + face.nx * back;
@@ -1910,14 +1933,16 @@ export class City {
             rx, roomCY, rz,
             alongX ? roomW : depth, roomH, alongX ? depth : roomW
           );
-          // Which band this room burns at, drawn once and kept.
-          const band = lit ? Math.floor(rnd() * LIT_BANDS.length) : -1;
+          // The band this room burns at was drawn with the decision to light
+          // it, so a room and a window on the same floor of the same building
+          // are chosen the same way.
           if (lit) sets.roomsLit[band].add(box); else sets.roomsDark.add(box);
 
           // The pane, set INTO the opening rather than flush with the facade.
           // Flush puts its outer face in the same plane as the masonry around
           // it, which is two surfaces at one depth all over every building.
-          const [wy0, wy1] = rowsY[r];
+          const wy0 = ry0;
+          const wy1 = ry1;
           const glassIn = other / 2 - CITY_GLASS_INSET;
           sets.glazing.add(boxMatrix(
             alongX ? x + c : x + face.nx * glassIn,

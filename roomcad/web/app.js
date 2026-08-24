@@ -1,7 +1,7 @@
 // app.js — UI wiring: toolbar, inspector, keyboard, files, and My Rooms.
 
 import * as P from "./plan.js";
-import { store, TOOL_HELP } from "./store.js";
+import { store, TOOL_HELP, clockText } from "./store.js";
 import { Editor2D } from "./editor2d.js";
 import { Walk3D } from "./walk3d.js";
 import { APP_VERSION } from "./version.js";
@@ -516,9 +516,17 @@ function roomSection() {
   html += `<div class="floor-row">` +
     `<label>Time of day (24 h)</label>` +
     `<div class="floor-control">` +
-    `<button class="inspector-button floor-btn" data-action="time-down" title="Earlier hour">&lt;</button>` +
-    `<span class="floor-value">${String((Math.round(store.timeOfDay) % 24 + 24) % 24).padStart(2, "0")}:00</span>` +
-    `<button class="inspector-button floor-btn" data-action="time-up" title="Later hour">&gt;</button>` +
+    `<button class="inspector-button floor-btn" data-action="time-down" title="Fifteen minutes earlier">&lt;</button>` +
+    `<span class="floor-value">${clockText(store.timeOfDay)}</span>` +
+    `<button class="inspector-button floor-btn" data-action="time-up" title="Fifteen minutes later">&gt;</button>` +
+    `</div></div>`;
+  // A slider as well as the arrows, because the interesting part of the day is
+  // twenty minutes long: the sun drops through twilight faster than anything
+  // else it does, and stepping the hour jumps straight over it.
+  html += `<div class="field"><div class="value-row">` +
+    `<input type="range" class="time-slider" data-action="time-set" ` +
+    `min="0" max="1439" step="1" value="${Math.round(store.timeOfDay * 60)}" ` +
+    `aria-label="Time of day, to the minute">` +
     `</div></div>`;
   html += `<div class="floor-row">` +
     `<label>Weather</label>` +
@@ -548,6 +556,12 @@ function roomSection() {
 
 inspectorContent.addEventListener("input", e => {
   const t = e.target;
+  if (t.dataset.action === "time-set") {
+    // Dragged, so it fires on every minute the handle passes: the whole point
+    // is to watch the light change rather than to arrive at an hour.
+    store.setTimeOfDay(Number(t.value) / 60);
+    return;
+  }
   if (t.dataset.action === "label-text") {
     if (store.selectedLabelID) store.renameLabel(store.selectedLabelID, t.value);
     return;
@@ -623,9 +637,9 @@ inspectorContent.addEventListener("click", e => {
   } else if (t.dataset.action === "floor-down") {
     store.setFloor(-1);
   } else if (t.dataset.action === "time-up") {
-    store.setTimeOfDay(store.timeOfDay + 1);
+    store.setTimeOfDay(store.timeOfDay + 0.25);
   } else if (t.dataset.action === "time-down") {
-    store.setTimeOfDay(store.timeOfDay - 1);
+    store.setTimeOfDay(store.timeOfDay - 0.25);
   } else if (t.dataset.action === "weather-next") {
     store.stepWeather(1);
   } else if (t.dataset.action === "weather-prev") {

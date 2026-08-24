@@ -18,6 +18,23 @@ const walkCode = walk.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).joi
 const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
 const store = readFileSync(join(root, "roomcad", "web", "store.js"), "utf8");
 
+/// The sun model and the daylight ramp, lifted out of walk3d.js and run for
+/// real. They are pure functions of the hour, and how smoothly the light
+/// changes is a property of what they RETURN — reading the source only tells
+/// you the ramp is spelled the way it used to be.
+const solar = await import("data:text/javascript;base64," + Buffer.from(
+  walk.slice(walk.indexOf("const SG_LAT"), walk.indexOf("export class Walk3D"))
+    .replace(/^import .*/gm, "")
+  + "\nexport { sunForHour, smoothstep01, clamp01 };"
+).toString("base64"));
+
+/// How much daylight there is at a given hour, exactly as applyTimeOfDay works
+/// it out.
+const daylightAt = hour => {
+  const altDeg = solar.sunForHour(hour).altitude * 180 / Math.PI;
+  return solar.smoothstep01(-6, 3, altDeg);
+};
+
 let failed = 0;
 let passed = 0;
 function check(name, condition) {
@@ -293,6 +310,62 @@ check("sun position continues to follow the calculated direction",
   walk.includes("this.sun.position.set(cx + dir.x * SUN_HEIGHT"));
 check("and the volume it shadows follows the viewer",
   walk.includes("const cx = Math.round(this.position.x / texel) * texel;"));
+
+// — Dusk is a gradual thing ————————————————————————————————————
+//
+// "From 19.00 to 20.00 should not be a sudden light to dark mode. With sunset
+// we still have twilight."
+//
+// The ramp through twilight was always smooth in the sun's ALTITUDE; what was
+// not smooth was the clock. The hour was rounded to the hour, and the sun drops
+// about fifteen degrees in the hour after sunset — so the setting either side
+// of dusk was full daylight or full night, with none of the evening in between.
+{
+  const stepBy = minutes => {
+    let worst = 0;
+    let at = 0;
+    for (let m = 0; m < 1440; m += minutes) {
+      const gap = Math.abs(daylightAt(m / 60) - daylightAt(((m + minutes) % 1440) / 60));
+      if (gap > worst) { worst = gap; at = m; }
+    }
+    return { worst, at };
+  };
+  const hourly = stepBy(60);
+  const minutely = stepBy(1);
+  check("stepping the clock by the hour really did jump the whole way into night",
+    hourly.worst > 0.85);
+  check("and it happened at dusk, as reported", hourly.at >= 18 * 60 && hourly.at <= 20 * 60);
+  // A minute of an evening should look like a minute of an evening.
+  check("no minute of the day changes the light by more than a twentieth",
+    minutely.worst < 0.05);
+
+  // The evening passes THROUGH twilight rather than over it: every tenth of
+  // the way from full daylight to full night is reached at some minute.
+  const evening = [];
+  for (let m = 18 * 60; m <= 20 * 60; m++) evening.push(daylightAt(m / 60));
+  const bands = new Set(evening.map(v => Math.floor(v * 10)));
+  check("every stage of the fade is visible somewhere in the evening",
+    [...Array(10).keys()].every(b => bands.has(b)));
+  check("the evening starts in daylight and ends in the dark",
+    evening[0] > 0.99 && evening[evening.length - 1] < 0.01);
+
+  // Every minute moves the sun. Floating point made an hour built from minutes
+  // land a hair under the minute it meant, and flooring dropped every other one
+  // back onto the one before: the sun advanced in irregular two-minute steps.
+  let repeats = 0;
+  for (let m = 6 * 60; m < 8 * 60; m++) {
+    if (solar.sunForHour(m / 60).altitude === solar.sunForHour((m + 1) / 60).altitude) repeats++;
+  }
+  check("no two consecutive minutes leave the sun in the same place", repeats === 0);
+  check("the minute is rounded rather than floored",
+    walkCode.includes("const totalMinutes = Math.round(wrapped * 60);"));
+
+  // And the clock itself keeps minutes, or none of the above can be reached.
+  check("the time of day is kept to the minute, not the hour",
+    store.includes("const minutes = Math.round(hour * 60);")
+    && !store.includes("Math.round(hour) % 24"));
+  check("and is shown as a clock reading", store.includes("export function clockText"));
+}
 
 // — The player physics keeps real time —————————————————————————
 // One step of however long the frame happened to be means the world advances at

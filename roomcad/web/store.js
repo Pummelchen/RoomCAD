@@ -17,6 +17,14 @@ export const TOOL_HELP = {
   rooms: "Drag a box over rooms to select them, then even out their sizes",
 };
 
+/// An hour as a 24 h clock reading, to the minute: 19.5 is "19:30".
+export function clockText(hour) {
+  const minutes = Math.round((((hour % 24) + 24) % 24) * 60);
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
+
 export const store = {
   room: P.demoRoom(),
   mode: "2d", // "2d" | "3d"
@@ -943,11 +951,17 @@ export const store = {
     this.emit();
   },
 
-  /// Sets the hour of day (24 h clock, wraps 0–24) that drives the 3D sun and
+  /// Sets the time of day (24 h clock, wraps 0–24) that drives the 3D sun and
   /// the city's street / office lights.
+  ///
+  /// Kept to the MINUTE, not the hour. Rounding to the hour is what made dusk
+  /// a switch: the sun drops about fifteen degrees in the hour after sunset, so
+  /// 19:00 to 20:00 went from lit to dark in one step with none of the twilight
+  /// in between — and twilight is most of what an evening looks like.
   setTimeOfDay(hour) {
-    this.timeOfDay = ((Math.round(hour) % 24) + 24) % 24;
-    this.status = "Time " + this.timeOfDay + ":00";
+    const minutes = Math.round(hour * 60);
+    this.timeOfDay = (((minutes % 1440) + 1440) % 1440) / 60;
+    this.status = "Time " + clockText(this.timeOfDay);
     this.emit();
   },
 

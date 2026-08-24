@@ -390,6 +390,15 @@ body.inspector-collapsed #right-sidebar-resizer {
   #toolbar button.panel-toggle .label { display: none; }
 }
 
+/* The time slider runs the width of the panel: a day is 24 hours and the part
+   worth looking at is twenty minutes of it, so it needs the travel. */
+input[type="range"].time-slider {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .sidebar-resizer {
   position: relative;
   z-index: 20;
