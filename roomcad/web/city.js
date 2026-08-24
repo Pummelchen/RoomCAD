@@ -446,11 +446,14 @@ class InstanceSet {
   /// InstancedMesh is a fixed allocation, so anything that changes the city
   /// after it is built — a hole blown through a wall becomes four pieces of
   /// wall where one used to be — has to have somewhere to put the new pieces.
-  constructor(geometry, material, { colored = true, spare = 0 } = {}) {
+  constructor(geometry, material,
+              { colored = true, spare = 0, casts = false, receives = false } = {}) {
     this.geometry = geometry;
     this.material = material;
     this.colored = colored;
     this.spare = spare;
+    this.casts = casts;
+    this.receives = receives;
     this.items = [];
     this.mesh = null;
   }
@@ -467,10 +470,13 @@ class InstanceSet {
     }
     const mesh = new THREE.InstancedMesh(this.geometry, this.material, this.items.length + this.spare);
     mesh.name = name;
-    // The city is scenery: it never casts into the room's shadow maps, which
-    // keeps the sun's shadow camera tight around the actual building.
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
+    // The city used to be scenery that neither cast a shadow nor took one —
+    // the sun's shadow camera was kept tight around the room, and everything
+    // outside it was lit flat from every direction at once. A street with no
+    // shadows in it does not look like a street at noon; it looks like a
+    // drawing of one.
+    mesh.castShadow = this.casts;
+    mesh.receiveShadow = this.receives;
     mesh.frustumCulled = false; // one mesh spans the whole city
     const c = new THREE.Color();
     for (let i = 0; i < this.items.length; i++) {
@@ -917,15 +923,17 @@ export class City {
         // Room to blow holes in. Each one turns a piece of wall into as many
         // as four, so this is the budget for how much of the city can be
         // knocked about before it stops taking damage.
-        { spare: DAMAGE_SLOTS }
+        { spare: DAMAGE_SLOTS, casts: true, receives: true }
       ),
       roofs: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 })
+        new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 }),
+        { casts: true, receives: true }
       ),
       flats: new InstanceSet(       // pavements, kerbs, grass, road paint
         new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 })
+        new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 }),
+        { casts: false, receives: true }
       ),
       darkGlass: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
@@ -980,26 +988,27 @@ export class City {
       trunks: new InstanceSet(
         new THREE.CylinderGeometry(0.13, 0.18, 1, 6),
         new THREE.MeshStandardMaterial({ color: TRUNK_COLOR, roughness: 1 }),
-        { colored: false }
+        { colored: false, casts: true, receives: true }
       ),
       canopies: new InstanceSet(
         new THREE.IcosahedronGeometry(1, 0),   // low-poly blob reads as stylised
-        new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true })
+        new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }),
+        { casts: true, receives: true }
       ),
       poles: new InstanceSet(
         new THREE.CylinderGeometry(0.07, 0.09, 1, 6),
         new THREE.MeshStandardMaterial({ color: LAMP_POLE_COLOR, roughness: 0.7, metalness: 0.3 }),
-        { colored: false }
+        { colored: false, casts: true, receives: true }
       ),
       signalPoles: new InstanceSet(
         new THREE.CylinderGeometry(0.06, 0.08, 1, 6),
         new THREE.MeshStandardMaterial({ color: SIGNAL_POLE_COLOR, roughness: 0.6, metalness: 0.4 }),
-        { colored: false }
+        { colored: false, casts: true, receives: true }
       ),
       signalHousings: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
         new THREE.MeshStandardMaterial({ color: SIGNAL_HOUSING_COLOR, roughness: 0.7 }),
-        { colored: false }
+        { colored: false, casts: true, receives: true }
       ),
       signalDark: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
@@ -1011,7 +1020,7 @@ export class City {
         new THREE.MeshStandardMaterial({
           color: 0xf6efd8, emissive: 0xffe6b0, emissiveIntensity: 0, roughness: 0.4,
         }),
-        { colored: false }
+        { colored: false, casts: true, receives: true }
       ),
     };
 
@@ -1176,7 +1185,7 @@ export class City {
     const land = new THREE.Mesh(geo, mat);
     land.name = "city-terrain";
     land.position.set(cx, ROAD_Y, cz);
-    land.receiveShadow = false;
+    land.receiveShadow = true;
     land.castShadow = false;
     land.frustumCulled = false;
     this.group.add(land);
@@ -2373,8 +2382,10 @@ export class City {
       });
       const mesh = new THREE.InstancedMesh(geo, mat, list.length);
       mesh.name = "city-vehicles-" + kind;
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
+      // Traffic throws the shadows that move, which is most of what tells you
+      // the sun is where it is.
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       mesh.frustumCulled = false;
       this.group.add(mesh);
       this._disposables.push(geo, mat);

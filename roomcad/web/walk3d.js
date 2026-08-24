@@ -56,6 +56,15 @@ const MAX_POINT_LIGHTS = 16;
 // considering for it.
 const CITY_LIGHT_POOL = 12;
 const CITY_LIGHT_REACH = 55;
+// Sunlight shadows. The volume follows the viewer rather than sitting over the
+// room, so the resolution goes where it can be seen: 140 m across a 4096 map is
+// about 3 cm a texel, which holds up on a kerb.
+const SUN_SHADOW_REACH = 70;
+const SUN_SHADOW_MAP = 4096;
+const SUN_HEIGHT = 120;
+// How many of the street lights throw a shadow, and how big a map each gets.
+const CITY_SHADOW_LIGHTS = 2;
+const CITY_SHADOW_MAP = 512;
 const FLOOR_HEIGHT = 3; // metres per building floor
 
 // Room construction uses closed, overlapping solids. The values below are
@@ -78,9 +87,17 @@ const POINT_SHADOW_MAP_SIZE = 1024;
 // reintroduce a bias to chase acne.
 const POINT_SHADOW_BIAS = 0;
 const SUN_SHADOW_BIAS = 0;
-// Sunlight uses one huge orthographic map, so it keeps a millimetre of normal
-// offset against grazing acne. That is small enough never to read as a gap.
-const SUN_SHADOW_NORMAL_BIAS = 0.002;
+// Sunlight uses one orthographic map, so it keeps a little normal offset
+// against grazing acne — small enough never to read as a gap.
+//
+// Derived from how big a shadow texel actually is on the ground rather than
+// written down. The offset only has to cover the depth error across one texel,
+// so it scales with the texel: the old 2 mm was tuned against a map that
+// covered the room and nothing else, and a volume that covers the street has
+// texels three times the size. Left at 2 mm it would have brought back the
+// grazing acne it was put there to stop.
+const SUN_SHADOW_TEXEL = (SUN_SHADOW_REACH * 2) / SUN_SHADOW_MAP;
+const SUN_SHADOW_NORMAL_BIAS = SUN_SHADOW_TEXEL * 0.18;
 
 // Scratch vector for the viewmodel, which is positioned every frame.
 const _gunOffset = new THREE.Vector3();
@@ -357,14 +374,16 @@ export class Walk3D {
 
     const sun = new THREE.DirectionalLight(0xfff2d9, 2.8);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(4096, 4096);
+    sun.shadow.mapSize.set(SUN_SHADOW_MAP, SUN_SHADOW_MAP);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 70;
-    const extent = Math.hypot(canvas.width, canvas.length) / 2 + 2;
-    sun.shadow.camera.left = -extent;
-    sun.shadow.camera.right = extent;
-    sun.shadow.camera.top = extent;
-    sun.shadow.camera.bottom = -extent;
+    // Reaches from well above the tallest building down past the street. The
+    // volume no longer sits over the room — it follows the viewer, so what is
+    // in shadow is whatever is near enough to see it.
+    sun.shadow.camera.far = SUN_HEIGHT * 2 + SUN_SHADOW_REACH * 2;
+    sun.shadow.camera.left = -SUN_SHADOW_REACH;
+    sun.shadow.camera.right = SUN_SHADOW_REACH;
+    sun.shadow.camera.top = SUN_SHADOW_REACH;
+    sun.shadow.camera.bottom = -SUN_SHADOW_REACH;
     sun.shadow.bias = SUN_SHADOW_BIAS;
     // Keep the sunlight shadow receiver essentially on the surface. A large
     // normal bias makes daylight visibly detach from wall, floor and ceiling
@@ -1151,14 +1170,8 @@ export class Walk3D {
 
     // Sun position + intensity (the L toggle still switches the room to
     // placed-lights-only, which turns the sun off).
-    const dir = this.sunDirectionVec(altitude, azimuth);
-    const building = this.currentBuildingBounds || this.buildingBounds(store.room);
-    const cx = building.centerX;
-    const cz = building.centerZ;
-    const dist = 40;
-    this.sun.position.set(cx + dir.x * dist, this.floorY() + dir.y * dist, cz + dir.z * dist);
-    this.sunTarget.position.set(cx, this.floorY(), cz);
-    this.sunTarget.updateMatrixWorld();
+    this.sunDir = this.sunDirectionVec(altitude, azimuth);
+    this.aimSun();
 
     const day = this.lightsOn;
     // Weather first: the city owns it, and the sun, fog and cloud deck all
@@ -1471,6 +1484,31 @@ export class Walk3D {
     this.onGround = false;
   }
 
+  /// Points the sun's shadow volume at wherever the viewer is standing.
+  ///
+  /// A directional light shadows an orthographic box, and the box has to be
+  /// somewhere. It used to sit over the room, which is why nothing outside the
+  /// room had a shadow: the whole city was outside the box. It now follows the
+  /// viewer, so the resolution is spent where it can be seen and the street
+  /// two hundred metres away — which is fogged anyway — costs nothing.
+  ///
+  /// The position is snapped to whole shadow texels. Without that the sampling
+  /// grid slides under the geometry as you walk and every shadow edge in the
+  /// scene crawls, which reads as the whole world shimmering.
+  aimSun() {
+    if (!this.sun || !this.sunTarget || !this.sunDir) return;
+    const dir = this.sunDir;
+    const texel = (SUN_SHADOW_REACH * 2) / SUN_SHADOW_MAP;
+    const cx = Math.round(this.position.x / texel) * texel;
+    const cz = Math.round(this.position.z / texel) * texel;
+    const cy = this.floorY();
+    this.sun.position.set(cx + dir.x * SUN_HEIGHT, cy + dir.y * SUN_HEIGHT, cz + dir.z * SUN_HEIGHT);
+    this.sunTarget.position.set(cx, cy, cz);
+    this.sunTarget.updateMatrixWorld();
+    this.sun.updateMatrixWorld();
+    if (this.sun.shadow && this.sun.shadow.camera) this.sun.shadow.camera.updateProjectionMatrix();
+  }
+
   /// A fixed pool of lights for the street, moved to wherever the light
   /// actually is this frame.
   ///
@@ -1486,10 +1524,22 @@ export class Walk3D {
   buildCityLightPool(scene) {
     this.cityLights = [];
     for (let i = 0; i < CITY_LIGHT_POOL; i++) {
-      // No shadows. A shadow-casting point light is six renders of the scene,
-      // and twelve of them is seventy-two — the sun casts the shadows outdoors.
       const light = new THREE.PointLight(0xffffff, 0, 1, 2);
-      light.castShadow = false;
+      // The first few slots cast; the rest only light. A shadow-casting point
+      // light is six renders of the scene, so twelve of them is seventy-two and
+      // nobody can afford that — but the two or three nearest lamps are the
+      // ones whose shadows you would actually notice, and the pool fills from
+      // the front, so those slots always hold the nearest lights.
+      //
+      // Which slots cast is fixed for the life of the pool. Turning it on and
+      // off as lamps come and go reallocates shadow maps and recompiles, which
+      // is exactly the stutter the fixed pool exists to avoid.
+      light.castShadow = i < CITY_SHADOW_LIGHTS;
+      if (light.castShadow) {
+        light.shadow.mapSize.set(CITY_SHADOW_MAP, CITY_SHADOW_MAP);
+        light.shadow.camera.near = 0.4;
+        light.shadow.bias = -0.004;
+      }
       scene.add(light);
       this.cityLights.push(light);
     }
@@ -1530,11 +1580,23 @@ export class Walk3D {
       light.color.setHex(e.color);
       light.intensity = e.intensity;
       light.distance = e.distance;
+      // The shadow frustum ends where the light does, so the map is spent on
+      // the ground the light actually reaches.
+      if (light.castShadow) {
+        light.shadow.camera.far = e.distance;
+        light.shadow.camera.updateProjectionMatrix();
+      }
     }
-    // Whatever is left over is turned off rather than removed.
+    // Whatever is left over is turned off rather than removed. A shadow slot
+    // with nothing in it is pulled in to almost nothing as well, so its six
+    // faces render an empty metre instead of the street.
     for (let i = used; i < pool.length; i++) {
       pool[i].intensity = 0;
       pool[i].distance = 1;
+      if (pool[i].castShadow) {
+        pool[i].shadow.camera.far = 1;
+        pool[i].shadow.camera.updateProjectionMatrix();
+      }
     }
     this.litCount = used;
   }
@@ -2229,6 +2291,7 @@ export class Walk3D {
     if (this.physicsReady) this.tickPhysics(dt, forward, right);
 
     this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
+    this.aimSun();
     this.updateCityLights();
     this.updateGun(dt);
   }

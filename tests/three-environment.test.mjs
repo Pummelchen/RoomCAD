@@ -40,8 +40,18 @@ check("the city is handed a building envelope, not a room",
 // — Performance ————————————————————————————————————————————
 check("the city is instanced, not one mesh per building",
   city.includes("new THREE.InstancedMesh("));
-check("city scenery never casts into the room's shadow maps",
-  !/castShadow\s*=\s*true/.test(city));
+// Was "city scenery never casts into the room's shadow maps". It did not, and
+// that was the whole problem: the sun's shadow volume sat over the room, so
+// everything outside it was lit flat from every direction at once. The city
+// casts and receives now, and the volume follows the viewer instead. What is
+// still worth asserting is that the transparent things do NOT — a pane you can
+// see through has no business blocking the sun, and the room boxes behind the
+// windows are drawn inside out.
+check("the city casts shadows",
+  /mesh\.castShadow = this\.casts;/.test(city) && /casts: true/.test(city));
+check("but its glass does not",
+  !/glazing:[\s\S]{0,300}casts: true/.test(city)
+  && !/darkGlass:[\s\S]{0,300}casts: true/.test(city));
 check("the city is not rebuilt on every room edit",
   walk.includes("if (!this.city.matches(bounds, seed, lift)) this.city.build(bounds, seed, lift);"));
 check("scene teardown preserves persistent subtrees",
@@ -260,8 +270,13 @@ check("Singapore latitude remains", walk.includes("const SG_LAT = 1.3521;"));
 check("Singapore longitude remains", walk.includes("const SG_LON = 103.8198;"));
 check("solar position is calculated from the chosen hour",
   walk.includes("const { altitude, azimuth } = sunForHour(hour);"));
+// The direction still comes from the hour and the latitude; what changed is
+// where the volume it shadows is centred. It used to sit over the room, which
+// is why nothing outside the room had a shadow — the city was outside the box.
 check("sun position continues to follow the calculated direction",
-  walk.includes("this.sun.position.set(cx + dir.x * dist"));
+  walk.includes("this.sun.position.set(cx + dir.x * SUN_HEIGHT"));
+check("and the volume it shadows follows the viewer",
+  walk.includes("const cx = Math.round(this.position.x / texel) * texel;"));
 
 console.log(`${passed} passed, ${failed} failed — city + 3D environment contracts`);
 if (failed) process.exit(1);

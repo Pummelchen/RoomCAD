@@ -1960,8 +1960,13 @@ for (const [w, l, label] of [
     "removing one changes the light count and recompiles the shaders");
   check("the pool is refreshed every frame",
     /this\.updateCityLights\(\);/.test(walk));
-  check("street lights cast no shadows",
-    /light\.castShadow = false;/.test(walk),
+  // Was "street lights cast no shadows", which was the right call when the pool
+  // was first built and the whole city was unshadowed. Now that everything else
+  // throws one, a lamp that lights a wall without darkening what stands in
+  // front of it is the odd one out — so a couple of them cast, and the number
+  // is what is checked rather than the flat "none".
+  check("only a few of the street lights cast shadows",
+    /const CITY_SHADOW_LIGHTS = [1-3];/.test(walk),
     "a shadow-casting point light is six renders of the scene");
   check("what can be seen is judged on the light's reach, not the lamp's position",
     /this\.lightSphere\.radius = e\.distance;/.test(walk),
@@ -2097,6 +2102,76 @@ for (const [w, l, label] of [
     wrongWay === 0, `${wrongWay} of ${leaned} leaned the wrong way`);
 
   city.dispose();
+}
+
+// ── Shadows on everything ────────────────────────────────────────────────
+//
+// The city used to cast no shadow and take none: the sun's shadow volume sat
+// over the room, and everything outside it was lit flat from every direction at
+// once. A street with no shadows in it does not look like a street at noon, it
+// looks like a drawing of one.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const meshes = city.group.children.filter(n => n.isMesh);
+  const named = (name) => meshes.find(n => n.name === name);
+
+  // Solid things throw shadows.
+  for (const name of ["city-facades", "city-roofs", "city-tree-trunks", "city-tree-canopies",
+                      "city-lamp-poles", "city-signal-poles"]) {
+    const mesh = named(name);
+    check(`${name} casts a shadow`, !!mesh && mesh.castShadow === true);
+    check(`${name} takes one too`, !!mesh && mesh.receiveShadow === true);
+  }
+  for (const kind of ["car", "van", "truck", "bus"]) {
+    const mesh = city.vehicleMeshes[kind];
+    check(`a ${kind} casts a shadow`, !!mesh && mesh.castShadow === true,
+      "the traffic throws the shadows that move");
+  }
+
+  // The ground takes them and throws none — it is the ground.
+  const ground = named("city-ground-details");
+  check("the road and pavement take shadows", !!ground && ground.receiveShadow === true);
+  check("but do not cast any", !!ground && ground.castShadow === false,
+    "a flat slab casting into its own shadow map is acne and nothing else");
+
+  // Glass and the interior boxes do neither: a pane you can see through has no
+  // business blocking the sun, and the room boxes are drawn inside out.
+  for (const name of ["city-window-glass", "city-rooms-dark", "city-rooms-lit"]) {
+    const mesh = named(name);
+    check(`${name} throws no shadow`, !!mesh && mesh.castShadow === false);
+  }
+  city.dispose();
+}
+
+// The sun's own volume, and the pool's shadow slots.
+{
+  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+
+  check("the sun's shadow volume follows the viewer",
+    /const cx = Math\.round\(this\.position\.x \/ texel\) \* texel;/.test(walk),
+    "parked over the room, nothing outside the room is ever in the box");
+  check("and is aimed every frame",
+    /this\.aimSun\(\);/.test(walk));
+  check("its position snaps to whole shadow texels",
+    /const texel = \(SUN_SHADOW_REACH \* 2\) \/ SUN_SHADOW_MAP;/.test(walk),
+    "without it the sampling grid slides and every shadow edge in the scene crawls");
+  check("the normal offset is derived from the texel size, not written down",
+    /const SUN_SHADOW_NORMAL_BIAS = SUN_SHADOW_TEXEL \* 0\.18;/.test(walk),
+    "a bias tuned for a tight volume brings the acne back on a wide one");
+  check("the volume reaches past the tallest building",
+    /sun\.shadow\.camera\.far = SUN_HEIGHT \* 2 \+ SUN_SHADOW_REACH \* 2;/.test(walk));
+
+  check("some of the street lights cast shadows",
+    /light\.castShadow = i < CITY_SHADOW_LIGHTS;/.test(walk));
+  check("which of them do is fixed for the life of the pool",
+    !/pool\[i\]\.castShadow = /.test(walk),
+    "switching it per frame reallocates shadow maps and recompiles");
+  check("a shadow slot with nothing in it is pulled in to almost nothing",
+    /pool\[i\]\.shadow\.camera\.far = 1;/.test(walk),
+    "or it renders six faces of empty street every frame");
+  check("a lit slot's shadow ends where its light does",
+    /light\.shadow\.camera\.far = e\.distance;/.test(walk));
 }
 
 const EXPECTED = [

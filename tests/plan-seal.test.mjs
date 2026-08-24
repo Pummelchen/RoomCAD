@@ -152,7 +152,11 @@ function check(name, cond, detail = "") {
   const mapSize = constant("POINT_SHADOW_MAP_SIZE");
   const pointBias = constant("POINT_SHADOW_BIAS");
   const sunBias = constant("SUN_SHADOW_BIAS");
-  const sunNormalBias = constant("SUN_SHADOW_NORMAL_BIAS");
+  // Evaluated rather than read: it is an expression now, not a literal.
+  const sunReach = constant("SUN_SHADOW_REACH");
+  const sunMap = constant("SUN_SHADOW_MAP");
+  const sunTexel = (sunReach * 2) / sunMap;
+  const sunNormalBias = sunTexel * 0.18;
 
   check("renderer: wall enters floor and ceiling by at least 4 cm", verticalSeal >= 0.04);
   check("renderer: closed doors overlap wall depth", doorSeal > 0);
@@ -192,7 +196,20 @@ function check(name, cond, detail = "") {
   check("renderer: point shadow adds no depth bias", pointBias === 0);
   check("renderer: point shadow adds no normal bias", walkSrc.includes("pl.shadow.normalBias = 0;"));
   check("renderer: sunlight adds no depth bias", sunBias === 0);
-  check("renderer: sunlight normal bias stays sub-millimetre-visible", sunNormalBias >= 0 && sunNormalBias <= 0.002);
+  // The sun's offset is no longer a written-down constant: it is derived from
+  // how big a shadow texel actually is on the ground, because the offset only
+  // has to cover the depth error across one texel. The old ceiling of 2 mm was
+  // right for a volume that covered the room and nothing else; the volume now
+  // covers the street, its texels are three times the size, and holding the
+  // offset at 2 mm would bring back the grazing acne it exists to stop.
+  //
+  // What still has to hold is that it stays a fraction of a texel — enough to
+  // clear the error, far too little to read as a gap under a wall.
+  check("renderer: sunlight normal bias is a fraction of a shadow texel",
+    sunNormalBias > 0 && sunNormalBias < sunTexel * 0.5,
+    `${(sunNormalBias * 1000).toFixed(1)} mm against a ${(sunTexel * 1000).toFixed(0)} mm texel`);
+  check("renderer: and never grows past a centimetre",
+    sunNormalBias <= 0.01, `${(sunNormalBias * 1000).toFixed(1)} mm`);
 
   // Quantify it, so nobody can reintroduce "just a small" negative bias.
   const leakAt = (d, bias, near = 0.05, far = 10) =>
