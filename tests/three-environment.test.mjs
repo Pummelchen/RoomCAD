@@ -91,9 +91,13 @@ check("the city sits in the scene, never in the floor-lifted room group",
 // over some fixed patch of the neighbourhood, so it needs to know where they
 // are standing.
 check("traffic and weather are animated from the render loop",
-  walk.includes("this.city.update(dt, this.camera.position);"));
+  walk.includes("this.city.update(dt, this.camera.position, _viewForward);"));
 check("the city knows where the viewer is, so weather follows them",
-  city.includes("update(dt, viewer = null)") && city.includes("this._viewer.copy(viewer)"));
+  city.includes("update(dt, viewer = null, forward = null)") && city.includes("this._viewer.copy(viewer)"));
+// And which way they are facing, so the traffic behind them need not be drawn.
+check("it is also told which way the viewer is looking",
+  walk.includes("this.camera.getWorldDirection(_viewForward);")
+  && city.includes("this._viewDir.x = forward.x / len;"));
 check("city lighting follows the same daylight as the sun",
   walk.includes("this.city.applyTimeOfDay(dayAmount * (day ? 1 : 0));"));
 

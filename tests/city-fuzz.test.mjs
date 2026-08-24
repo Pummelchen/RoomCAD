@@ -28,7 +28,7 @@ const THREE = await import(new URL("../roomcad/web/lib/three.webgpu.js", import.
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
   ROOM_SLAB_THICKNESS, WEATHER_KINDS, NEAR_SIDE_TURN, CROSSING_TURN, seedFromString,
-  PARK_OFFSET, BAY_PITCH, PARK_CLEAR, PARK_SHARE, PARK_MIN, PARK_MAX,
+  PARK_OFFSET, BAY_PITCH, PARK_CLEAR, PARK_SHARE, PARK_MIN, PARK_MAX, TURN_CONTROL_PERIOD,
   REVERSE_ANGLE, REVERSE_RUN,
   UNLOAD_MIN, UNLOAD_MAX, BUS_DWELL_MIN, BUS_DWELL_MAX, BUS_STOPS_PER_BLOCK,
   BUS_STOP_OFFSET, RESERVE_TTL,
@@ -1000,9 +1000,34 @@ for (const [w, l, label] of [
   }
 
   // One instance per vehicle, so the detail costs nothing per frame.
-  const instances = kinds.reduce((n, k) => n + (city.vehicleMeshes[k] ? city.vehicleMeshes[k].count : 0), 0);
+  //
+  // Asked of a city that has been RUNNING, not of one that has only been built.
+  // The traffic is culled to what can be seen from where the viewer is standing,
+  // so a count taken before the first frame is the number of vehicles rather
+  // than the number drawn, and this passed whatever the culling did.
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const forward = { x: 0, z: -1 };
+  for (let f = 0; f < 120; f++) city.update(1 / 60, viewer, forward);
+  const drawn = kinds.reduce((n, k) => n + (city.vehicleMeshes[k] ? city.vehicleMeshes[k].count : 0), 0);
+  const placed = city.cars.filter(v => v.slot >= 0).length;
   check("a vehicle is one instance, not a pile of parts written every frame",
-    instances === city.cars.length, `${instances} instances for ${city.cars.length} vehicles`);
+    drawn === placed, `${drawn} instances for ${placed} vehicles placed`);
+
+  // And every drawn slot belongs to exactly one vehicle. Two vehicles sharing a
+  // slot means one of them is not drawn at all and a paintball that hits the
+  // other reports the wrong one.
+  let clashes = 0;
+  for (const kind of kinds) {
+    const used = new Set();
+    for (const v of city.cars) {
+      if (v.kind !== kind || v.slot < 0) continue;
+      if (used.has(v.slot)) clashes++;
+      used.add(v.slot);
+    }
+  }
+  check("no two vehicles are written to the same instance", clashes === 0, `${clashes}`);
+  check("and a vehicle that is not drawn cannot be hit",
+    city.vehicleForInstance("city-vehicles-car", -1) === null);
   city.dispose();
 }
 
@@ -1114,7 +1139,7 @@ for (const [w, l, label] of [
     !!line && (Number((/0?\.\d+/.exec(line[1]) || [])[0]) || 1) <= 0.05,
     line ? line[1] : "");
   check("the city is driven with that same capped value, and told where the viewer is",
-    /this\.city\.update\(dt, this\.camera\.position\)/.test(walk));
+    /this\.city\.update\(dt, this\.camera\.position, _viewForward\)/.test(walk));
 }
 
 // ── Kerbside stopping ──────────────────────────────────────────────────────
@@ -1686,7 +1711,9 @@ for (const [w, l, label] of [
   check("they are shorter than an artic",
     Math.max(...vans.map(v => v.length)) < Math.min(...city.cars.filter(v => v.kind === "truck").map(v => v.length)),
     "a delivery van has to fit a parking bay");
-  check("every van is drawn", !!city.vehicleMeshes.van && city.vehicleMeshes.van.count === vans.length);
+  check("there is room in the mesh for every van",
+    !!city.vehicleMeshes.van && city.vehicleMeshes.van.instanceMatrix.count >= vans.length,
+    "how many are DRAWN depends on where the viewer is, which the culling covers");
 
   // A street you can see is a street with cars parked in it.
   const parkedAtStart = city.cars.filter(v => v.stop && v.stop.kind === "park").length;
@@ -2172,6 +2199,88 @@ for (const [w, l, label] of [
     "or it renders six faces of empty street every frame");
   check("a lit slot's shadow ends where its light does",
     /light\.shadow\.camera\.far = e\.distance;/.test(walk));
+}
+
+// ── What it costs to draw ────────────────────────────────────────────────
+//
+// The city is scenery, and scenery is where the frame budget goes. Three things
+// were measured wrong before they were fixed:
+//
+//   - the traffic is half the triangles in the city, and all of it was drawn
+//     every frame and again into every shadow map, when most of it is behind
+//     you;
+//   - the room's point lights shadow their surroundings by rendering the scene
+//     six times each, sixteen of them, ninety-six renders a frame — and once
+//     the city started casting shadows, every one of those drew the whole city.
+//     31 million triangles a frame, for lamps with a range of fourteen metres
+//     standing indoors;
+//   - and the turn arrows, which change a few times a minute, were rewritten
+//     every frame: 432 of them, costing more than driving all 240 vehicles.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const forward = { x: 0, z: -1 };
+  for (let f = 0; f < 600; f++) city.update(1 / 60, viewer, forward);
+
+  const kinds = ["car", "van", "truck", "bus"];
+  const drawn = kinds.reduce((n, k) => n + city.vehicleMeshes[k].count, 0);
+  check("the traffic is culled to what can be seen",
+    drawn < city.cars.length * 0.8, `${drawn} of ${city.cars.length} drawn`);
+
+  // Nothing you are looking at may vanish. The cone tested here is narrower
+  // than the one the model culls with, so there is room for the field of view
+  // to widen without anything popping at the edge of the frame.
+  let missing = 0;
+  for (const v of city.cars) {
+    const dx = v.x - viewer.x;
+    const dz = v.z - viewer.z;
+    const away = Math.hypot(dx, dz);
+    const ahead = (dx * forward.x + dz * forward.z) / (away || 1);
+    if (ahead > Math.cos(60 * Math.PI / 180) && v.slot < 0) missing++;
+  }
+  check("nothing in front of the viewer is culled", missing === 0, `${missing} vehicles`);
+
+  // Close traffic is drawn whichever way you turn, so spinning on the spot does
+  // not make the car beside you flicker.
+  for (let f = 0; f < 120; f++) city.update(1 / 60, viewer, { x: 0, z: 1 });
+  let nearDropped = 0;
+  for (const v of city.cars) {
+    if (Math.hypot(v.x - viewer.x, v.z - viewer.z) < 30 && v.slot < 0) nearDropped++;
+  }
+  check("traffic right beside the viewer is drawn whichever way they face",
+    nearDropped === 0, `${nearDropped} dropped within 30 m`);
+
+  // Counted as matrices actually written, not as a flag being flipped. Guarding
+  // the work with a flag that is updated whether or not the work is skipped
+  // looks identical from outside — and that is exactly the mistake this is
+  // here to catch.
+  let written = 0;
+  for (const mesh of [city.turnArrows.green, city.turnArrows.red]) {
+    const real = mesh.setMatrixAt.bind(mesh);
+    mesh.setMatrixAt = (i, m) => { written++; return real(i, m); };
+  }
+  const seconds = 10;
+  for (let f = 0; f < seconds * 60; f++) city.update(1 / 60, viewer, forward);
+  const arrows = city.signals.length * 3;
+  check("the turn arrows are rewritten only when they change",
+    written > 0 && written <= arrows * (seconds / TURN_CONTROL_PERIOD + 2),
+    `${written} matrices written in ${seconds} s; every frame would be ${arrows * seconds * 60}`);
+  check("and they are still drawn",
+    city.turnArrows.green.count + city.turnArrows.red.count > 100);
+  city.dispose();
+}
+
+// The room's lamps must not shadow the city.
+{
+  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  check("the room is on a layer of its own",
+    /this\.roomGroup\.traverse\(node => node\.layers\.enable\(ROOM_ONLY_LAYER\)\);/.test(walk));
+  check("and the room lamps' shadows are pointed at only that layer",
+    /pl\.shadow\.camera\.layers\.set\(ROOM_ONLY_LAYER\);/.test(walk),
+    "ninety-six cube faces a frame, each drawing the whole city");
+  check("the sun is not restricted to it — it shadows everything",
+    !/sun\.shadow\.camera\.layers/.test(walk));
 }
 
 const EXPECTED = [

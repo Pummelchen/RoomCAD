@@ -65,6 +65,15 @@ const SUN_HEIGHT = 120;
 // How many of the street lights throw a shadow, and how big a map each gets.
 const CITY_SHADOW_LIGHTS = 2;
 const CITY_SHADOW_MAP = 512;
+// A layer that only the room's own geometry is on.
+//
+// A point light shadows its surroundings by rendering the scene six times, once
+// per face of a cube. There are up to sixteen of them in a room, so ninety-six
+// renders a frame — and once the city started casting shadows, every one of
+// those ninety-six drew the whole city: 31 MILLION triangles a frame, for
+// lights with a range of fourteen metres that are standing indoors. Their
+// shadow cameras are pointed at this layer, which the city is not on.
+const ROOM_ONLY_LAYER = 1;
 const FLOOR_HEIGHT = 3; // metres per building floor
 
 // Room construction uses closed, overlapping solids. The values below are
@@ -101,6 +110,7 @@ const SUN_SHADOW_NORMAL_BIAS = SUN_SHADOW_TEXEL * 0.18;
 
 // Scratch vector for the viewmodel, which is positioned every frame.
 const _gunOffset = new THREE.Vector3();
+const _viewForward = new THREE.Vector3();
 // Scratch for putting paint back onto a moving vehicle. Reused because it runs
 // once per carried splat per frame.
 const _carrierMatrix = new THREE.Matrix4();
@@ -453,6 +463,11 @@ export class Walk3D {
         this.addFurniture(item);
       }
     }
+
+    // Everything the room is made of goes on the room-only layer as well as
+    // the default one, so the point lights' shadow cameras can be pointed at
+    // it and see the room without seeing the city.
+    this.roomGroup.traverse(node => node.layers.enable(ROOM_ONLY_LAYER));
 
     this.buildGun();
     this.syncCity(room);
@@ -932,6 +947,9 @@ export class Walk3D {
       pl.shadow.normalBias = 0;
       pl.shadow.camera.near = 0.05;
       pl.shadow.camera.far = pointDistance;
+      // The room, and nothing else. A lamp on a ceiling cannot see the street
+      // and has no business rendering it six times a frame.
+      pl.shadow.camera.layers.set(ROOM_ONLY_LAYER);
       this.roomGroup.add(pl);
       this.pointLights.push(pl);
     }
@@ -2258,7 +2276,10 @@ export class Walk3D {
     this.updatePaintballs(dt);
     this.updateShards(dt);
     this.updateSplats();
-    this.city.update(dt, this.camera.position);
+    // The direction as well as the position: the city draws the traffic it can
+    // be seen from here, and most of the fleet is behind you.
+    this.camera.getWorldDirection(_viewForward);
+    this.city.update(dt, this.camera.position, _viewForward);
     this.updateClouds(dt);
 
     const now = performance.now();

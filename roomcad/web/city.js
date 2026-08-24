@@ -202,6 +202,18 @@ const PACE_SLOWEST = 0.90;
 const PACE_FASTEST = 1.20;
 // How many vehicles are on the streets altogether, spread over every lane.
 const FLEET_SIZE = 240;
+// Which traffic is worth drawing. A vehicle is around a thousand triangles and
+// there are 240 of them, so the fleet is half of everything in the city.
+//
+// Culled on DIRECTION rather than distance. A distance cut has to be set past
+// where a car is still several pixels across — 150 m — which only removes about
+// two fifths of the fleet, and whatever it does remove pops out of existence in
+// plain view. Anything behind you is not visible at any distance, so that is
+// what goes: a generous cone, wider than the field of view so nothing vanishes
+// at the edge of the frame, and everything close kept regardless of where you
+// happen to be looking.
+const VEHICLE_KEEP_NEAR = 40;   // drawn whichever way you are facing
+const VEHICLE_CONE = Math.cos(70 * Math.PI / 180);
 
 // Kerbside stopping.
 //
@@ -855,6 +867,8 @@ export class City {
     this.junctions = [];
     this.turnControl = new Map();
     this.turnLoads = new Map();
+    this._turnRevision = 0;
+    this._arrowsDrawn = -1;
     this.solids = [];
     this._turnControlAt = 0;
     this._turnLookahead = 0;
@@ -2199,6 +2213,8 @@ export class City {
     this._span = span;
     this.turnControl = new Map();
     this.turnLoads = new Map();
+    this._turnRevision = 0;
+    this._arrowsDrawn = -1;
     this._turnControlAt = 0;
     this._demand = new Map();
     this._startSignals();
@@ -2498,6 +2514,13 @@ export class City {
   _writeTurnArrows() {
     const parts = this.turnArrows;
     if (!parts || !this.signals.length) return;
+    // Only when the arrows have actually changed. They are reviewed a few times
+    // a minute and there are 432 of them, so rewriting every one every frame
+    // cost more than driving all 240 vehicles did — the single most expensive
+    // thing in the simulation, for a picture that was identical 119 frames out
+    // of 120.
+    if (this._arrowsDrawn === this._turnRevision) return;
+    this._arrowsDrawn = this._turnRevision;
     let green = 0;
     let red = 0;
     for (const s of this.signals) {
@@ -2942,6 +2965,7 @@ export class City {
       this.turnLoads.set(key, loads);
     }
 
+    this._turnRevision = (this._turnRevision || 0) + 1;
     this.turnStats = {
       average, limit, forbidden,
       approaches: approaches.size,
@@ -4330,6 +4354,8 @@ export class City {
   /// from under it.
   vehicleForInstance(meshName, instanceId) {
     if (!this.vehicleMeshes || instanceId === undefined || instanceId === null) return null;
+    // A vehicle that is not drawn has no slot, and -1 is not one.
+    if (instanceId < 0) return null;
     const kind = String(meshName).replace("city-vehicles-", "");
     if (!this.vehicleMeshes[kind]) return null;
     for (const v of this.cars) {
@@ -4357,10 +4383,36 @@ export class City {
     let brakes = 0;
     let indicators = 0;
 
+    // Only the traffic near enough to be worth drawing.
+    //
+    // A vehicle is around a thousand triangles and there are 240 of them, so
+    // the fleet is 276,000 triangles — half of everything in the city. All of
+    // it was drawn every frame, and drawn again into every shadow map, when a
+    // quarter of it is within a hundred metres and the rest is behind buildings
+    // or lost in the fog. The instances are packed towards the front of the
+    // mesh and the count is set to what was written, which is the one thing an
+    // InstancedMesh lets you do cheaply.
+    const seen = this._viewer;
+    const look = this._viewDir;
+    for (const mesh of Object.values(this.vehicleMeshes)) mesh.count = 0;
+
     for (let i = 0; i < this.cars.length; i++) {
       const v = this.cars[i];
       const mesh = this.vehicleMeshes[v.kind];
       if (!mesh) continue;
+      const dx = v.x - seen.x;
+      const dz = v.z - seen.z;
+      const away = dx * dx + dz * dz;
+      const behind = look
+        && away > VEHICLE_KEEP_NEAR * VEHICLE_KEEP_NEAR
+        && (dx * look.x + dz * look.z) < Math.sqrt(away) * VEHICLE_CONE;
+      if (behind) {
+        // Marked as drawn nowhere. A stale slot would make a paintball that
+        // hits one vehicle report a hit on another.
+        v.slot = -1;
+        continue;
+      }
+      v.slot = mesh.count++;
       const ref = VEHICLE_REF[v.kind];
       const rotY = -v.heading;
       const fx = Math.cos(v.heading);
@@ -4443,7 +4495,7 @@ export class City {
   /// Advances the traffic and the weather. `viewer` is where the camera is, so
   /// the precipitation can follow it rather than being a fixed block of rain
   /// somewhere over the neighbourhood.
-  update(dt, viewer = null) {
+  update(dt, viewer = null, forward = null) {
     // The simulation has a stability limit of its own, independent of whatever
     // the render loop hands it: a single enormous step would carry a vehicle
     // through a junction, past the car in front and out of its lane in one go.
@@ -4451,6 +4503,12 @@ export class City {
     const step = Math.min(Math.max(dt, 0), 0.1);
     this._clock += step;
     if (viewer) this._viewer.copy(viewer);
+    if (forward) {
+      const len = Math.hypot(forward.x, forward.z) || 1;
+      if (!this._viewDir) this._viewDir = { x: 0, z: 1 };
+      this._viewDir.x = forward.x / len;
+      this._viewDir.z = forward.z / len;
+    }
 
     // The lights run whether or not anybody is driving, but what they run ON
     // is who is waiting — so the picture is taken first, then the signals, then
