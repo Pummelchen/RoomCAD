@@ -817,6 +817,33 @@ function stopWatching({ detached = false } = {}) {
 }
 
 /// Subscribes to live updates for a server room (Google-Docs style sharing).
+/// What an update from the watcher means for this client.
+///
+/// Pulled out of the event handler so it can be stated and tested on its own.
+/// It is four lines of decision that decide whether a teammate's work appears
+/// on your screen, and it was wrong in a way nobody could see: a live draft
+/// carries the SENDER's version, and a receiver on any other version dropped it
+/// silently. One save by either side and the two versions differ from then on,
+/// so live editing worked right up until somebody saved and never again — which
+/// is exactly when people start collaborating.
+///
+/// Returns one of: "ignore", "hold" (remember it in case they join), "live"
+/// (apply as a draft), "saved" (apply and adopt the version).
+export function liveUpdateAction(data, state) {
+  if (!data || data.name !== state.serverRoomName) return "ignore";
+  if (data.clientId === state.clientId) return "ignore";   // our own echo
+  if (state.dragTransactionActive) return "ignore";        // never clobber a drag
+  if (data.live) {
+    // Not gated on the version. While live, the draft IS the shared state, and
+    // whoever sent it is by definition further along than we are.
+    return state.live ? "live" : "hold";
+  }
+  // A real save from anyone. The watcher sends the current version on connect,
+  // so the one we already have is a no-op rather than a teammate's update.
+  if (data.version === state.serverRoomVersion) return "ignore";
+  return "saved";
+}
+
 function watchRoom(name) {
   stopWatching();
   liveDetached = false;
@@ -825,29 +852,24 @@ function watchRoom(name) {
     eventSource.onmessage = e => {
       try {
         const data = JSON.parse(e.data);
-        if (data.name !== store.serverRoomName) return;
-        if (data.clientId === CLIENT_ID) return; // ignore our own echo
-        if (store.dragTransactionActive) return; // never clobber an active drag
-        if (data.live) {
-          // Remember the shared draft while the user considers joining. This
-          // lets Join Live adopt the teammate's work instead of overwriting it.
-          if (data.version != null && store.serverRoomVersion != null
-              && data.version !== store.serverRoomVersion) return;
-          const room = P.parseRoom(data.json);
-          if (!store.live) {
-            pendingLiveDraft = { room, version: data.version };
-            return;
-          }
-          store.applyRemoteRoom(room, null);
-        } else {
-          // A real save (from anyone) — apply it and adopt the new version.
-          // The watcher sends the current version immediately on connect. If
-          // that is the design we just opened or resumed, it is a no-op rather
-          // than a teammate update (and should not overwrite the status).
-          if (data.version === store.serverRoomVersion) return;
-          const room = P.parseRoom(data.json);
-          store.applyRemoteRoom(room, data.version);
+        const action = liveUpdateAction(data, {
+          serverRoomName: store.serverRoomName,
+          serverRoomVersion: store.serverRoomVersion,
+          clientId: CLIENT_ID,
+          live: store.live,
+          dragTransactionActive: store.dragTransactionActive,
+        });
+        if (action === "ignore") return;
+        const room = P.parseRoom(data.json);
+        if (action === "hold") {
+          // Remembered while the user considers joining, so Join Live adopts
+          // the teammate's work instead of overwriting it.
+          pendingLiveDraft = { room, version: data.version };
+          return;
         }
+        // A live draft carries the sender's version; taking it keeps the two
+        // sides on the same baseline instead of drifting apart.
+        store.applyRemoteRoom(room, data.version != null ? data.version : null);
       } catch (err) {
         console.warn("Live update ignored:", err);
       }
@@ -928,7 +950,13 @@ function download(name, text, mime) {
 }
 
 function exportBaseName() {
-  return (store.serverRoomName || store.documentName || store.room.name || "room")
+  // The Room Name is the file name — that is what saving uses to decide which
+  // file it is writing, so it is what exporting has to use to decide which file
+  // it is writing out. Preferring serverRoomName instead named every export
+  // after the last design opened from the server, so drawing something new and
+  // exporting it handed you a file named after somebody else's room.
+  const slug = P.roomSlug(store.room.name);
+  return (slug || store.serverRoomName || store.documentName || "room")
     .replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 

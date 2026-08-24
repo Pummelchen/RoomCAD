@@ -1,4 +1,6 @@
-// Source contracts for the deliberate Join Live / Leave Live Mode flow.
+// The deliberate Join Live / Leave Live Mode flow — and, now, what the watcher
+// actually DOES with an update, which was wrong in a way source contracts could
+// never have caught.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -59,6 +61,71 @@ check("and says where the number comes from and how to change it",
   /measured from the walls[^`]*drag a wall to resize/.test(app));
 check("floor area is the enclosed floor, not width times length",
   app.includes("P.floorArea(room)") && !app.includes("(room.width * room.length)"));
+
+
+// ── What an update from the watcher means ────────────────────────────────
+//
+// A live draft carries the SENDER's version. The receiver used to drop any
+// draft whose version was not its own — so the first time either side saved,
+// the two versions parted company and every live edit from then on was
+// silently discarded. Live editing worked right until somebody saved, which is
+// the moment people start collaborating: "the other side opened it but none of
+// the walls I drew were shown".
+//
+// Driven through the real function rather than read out of the source. The
+// function is lifted out of app.js on its own because app.js reaches for the
+// DOM the moment it loads.
+{
+  const src = app.slice(app.indexOf("export function liveUpdateAction"));
+  const body = src.slice(0, src.indexOf("\nfunction watchRoom"));
+  const { liveUpdateAction } = await import(
+    "data:text/javascript;base64," + Buffer.from(body, "utf8").toString("base64"));
+
+  const me = { serverRoomName: "flat", serverRoomVersion: 3, clientId: "me", live: true,
+               dragTransactionActive: false };
+  const draft = (over = {}) => ({ name: "flat", clientId: "them", live: true, version: 3, ...over });
+
+  check("a live draft from a teammate is applied",
+    liveUpdateAction(draft(), me) === "live");
+  // The bug, stated as its own case.
+  check("a live draft is applied even when the versions differ",
+    liveUpdateAction(draft({ version: 7 }), me) === "live");
+  check("and when the sender has no version at all",
+    liveUpdateAction(draft({ version: null }), me) === "live");
+  check("a draft for another room is ignored",
+    liveUpdateAction(draft({ name: "attic" }), me) === "ignore");
+  check("our own echo is ignored",
+    liveUpdateAction(draft({ clientId: "me" }), me) === "ignore");
+  check("nothing lands mid-drag",
+    liveUpdateAction(draft(), { ...me, dragTransactionActive: true }) === "ignore");
+  check("a draft is held, not applied, before joining live",
+    liveUpdateAction(draft(), { ...me, live: false }) === "hold");
+  check("and held whatever version it carries",
+    liveUpdateAction(draft({ version: 9 }), { ...me, live: false }) === "hold");
+
+  // Saves are the other half: a new version from anyone is adopted, and the
+  // version the watcher echoes back on connect is not mistaken for one.
+  const save = (over = {}) => ({ name: "flat", clientId: "them", live: false, version: 4, ...over });
+  check("a teammate's save is applied", liveUpdateAction(save(), me) === "saved");
+  check("the version we already have is not re-applied",
+    liveUpdateAction(save({ version: 3 }), me) === "ignore");
+  check("a save is applied while live too",
+    liveUpdateAction(save(), { ...me, live: true }) === "saved");
+}
+
+// ── Exporting writes out the design on screen ────────────────────────────
+//
+// Saving decides which file it is writing from the Room Name — "the Room Name
+// is the file name". Exporting preferred the last design opened from the
+// server instead, so drawing something new and exporting it handed you a file
+// named after somebody else's room.
+{
+  check("export names the file the way saving does",
+    /const slug = P\.roomSlug\(store\.room\.name\);/.test(app)
+    && /return \(slug \|\| store\.serverRoomName/.test(app));
+  check("and saving still decides the same way",
+    /const slug = P\.roomSlug\(store\.room\.name\);\s*\n\s*const target = slug \|\| store\.serverRoomName/.test(app));
+}
 
 console.log(`${passed} passed, ${failed} failed — live collaboration UI contracts`);
 if (failed) process.exit(1);
