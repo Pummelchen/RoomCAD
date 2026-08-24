@@ -282,5 +282,22 @@ check("sun position continues to follow the calculated direction",
 check("and the volume it shadows follows the viewer",
   walk.includes("const cx = Math.round(this.position.x / texel) * texel;"));
 
+// — The player physics keeps real time —————————————————————————
+// One step of however long the frame happened to be means the world advances at
+// most that much per frame: at ten frames a second it runs at half speed, at
+// five a quarter. Stepping out of a window then takes several real seconds to
+// fall three metres — you hover down. It runs a FIXED step now, as many times
+// as the frame was long.
+check("the physics runs on a fixed step",
+  walk.includes("this.world.timestep = PHYSICS_STEP;")
+  && /const PHYSICS_STEP = 1 \/ 60;/.test(walk));
+check("and catches up on a frame that ran long",
+  /while \(this\.physicsBacklog >= PHYSICS_STEP && steps < MAX_SUBSTEPS\)/.test(walk));
+check("the catch-up is bounded, so a slow frame cannot spiral",
+  /const MAX_SUBSTEPS = \d+;/.test(walk) && /const MAX_BACKLOG = /.test(walk),
+  "if catching up costs more than the frame that fell behind, it never recovers");
+check("the world is never handed a whole frame as one step",
+  !/this\.world\.timestep = Math\.max\(0, Math\.min\(dt/.test(walk));
+
 console.log(`${passed} passed, ${failed} failed — city + 3D environment contracts`);
 if (failed) process.exit(1);

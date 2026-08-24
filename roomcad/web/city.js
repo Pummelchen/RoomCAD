@@ -536,6 +536,7 @@ const _m = new THREE.Matrix4();
 const _arrowFace = new THREE.Matrix4();
 const _arrowRoll = new THREE.Matrix4();
 const _arrowScale = new THREE.Matrix4();
+const _paint = new THREE.Color();
 const _q = new THREE.Quaternion();
 const _pos = new THREE.Vector3();
 const _scale = new THREE.Vector3();
@@ -2405,6 +2406,9 @@ export class City {
       mesh.frustumCulled = false;
       this.group.add(mesh);
       this._disposables.push(geo, mat);
+      // One colour write per vehicle, so the buffer exists and has the right
+      // size. Which slot a vehicle occupies is decided fresh every frame by the
+      // culling, so the colours are rewritten there — see _writeCarMatrices.
       list.forEach((v, i) => {
         v.slot = i;
         // Paint multiplies the body's own vertex colours: white panels take
@@ -4413,6 +4417,14 @@ export class City {
         continue;
       }
       v.slot = mesh.count++;
+      // The colour goes with it. Slots are handed out fresh every frame now
+      // that the traffic is culled, so a vehicle rarely sits in the same one
+      // twice — and the colours were written once, at build time, per slot.
+      // Every car in the city changed colour as the packing shifted under it.
+      if (mesh.instanceColor) {
+        mesh.setColorAt(v.slot, _paint.setHex(v.color));
+        mesh.instanceColor.needsUpdate = true;
+      }
       const ref = VEHICLE_REF[v.kind];
       const rotY = -v.heading;
       const fx = Math.cos(v.heading);

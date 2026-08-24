@@ -1026,6 +1026,35 @@ for (const [w, l, label] of [
     }
   }
   check("no two vehicles are written to the same instance", clashes === 0, `${clashes}`);
+
+  // A vehicle's paint has to travel with it. The instance colours were written
+  // once at build time, one per slot — and slots are handed out fresh every
+  // frame now that the traffic is culled, so a vehicle rarely sits in the same
+  // one twice. Every car in the city changed colour as the packing shifted
+  // under it. Sampled while turning on the spot, which churns the slots hardest.
+  {
+    let wrongPaint = 0;
+    let sampled = 0;
+    for (let f = 0; f < 600; f++) {
+      city.update(1 / 60, viewer, { x: Math.cos(f / 90), z: Math.sin(f / 90) });
+      if (f % 40) continue;
+      for (const v of city.cars) {
+        if (v.slot < 0) continue;
+        const mesh = city.vehicleMeshes[v.kind];
+        if (!mesh || !mesh.instanceColor) continue;
+        sampled++;
+        const a = mesh.instanceColor.array;
+        const want = new THREE.Color().setHex(v.color);
+        const i = v.slot * 3;
+        if (Math.abs(a[i] - want.r) > 2e-3
+          || Math.abs(a[i + 1] - want.g) > 2e-3
+          || Math.abs(a[i + 2] - want.b) > 2e-3) wrongPaint++;
+      }
+    }
+    check("a vehicle keeps its own colour as the packing shifts",
+      sampled > 500 && wrongPaint === 0,
+      `${wrongPaint} of ${sampled} instances had another vehicle's paint`);
+  }
   check("and a vehicle that is not drawn cannot be hit",
     city.vehicleForInstance("city-vehicles-car", -1) === null);
   city.dispose();

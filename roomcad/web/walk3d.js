@@ -45,6 +45,13 @@ const STAND_HALF_HEIGHT = 0.55; // total standing height 1.5 m
 const CROUCH_HALF_HEIGHT = 0.25; // total crouch height 0.9 m
 const WALK_SPEED = 2.5;
 const GRAVITY = 11;
+// The physics runs on a fixed step so it keeps real time whatever the frame
+// rate. MAX_SUBSTEPS is how far one frame may catch up — at six a frame the
+// world keeps pace down to ten frames a second, and below that it slows down
+// rather than spiralling into a catch-up loop it can never win.
+const PHYSICS_STEP = 1 / 60;
+const MAX_SUBSTEPS = 6;
+const MAX_BACKLOG = 0.25;
 // How far above the taller of the room and the street counts as still being in
 // the world. Enough to clear the tallest building the city puts up, so standing
 // on a roof is not mistaken for having fallen out of the simulation.
@@ -2334,8 +2341,32 @@ export class Walk3D {
     const vel = body.linvel();
     body.setLinvel({ x: vx, y: vel.y, z: vz }, true);
 
-    this.world.timestep = Math.max(0, Math.min(dt, 0.05));
-    this.world.step();
+    // A fixed step, run as many times as the frame was long — not one step of
+    // however long the frame happened to be.
+    //
+    // A single step capped at 50 ms means the world advances at most 50 ms per
+    // frame, so at ten frames a second it runs at half speed and at five frames
+    // a second at a quarter. Stepping out of a window then takes several real
+    // seconds to fall three metres: you hover down. The physics was never
+    // wrong — it was being given a fraction of the time that had actually
+    // passed.
+    //
+    // The cap on how many steps one frame may run is what stops the spiral: if
+    // catching up costs more than the frame that fell behind, the next frame
+    // falls further behind still. Past that point the world does run slow, and
+    // slow is better than locked solid.
+    this.physicsBacklog = Math.min((this.physicsBacklog || 0) + Math.max(0, dt), MAX_BACKLOG);
+    let steps = 0;
+    while (this.physicsBacklog >= PHYSICS_STEP && steps < MAX_SUBSTEPS) {
+      this.world.timestep = PHYSICS_STEP;
+      this.world.step();
+      this.physicsBacklog -= PHYSICS_STEP;
+      steps++;
+    }
+    if (steps === 0) {
+      // A frame shorter than one step: nothing to do but keep the leftover.
+      this.world.timestep = PHYSICS_STEP;
+    }
 
     // Body sits at the feet; the camera (eyes) is at the capsule top.
     const room = store.room;
