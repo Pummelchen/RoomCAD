@@ -73,6 +73,12 @@ const BAY_LINE_COLOR = 0xd8d3c2;    // the box a car parks inside
 const BUS_BOX_COLOR = 0xb8452f;     // bus stops are painted, and only for buses
 const TRUNK_COLOR = 0x6b4f36;
 const GROUND_DEPTH = 2;         // how thick the walkable ground slab is made
+// Damage. A paintball takes a metre square out of a wall, which is enough to
+// climb through and small enough that a building still reads as a building.
+const HOLE_SIZE = 1.0;
+const HOLE_MIN_PIECE = 0.06;    // below this a leftover sliver is simply dropped
+const HOLE_REACH_DOWN = 1.7;    // a hit this near the foot of a wall opens it at the foot
+const DAMAGE_SLOTS = 160;       // spare instances to rebuild broken walls from
 const TREE_MAX_RADIUS = 1.8;    // the biggest canopy _blockTrees will draw
 const TREE_KERB_CLEAR = 0.3;    // ... and how far short of the kerb it must stop
 const CANOPY_COLORS = [0x5c8a45, 0x6f9c52, 0x4e7a3b];
@@ -420,11 +426,17 @@ function fbm(x, z, seed, octaves = 4) {
 
 /// A collector that turns many boxes into one InstancedMesh.
 class InstanceSet {
-  constructor(geometry, material, { colored = true } = {}) {
+  /// `spare` leaves room in the built mesh for instances added later. An
+  /// InstancedMesh is a fixed allocation, so anything that changes the city
+  /// after it is built — a hole blown through a wall becomes four pieces of
+  /// wall where one used to be — has to have somewhere to put the new pieces.
+  constructor(geometry, material, { colored = true, spare = 0 } = {}) {
     this.geometry = geometry;
     this.material = material;
     this.colored = colored;
+    this.spare = spare;
     this.items = [];
+    this.mesh = null;
   }
 
   add(matrix, color) {
@@ -437,7 +449,7 @@ class InstanceSet {
       this.material.dispose();
       return null;
     }
-    const mesh = new THREE.InstancedMesh(this.geometry, this.material, this.items.length);
+    const mesh = new THREE.InstancedMesh(this.geometry, this.material, this.items.length + this.spare);
     mesh.name = name;
     // The city is scenery: it never casts into the room's shadow maps, which
     // keeps the sun's shadow camera tight around the actual building.
@@ -449,10 +461,40 @@ class InstanceSet {
       mesh.setMatrixAt(i, this.items[i].matrix);
       if (this.colored) mesh.setColorAt(i, c.setHex(this.items[i].color));
     }
+    // Only the real ones are drawn; the spare slots wait.
+    mesh.count = this.items.length;
     mesh.instanceMatrix.needsUpdate = true;
     if (this.colored && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     parent.add(mesh);
+    this.mesh = mesh;
     return mesh;
+  }
+
+  /// Rewrites one instance in place.
+  replace(index, matrix, color) {
+    if (!this.mesh || index < 0 || index >= this.mesh.count) return;
+    this.items[index] = { matrix, color };
+    this.mesh.setMatrixAt(index, matrix);
+    if (this.colored && this.mesh.instanceColor) {
+      this.mesh.setColorAt(index, _color.setHex(color));
+      this.mesh.instanceColor.needsUpdate = true;
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /// Takes one of the spare slots. Returns false when they have run out, which
+  /// is a full city rather than an error — the wall simply does not shatter.
+  append(matrix, color) {
+    if (!this.mesh || this.mesh.count >= this.mesh.instanceMatrix.count) return false;
+    const index = this.mesh.count++;
+    this.items[index] = { matrix, color };
+    this.mesh.setMatrixAt(index, matrix);
+    if (this.colored && this.mesh.instanceColor) {
+      this.mesh.setColorAt(index, _color.setHex(color));
+      this.mesh.instanceColor.needsUpdate = true;
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+    return true;
   }
 }
 
@@ -839,7 +881,11 @@ export class City {
     const sets = {
       facades: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 })
+        new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 }),
+        // Room to blow holes in. Each one turns a piece of wall into as many
+        // as four, so this is the budget for how much of the city can be
+        // knocked about before it stops taking damage.
+        { spare: DAMAGE_SLOTS }
       ),
       roofs: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
@@ -999,6 +1045,8 @@ export class City {
     this._buildPrecipitation(rnd);
 
     sets.facades.build(this.group, "city-facades");
+    // Kept, so a paintball can find the piece of wall it hit and rebuild it.
+    this.facadeSet = sets.facades;
     sets.roofs.build(this.group, "city-roofs");
     sets.flats.build(this.group, "city-ground-details");
     sets.darkGlass.build(this.group, "city-windows-dark");
@@ -1188,6 +1236,147 @@ export class City {
       out.push(light);
     }
     return out;
+  }
+
+  // MARK: - Damage
+
+  /// The centre, size and colour of one instance, read back out of its matrix.
+  ///
+  /// Everything in the city is an axis-aligned box placed by boxMatrix, so the
+  /// matrix holds the size on its diagonal and the position in its last column
+  /// and nothing else has to be remembered about it.
+  static boxOf(matrix) {
+    const e = matrix.elements;
+    return { x: e[12], y: e[13], z: e[14], w: e[0], h: e[5], d: e[10] };
+  }
+
+  /// A box with a square hole through it, as the pieces that are left.
+  ///
+  /// The hole runs the whole way through along `axis`, so what comes back is
+  /// the wall under it, the wall over it, and the wall to each side. Slivers
+  /// thinner than a few centimetres are dropped rather than drawn: they are
+  /// invisible and they cost an instance each.
+  static holePieces(box, axis, atA, atB, size) {
+    // The two axes the hole is measured in — everything except the one it is
+    // bored along.
+    const across = axis === "x" ? "z" : "x";
+    const half = size / 2;
+    const a0 = box[across === "x" ? "x" : "z"] - box[across === "x" ? "w" : "d"] / 2;
+    const a1 = box[across === "x" ? "x" : "z"] + box[across === "x" ? "w" : "d"] / 2;
+    const y0 = box.y - box.h / 2;
+    const y1 = box.y + box.h / 2;
+    // Slid back inside the box rather than clipped by its edge. A shot near the
+    // foot of a wall should take a whole metre out of it, sitting on the
+    // pavement — which is a hole you can get through. Clipping it instead
+    // leaves a letterbox a few centimetres tall with a sill under it, and the
+    // whole point of the hole is to be a way in.
+    const slide = (lo, hi, at) => {
+      let s0 = at - half;
+      let s1 = at + half;
+      if (s1 - s0 >= hi - lo) return [lo, hi];        // the hole is the wall
+      if (s0 < lo) { s1 += lo - s0; s0 = lo; }
+      if (s1 > hi) { s0 -= s1 - hi; s1 = hi; }
+      return [s0, s1];
+    };
+    const [hA0, hA1] = slide(a0, a1, atA);
+    // A hit anywhere on the ground storey takes the wall out at pavement level
+    // rather than leaving a metre-square window with a sill under it. A metre
+    // is not tall enough to walk through upright whatever you do — you duck —
+    // but a sill at knee height means you cannot get through at all, and
+    // hunting for the exact spot that leaves the sill on the ground is not a
+    // game. Higher up it stays where it was hit.
+    const [hY0, hY1] = atB - y0 < HOLE_REACH_DOWN
+      ? slide(y0, y1, y0 + half)
+      : slide(y0, y1, atB);
+    if (hA1 - hA0 <= HOLE_MIN_PIECE || hY1 - hY0 <= HOLE_MIN_PIECE) return null;
+
+    const pieces = [];
+    const push = (lo, hi, yLo, yHi) => {
+      if (hi - lo <= HOLE_MIN_PIECE || yHi - yLo <= HOLE_MIN_PIECE) return;
+      const mid = (lo + hi) / 2;
+      pieces.push({
+        x: across === "x" ? mid : box.x,
+        y: (yLo + yHi) / 2,
+        z: across === "x" ? box.z : mid,
+        w: across === "x" ? hi - lo : box.w,
+        h: yHi - yLo,
+        d: across === "x" ? box.d : hi - lo,
+      });
+    };
+    push(a0, a1, y0, hY0);      // under it
+    push(a0, a1, hY1, y1);      // over it
+    push(a0, hA0, hY0, hY1);    // beside it
+    push(hA1, a1, hY0, hY1);
+    return pieces;
+  }
+
+  /// Blows a metre-square hole through whatever piece of building is at a
+  /// point, and takes the same square out of what holds the player up.
+  ///
+  /// The wall and its collider are cut from the same box by the same routine.
+  /// Cutting them separately is how you get a hole you can see through and not
+  /// walk through, or worse, one you can walk through and not see.
+  punchHole(point, normal) {
+    if (!this.facadeSet || !this.facadeSet.mesh) return null;
+    // The face that was hit decides which way the hole is bored.
+    const axis = Math.abs(normal.x) >= Math.abs(normal.z) ? "x" : "z";
+    const across = axis === "x" ? "z" : "x";
+    const atA = across === "x" ? point.x : point.z;
+
+    const hit = this._facadeAt(point);
+    if (hit < 0) return null;
+    const box = City.boxOf(this.facadeSet.items[hit].matrix);
+    const color = this.facadeSet.items[hit].color;
+    const pieces = City.holePieces(box, axis, atA, point.y, HOLE_SIZE);
+    if (!pieces || !pieces.length) return null;
+
+    // The first piece takes the original slot; the rest need spare ones. If
+    // the spares have run out the wall is left as it was rather than half
+    // rebuilt, which would leave a building with a piece missing.
+    if (this.facadeSet.mesh.count + pieces.length - 1
+        > this.facadeSet.mesh.instanceMatrix.count) return null;
+    this.facadeSet.replace(hit, boxMatrix(
+      pieces[0].x, pieces[0].y, pieces[0].z, pieces[0].w, pieces[0].h, pieces[0].d), color);
+    for (let i = 1; i < pieces.length; i++) {
+      const p = pieces[i];
+      this.facadeSet.append(boxMatrix(p.x, p.y, p.z, p.w, p.h, p.d), color);
+    }
+
+    // And the same square out of the collision, so the hole is a way through.
+    let cut = false;
+    for (let i = 0; i < this.solids.length; i++) {
+      const solid = this.solids[i];
+      if (solid.h <= GROUND_DEPTH) continue;              // ground and pavement
+      if (!City.boxHolds(solid, point, 0.6)) continue;
+      const parts = City.holePieces(solid, axis, atA, point.y, HOLE_SIZE);
+      if (!parts || !parts.length) continue;
+      this.solids.splice(i, 1, ...parts);
+      cut = true;
+      break;
+    }
+    this.damage = (this.damage || 0) + 1;
+    return { axis, x: point.x, y: point.y, z: point.z, brokeCollision: cut };
+  }
+
+  static boxHolds(box, point, slack = 0) {
+    return Math.abs(point.x - box.x) <= box.w / 2 + slack
+      && Math.abs(point.y - box.y) <= box.h / 2 + slack
+      && Math.abs(point.z - box.z) <= box.d / 2 + slack;
+  }
+
+  /// Which piece of facade is at a point. The nearest one that contains it,
+  /// because a corner is two pieces of wall overlapping.
+  _facadeAt(point) {
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < this.facadeSet.items.length; i++) {
+      if (i >= this.facadeSet.mesh.count) break;
+      const box = City.boxOf(this.facadeSet.items[i].matrix);
+      if (!City.boxHolds(box, point, 0.35)) continue;
+      const d = (point.x - box.x) ** 2 + (point.y - box.y) ** 2 + (point.z - box.z) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
   }
 
   /// The level of the carriageway: the lowest thing in the city you can stand

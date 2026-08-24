@@ -284,6 +284,135 @@ const insideABuilding = (x, z) => buildings.some(b =>
     "the canvas is bigger than the building and hangs a slab over the street");
 }
 
+
+// ── Knocking a hole in a building ────────────────────────────────────────
+//
+// A paintball takes a metre square out of a wall, in the masonry AND in what
+// holds you up. The two are cut from the same box by the same routine, because
+// cutting them separately is how you get a hole you can see through and not
+// walk through — or, worse, one you can walk through and not see.
+{
+  const hitCity = new City();
+  hitCity.build(bounds(9, 7), 2718, 0);
+  const facades = hitCity.group.children.find(n => n.name === "city-facades");
+
+  check("the facade mesh keeps slots free for damage",
+    facades.instanceMatrix.count > facades.count,
+    `${facades.instanceMatrix.count - facades.count} spare of ${facades.instanceMatrix.count}`);
+
+  const tall = hitCity.solids.filter(s => s.h > 4).sort((a, b) => b.h - a.h)[0];
+  const face = tall.x - tall.w / 2;
+  const wallsBefore = facades.count;
+  const solidsBefore = hitCity.solids.length;
+
+  const hole = hitCity.punchHole({ x: face + 0.02, y: 1.2, z: tall.z }, { x: -1, y: 0, z: 0 });
+  check("a shot at a wall makes a hole", !!hole);
+  check("the wall it hit becomes the pieces around the hole",
+    facades.count > wallsBefore, `${wallsBefore} -> ${facades.count} instances`);
+  // The masonry itself, not just the instance count. Splitting the wall into
+  // more pieces while leaving the original standing gives a building that has
+  // a hole in what you walk through and none in what you look at.
+  {
+    const m = facades.instanceMatrix.array;
+    const centre = { x: face + 0.02, y: (tall.y - tall.h / 2) + 0.5, z: tall.z };
+    let covering = 0;
+    for (let i = 0; i < facades.count; i++) {
+      const e = m.slice(i * 16, i * 16 + 16);
+      const bx = { x: e[12], y: e[13], z: e[14], w: e[0], h: e[5], d: e[10] };
+      if (Math.abs(centre.x - bx.x) <= bx.w / 2
+        && Math.abs(centre.y - bx.y) <= bx.h / 2
+        && Math.abs(centre.z - bx.z) <= bx.d / 2) covering++;
+    }
+    check("there is no masonry left where the hole is",
+      covering === 0, `${covering} pieces of wall still fill it`);
+  }
+
+  check("and so does what holds you up",
+    hole.brokeCollision && hitCity.solids.length > solidsBefore,
+    `${solidsBefore} -> ${hitCity.solids.length} solids`);
+
+  // The hole is a metre square, sitting on the pavement because the shot was on
+  // the ground storey. Measured as the gap left in the collision.
+  {
+    const base = tall.y - tall.h / 2;
+    // "Not the ground" is anything standing above pavement level, not anything
+    // over a given height: the pieces left beside a hole are only a metre tall
+    // and they are very much walls.
+    const blocking = (y, z) => hitCity.solids.some(sd =>
+      sd.y + sd.h / 2 > PAVEMENT_Y + 0.01
+      && Math.abs(face + 0.5 - sd.x) <= sd.w / 2
+      && Math.abs(z - sd.z) <= sd.d / 2
+      && Math.abs(y - sd.y) <= sd.h / 2);
+    check("the hole is open at pavement level",
+      !blocking(base + 0.2, tall.z), "a sill you cannot step over is not a way in");
+    check("the hole is about a metre tall",
+      !blocking(base + 0.9, tall.z) && blocking(base + 1.4, tall.z),
+      "open at 0.9 m and closed at 1.4 m");
+    check("the hole is about a metre wide",
+      !blocking(base + 0.5, tall.z) && blocking(base + 0.5, tall.z + 1.2),
+      "open on the centreline and closed 1.2 m to the side");
+    check("the rest of the building is still standing",
+      blocking(base + 4, tall.z), "the storeys above the hole must not fall in");
+  }
+
+  // And you can get through it — crouched, because a metre is not standing
+  // height and no amount of geometry makes it one.
+  {
+    const world2 = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
+    for (const sd of hitCity.solids) {
+      world2.createCollider(
+        RAPIER.ColliderDesc.cuboid(sd.w / 2, sd.h / 2, sd.d / 2).setTranslation(sd.x, sd.y, sd.z));
+    }
+    const walk = (halfH) => {
+      const body = world2.createRigidBody(
+        RAPIER.RigidBodyDesc.dynamic().setTranslation(face - 3, 0.05, tall.z).lockRotations());
+      const col = world2.createCollider(
+        RAPIER.ColliderDesc.capsule(halfH, PLAYER_RADIUS).setTranslation(0, halfH + PLAYER_RADIUS, 0), body);
+      for (let i = 0; i < 700; i++) {
+        const v = body.linvel();
+        body.setLinvel({ x: 2.6, y: v.y, z: 0 }, true);
+        world2.timestep = 1 / 60;
+        world2.step();
+      }
+      const x = body.translation().x;
+      world2.removeCollider(col, false);
+      world2.removeRigidBody(body);
+      return x;
+    };
+    check("you can duck through the hole", walk(0.25) > face + 0.4,
+      "crouched, the way a person gets through a metre-high hole");
+    check("but not stroll through it upright", walk(STAND_HALF_HEIGHT) < face + 0.4,
+      "a metre is a metre — if this passes, the hole is bigger than it says");
+  }
+
+  hitCity.dispose();
+}
+
+// A wall the shot did not hit is untouched, and the spare slots run out rather
+// than overrunning the mesh.
+{
+  const c2 = new City();
+  c2.build(bounds(9, 7), 4242, 0);
+  const mesh = c2.group.children.find(n => n.name === "city-facades");
+  const capacity = mesh.instanceMatrix.count;
+  const tall = c2.solids.filter(s => s.h > 4).sort((a, b) => b.h - a.h)[0];
+  let made = 0;
+  for (let i = 0; i < 400; i++) {
+    const z = tall.z - tall.d / 2 + 0.4 + (i % 30) * 0.45;
+    if (c2.punchHole({ x: tall.x - tall.w / 2 + 0.02, y: 0.8, z }, { x: -1, y: 0, z: 0 })) made++;
+  }
+  check("a lot of shots make a lot of holes", made > 5, `${made} holes`);
+  check("the mesh is never overrun",
+    mesh.count <= capacity, `${mesh.count} of ${capacity}`);
+  check("every instance is still a real box",
+    (() => {
+      const a = mesh.instanceMatrix.array;
+      for (let i = 0; i < mesh.count * 16; i++) if (!Number.isFinite(a[i])) return false;
+      return true;
+    })());
+  c2.dispose();
+}
+
 city.dispose();
 console.log(`${passed} passed, ${failed} failed — the city as something to walk on`);
 if (failed) process.exit(1);

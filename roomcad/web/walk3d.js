@@ -18,6 +18,7 @@ import { bloom } from "three/addons/tsl/display/BloomNode.js";
 const WALL_COLOR = 0x6e88a0;
 const CEILING_COLOR = 0xd9d9d5;
 const GLASS_COLOR = 0x9fc8e0;
+const RUBBLE_COLOR = 0xb9b2a6;   // knocked-out wall, on its way to the pavement
 const LEAF_COLOR = 0x9a6f45;
 const BACKGROUND = 0x141c2c;
 const BULB_COLOR = 0xfff2cf;
@@ -1895,8 +1896,8 @@ export class Walk3D {
       hint.textContent = this.paintballMode
         ? "Paintball! Click to shoot · P or Esc to stop"
         : (this.locked
-            ? "Free look on · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · L lights · right-click: door swing"
-            : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch · L lights · right-click: door swing");
+            ? "Free look on · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch (to get through a hole) · L lights · right-click: door swing"
+            : "Click to look · click again to stop · WASD / arrows walk · Space jump (×2 double) · C crouch (to get through a hole) · L lights · right-click: door swing");
     }
   }
 
@@ -1918,12 +1919,60 @@ export class Walk3D {
       this.breakGlass(pane);
       hit = hits.find(h => h.object !== pane && !h.object.userData.glass) || null;
     }
+    // A hit on a city building takes a metre square out of it, in the wall and
+    // in what holds you up, and the ball carries on through the hole it made.
+    // Only buildings: the room's own walls are the drawing, and knocking those
+    // about would be editing the plan with a paintball gun.
+    if (hit && hit.object.name === "city-facades") {
+      const wall = hit.object;
+      const normal = hit.face
+        ? hit.face.normal.clone().transformDirection(wall.matrixWorld)
+        : direction.clone().negate();
+      const hole = this.city.punchHole(hit.point, normal);
+      if (hole) {
+        if (hole.brokeCollision && this.physicsReady && store.room) {
+          this.buildPhysics(store.room, false);
+        }
+        this.spawnRubble(hit.point, normal);
+        hit = hits.find(h => h.object !== wall) || null;
+      }
+    }
+
     const range = 60;
     const to = hit
       ? hit.point.clone()
       : origin.clone().add(direction.clone().multiplyScalar(range));
     const from = origin.clone().add(direction.clone().multiplyScalar(0.35));
     this.spawnPaintball(from, to, hit, this.carrierFor(hit));
+  }
+
+  /// Chunks of the wall that was just knocked out, thrown into the street.
+  ///
+  /// Reuses the glass shards' own update, which already tumbles a thing under
+  /// gravity and fades it out — a wall that simply vanishes reads as a bug.
+  spawnRubble(point, normal) {
+    for (let i = 0; i < 10; i++) {
+      const size = 0.07 + Math.random() * 0.16;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(size, size * (0.6 + Math.random()), size * (0.6 + Math.random())),
+        new THREE.MeshStandardMaterial({ color: RUBBLE_COLOR, roughness: 0.95, transparent: true })
+      );
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.position.copy(point).add(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.9));
+      this.scene.add(mesh);
+      const out = normal.clone().multiplyScalar(1.2 + Math.random() * 2.2);
+      this.shards.push({
+        mesh,
+        velocity: out.add(new THREE.Vector3(
+          (Math.random() - 0.5) * 1.2, Math.random() * 2.2, (Math.random() - 0.5) * 1.2)),
+        spin: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)
+          .multiplyScalar(9),
+        life: 1.8 + Math.random() * 0.8,
+        age: 0,
+      });
+    }
   }
 
   /// If a shot hit a vehicle, work out WHERE on that vehicle — the hit point
