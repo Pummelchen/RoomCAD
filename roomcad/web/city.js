@@ -77,6 +77,18 @@ const TREE_MAX_RADIUS = 1.8;    // the biggest canopy _blockTrees will draw
 const TREE_KERB_CLEAR = 0.3;    // ... and how far short of the kerb it must stop
 const CANOPY_COLORS = [0x5c8a45, 0x6f9c52, 0x4e7a3b];
 const LAMP_POLE_COLOR = 0x4a4d53;
+// City lighting. Every one of these has a REACH, because a light that carries
+// forever is a light that has to be considered everywhere — and the only way to
+// afford three hundred of them is to know which few can be seen.
+const LAMP_LIGHT_COLOR = 0xffd9a0;
+const LAMP_LIGHT_POWER = 26;
+const LAMP_LIGHT_REACH = 17;
+const HEADLAMP_COLOR = 0xfff4e0;
+const HEADLAMP_POWER = 12;
+const HEADLAMP_THROW = 13;
+const BRAKE_LIGHT_COLOR = 0xff2a18;
+const BRAKE_LIGHT_POWER = 4;
+const BRAKE_LIGHT_REACH = 6;
 const WINDOW_DARK = 0x2d3a4a;
 const WINDOW_LIT = 0xffd9a0;
 // Hills: pasture near the bottom, bare rock towards the tops.
@@ -136,6 +148,9 @@ const BUS_COLORS = [0xd23f36, 0x2f6f3f, 0xe0a52c, 0x3a5f9e];
 const VAN_COLORS = [0xf2f4f7, 0xdfe3e8, 0xc8ced6, 0x8d9aa8, 0x3f6fae];
 const TYRE_COLOR = 0x1b1d21;
 const GLASS_COLOR = 0x2a3038;
+const CITY_GLASS_COLOR = 0xcfe2ee;  // the pane in a near building's window
+const CITY_GLASS_T = 0.04;
+const CITY_GLASS_INSET = 0.07;      // set back from the face, so it is in a reveal
 
 // Traffic.
 const LANE_OFFSET = 2.9;        // lane centre from the road centreline
@@ -839,6 +854,19 @@ export class City {
         new THREE.MeshStandardMaterial({ color: WINDOW_DARK, roughness: 0.25, metalness: 0.1 }),
         { colored: false }
       ),
+      // Glazing for the buildings you can see into. The distant ones get an
+      // opaque pane apiece and that is all a window needs at that range; the
+      // near ones have real rooms behind them, so their glass has to be glass —
+      // a pane you look THROUGH, catching the light at a glance. Without it
+      // they read as buildings with the windows left out.
+      glazing: new InstanceSet(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({
+          color: CITY_GLASS_COLOR, roughness: 0.06, metalness: 0.1,
+          transparent: true, opacity: 0.26, depthWrite: false,
+        }),
+        { colored: false }
+      ),
       litGlass: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
         new THREE.MeshStandardMaterial({
@@ -974,6 +1002,7 @@ export class City {
     sets.roofs.build(this.group, "city-roofs");
     sets.flats.build(this.group, "city-ground-details");
     sets.darkGlass.build(this.group, "city-windows-dark");
+    sets.glazing.build(this.group, "city-window-glass");
     this.litWindows = sets.litGlass.build(this.group, "city-windows-lit");
     sets.roomsDark.build(this.group, "city-rooms-dark");
     this.roomsLit = sets.roomsLit.build(this.group, "city-rooms-lit");
@@ -1079,6 +1108,88 @@ export class City {
   /// One slab layer of a block, as up to four strips around an optional hole.
   /// The room's own plot is the hole: paving over it would push pavement up
   /// through the floor of a ground-floor room.
+  /// Every light in the city that could reach a given point, nearest first.
+  ///
+  /// Candidates, not lights: there are a hundred street lamps and a headlamp on
+  /// the nose of every vehicle, and no renderer will light a scene with three
+  /// hundred of them. What it will do is light it with a dozen, so long as they
+  /// are the right dozen — which is what the caller picks, from this.
+  ///
+  /// Each carries the distance it reaches, so a light is only ever a candidate
+  /// where it would actually be seen. A lamp two streets away contributes
+  /// nothing but a slot in the pool that a nearer one needed.
+  collectLights(out, viewer, reach) {
+    out.length = 0;
+    if (!this.lampPosts) return out;
+    const night = 1 - clamp01(this._dayAmount);
+    const far = reach * reach;
+
+    if (night > 0.02) {
+      for (const post of this.lampPosts) {
+        const dx = post.x - viewer.x;
+        const dz = post.z - viewer.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > far) continue;
+        out.push({
+          x: post.x, y: post.y, z: post.z, d2,
+          color: LAMP_LIGHT_COLOR,
+          intensity: LAMP_LIGHT_POWER * night,
+          distance: LAMP_LIGHT_REACH,
+        });
+      }
+    }
+
+    for (const v of this.cars) {
+      if (v.stop && v.stop.kind === "park") continue;   // parked, and dark
+      const fx = Math.cos(v.heading);
+      const fz = Math.sin(v.heading);
+      const ref = VEHICLE_REF[v.kind];
+      // One light for the pair, hung off the nose and pointing the way the
+      // vehicle is: two would cost twice as much to look almost the same.
+      const nose = v.length / 2 + HEADLAMP_THROW * 0.25;
+      const x = v.x + fx * nose;
+      const z = v.z + fz * nose;
+      const dx = x - viewer.x;
+      const dz = z - viewer.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > far) continue;
+      out.push({
+        x, y: ROAD_Y + ref.lampY, z, d2,
+        color: HEADLAMP_COLOR,
+        intensity: HEADLAMP_POWER * (0.35 + 0.65 * night),
+        distance: HEADLAMP_THROW,
+      });
+      if (v.braking) {
+        out.push({
+          x: v.x - fx * (v.length / 2), y: ROAD_Y + ref.lampY, z: v.z - fz * (v.length / 2),
+          d2,
+          color: BRAKE_LIGHT_COLOR,
+          intensity: BRAKE_LIGHT_POWER,
+          distance: BRAKE_LIGHT_REACH,
+        });
+      }
+    }
+    out.sort((a, b) => a.d2 - b.d2);
+    return out;
+  }
+
+  /// Which candidates get a slot in the pool.
+  ///
+  /// Nearest first, skipping any whose reach cannot be seen from here. Kept
+  /// apart from the renderer so the rule can be stated and checked on its own —
+  /// "the nearest lights that are visible, and no more of them than there are
+  /// slots" is the whole of it, and it is easy to get subtly wrong in among the
+  /// matrix work.
+  static selectLights(candidates, visible, slots, out) {
+    out.length = 0;
+    for (const light of candidates) {
+      if (out.length >= slots) break;
+      if (!visible(light)) continue;
+      out.push(light);
+    }
+    return out;
+  }
+
   /// The level of the carriageway: the lowest thing in the city you can stand
   /// on. Everything else is a step up from it.
   groundY() {
@@ -1351,6 +1462,18 @@ export class City {
             alongX ? roomW : depth, roomH, alongX ? depth : roomW
           );
           (lit ? sets.roomsLit : sets.roomsDark).add(box);
+
+          // The pane, set INTO the opening rather than flush with the facade.
+          // Flush puts its outer face in the same plane as the masonry around
+          // it, which is two surfaces at one depth all over every building.
+          const [wy0, wy1] = rowsY[r];
+          const glassIn = other / 2 - CITY_GLASS_INSET;
+          sets.glazing.add(boxMatrix(
+            alongX ? x + c : x + face.nx * glassIn,
+            (wy0 + wy1) / 2,
+            alongX ? z + face.nz * glassIn : z + c,
+            alongX ? WIN_W : CITY_GLASS_T, wy1 - wy0, alongX ? CITY_GLASS_T : WIN_W
+          ));
           if (lit) {
             // The bulb hangs a little back from the glass, near the ceiling,
             // so it reads as the source of the light rather than as a sticker
@@ -1783,6 +1906,7 @@ export class City {
 
   _streetLamps(poles, heads, cx, cz, block, span) {
     const h = 4.6;
+    this.lampPosts = [];
     for (let gx = -GRID_RADIUS; gx <= GRID_RADIUS; gx++) {
       for (let gz = -GRID_RADIUS; gz <= GRID_RADIUS; gz++) {
         const bx = cx + gx * span;
@@ -1791,6 +1915,9 @@ export class City {
         for (const [ox, oz] of [[edge, edge], [-edge, edge], [edge, -edge], [-edge, -edge]]) {
           poles.add(boxMatrix(bx + ox, PAVEMENT_Y + h / 2, bz + oz, 1, h, 1));
           heads.add(boxMatrix(bx + ox, PAVEMENT_Y + h + 0.12, bz + oz, 0.44, 0.16, 0.44));
+          // Where the light actually comes from, kept so something can light
+          // the street with it rather than only drawing a bright box.
+          this.lampPosts.push({ x: bx + ox, y: PAVEMENT_Y + h - 0.02, z: bz + oz });
         }
       }
     }

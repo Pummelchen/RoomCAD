@@ -13,6 +13,7 @@
 // Run:  node tests/city-physics.test.mjs
 
 import * as RAPIER from "../roomcad/web/lib/rapier.mjs";
+import { readFileSync } from "node:fs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
 
 const {
@@ -225,6 +226,62 @@ const insideABuilding = (x, z) => buildings.some(b =>
       stoppedAt < target.x - target.w / 2 + 0.05,
       `reached ${stoppedAt.toFixed(2)}, the wall is at ${(target.x - target.w / 2).toFixed(2)}`);
   }
+}
+
+// ── The hole the city leaves for the building must be floored ────────────
+//
+// The city does not pave the building's own plot — paving there would push a
+// slab up inside a ground-floor room. So the room's floor has to cover that
+// plot exactly, and the plot is cut to the building ENVELOPE: the declared room
+// together with every wall drawn beyond it.
+//
+// Cut the floor to the declared room instead and a multi-room plan is left with
+// a ring of nothing between the two: no floor, because the room said it was
+// smaller, and no pavement, because the city thought a building was standing
+// there. You walk off the edge of the floor and drop to the street. That is
+// exactly what 7.0 shipped.
+{
+  const unpaved = (x, z) => !pavements.some(pad =>
+    Math.abs(x - pad.x) <= pad.w / 2 && Math.abs(z - pad.z) <= pad.d / 2);
+
+  // Where the city stopped paving, around the room's own plot.
+  const plot = { x0: -9 / 2, x1: 9 / 2, z0: -7 / 2, z1: 7 / 2 };
+  let bare = 0;
+  let tested = 0;
+  for (let x = plot.x0 - 1; x <= plot.x1 + 1; x += 0.5) {
+    for (let z = plot.z0 - 1; z <= plot.z1 + 1; z += 0.5) {
+      tested++;
+      if (unpaved(x, z)) bare++;
+    }
+  }
+  check("the city really does leave the building's plot unpaved",
+    bare > 0, "nothing to floor, so nothing to check");
+
+  // Every bare square metre has to fall inside what the room floors, which is
+  // the envelope plus a wall thickness. Stated from the envelope the city was
+  // built with, because that is the shape the hole was cut to.
+  const floored = { x0: -9 / 2 - 0.3, x1: 9 / 2 + 0.3, z0: -7 / 2 - 0.3, z1: 7 / 2 + 0.3 };
+  let outside = 0;
+  for (let x = plot.x0 - 1; x <= plot.x1 + 1; x += 0.5) {
+    for (let z = plot.z0 - 1; z <= plot.z1 + 1; z += 0.5) {
+      if (!unpaved(x, z)) continue;
+      if (x < floored.x0 || x > floored.x1 || z < floored.z0 || z > floored.z1) outside++;
+    }
+  }
+  check("nothing the city left unpaved falls outside what the room floors",
+    outside === 0,
+    `${outside} of ${bare} bare points are beyond the floor — you would fall through there`);
+
+  // And the renderer must size that floor to the envelope, not to the declared
+  // room. Matched on the assignment, because it is the value that matters.
+  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  check("the room floor is sized to the building envelope",
+    /const envelope = this\.currentBuildingBounds \|\| this\.buildingBounds\(room\);/.test(walk)
+    && /const fw = envelope\.width \/ 2 \+ pad;/.test(walk),
+    "sizing it to room.width leaves a multi-room plan standing over nothing");
+  check("and not to the whole editing canvas",
+    !/cuboid\(canvas\.width \/ 2, 0\.03, canvas\.length \/ 2\)/.test(walk),
+    "the canvas is bigger than the building and hangs a slab over the street");
 }
 
 city.dispose();

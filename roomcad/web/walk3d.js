@@ -50,6 +50,11 @@ const GRAVITY = 11;
 const CITY_HEADROOM = 40;
 const JUMP_SPEED = 3.8;
 const MAX_POINT_LIGHTS = 16;
+// The street's own lights. The pool is what the renderer pays for every frame,
+// whether or not it is full; the reach is how far away a lamp is still worth
+// considering for it.
+const CITY_LIGHT_POOL = 12;
+const CITY_LIGHT_REACH = 55;
 const FLOOR_HEIGHT = 3; // metres per building floor
 
 // Room construction uses closed, overlapping solids. The values below are
@@ -375,6 +380,8 @@ export class Walk3D {
     this.fill = new THREE.DirectionalLight(0xbfd4ff, 0.35);
     this.fill.position.set(-3, 4, canvas.length + 2);
     scene.add(this.fill);
+
+    this.buildCityLightPool(scene);
 
     // Image-based lighting for PBR reflections.
     scene.environment = this.lightsOn ? this.environment : null;
@@ -1271,13 +1278,19 @@ export class Walk3D {
     // nothing, and from an upper floor you walk out into the air and stay
     // there. The ceiling is worse: it caps the sky for several metres in every
     // direction outside the front door.
+    // Sized to the BUILDING ENVELOPE, which is the declared room together with
+    // every wall drawn beyond it — not the declared room on its own. A plan of
+    // seven rooms is mostly outside its own nominal width, and a floor cut to
+    // that leaves the rest of the building standing over nothing: you walk
+    // through the floor and sink to the street. Nor the whole editing canvas,
+    // which is bigger again and hangs an invisible slab over the pavement.
     const canvas = P.canvasOf(room);
-    const roomAt = P.roomOrigin(room);
+    const envelope = this.currentBuildingBounds || this.buildingBounds(room);
     const pad = P.WALL_THICKNESS + 0.2;      // far enough out to carry the walls
-    const fx = roomAt.x + room.width / 2;
-    const fz = roomAt.z + room.length / 2;
-    const fw = room.width / 2 + pad;
-    const fl = room.length / 2 + pad;
+    const fx = envelope.centerX;
+    const fz = envelope.centerZ;
+    const fw = envelope.width / 2 + pad;
+    const fl = envelope.length / 2 + pad;
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(fw, 0.03, fl).setTranslation(fx, baseY - 0.03, fz)
     );
@@ -1455,6 +1468,74 @@ export class Walk3D {
     this.playerCollider = collider;
     this.physicsBodies.push(body);
     this.onGround = false;
+  }
+
+  /// A fixed pool of lights for the street, moved to wherever the light
+  /// actually is this frame.
+  ///
+  /// The city has a hundred street lamps and a headlamp on the nose of every
+  /// vehicle. Nothing will light a scene with three hundred lights — but a
+  /// dozen is ordinary, and from any one place only about a dozen can be seen.
+  /// So the pool is fixed and the lamps take turns in it.
+  ///
+  /// Fixed is the important part. The renderer compiles its shaders around the
+  /// number of lights in the scene, so adding and removing them as you walk
+  /// down a street recompiles on the move. The pool is created once and always
+  /// present; a slot with nothing to do is turned down to nothing instead.
+  buildCityLightPool(scene) {
+    this.cityLights = [];
+    for (let i = 0; i < CITY_LIGHT_POOL; i++) {
+      // No shadows. A shadow-casting point light is six renders of the scene,
+      // and twelve of them is seventy-two — the sun casts the shadows outdoors.
+      const light = new THREE.PointLight(0xffffff, 0, 1, 2);
+      light.castShadow = false;
+      scene.add(light);
+      this.cityLights.push(light);
+    }
+    this.lightCandidates = [];
+    this.lightFrustum = new THREE.Frustum();
+    this.lightProjection = new THREE.Matrix4();
+    this.lightSphere = new THREE.Sphere();
+    this.litCount = 0;
+  }
+
+  /// Hands the pool to the nearest lights that can be seen from here.
+  ///
+  /// "Can be seen" is the light's REACH against the view, not the lamp itself:
+  /// a lamp behind your shoulder still lights the wall you are looking at, and
+  /// culling on the lamp's own position would switch it off while you watched
+  /// its light go out.
+  updateCityLights() {
+    const pool = this.cityLights;
+    if (!pool || !this.city) return;
+    this.city.collectLights(this.lightCandidates, this.camera.position, CITY_LIGHT_REACH);
+
+    this.camera.updateMatrixWorld();
+    this.lightProjection.multiplyMatrices(
+      this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    this.lightFrustum.setFromProjectionMatrix(this.lightProjection);
+
+    if (!this.lightChosen) this.lightChosen = [];
+    City.selectLights(this.lightCandidates, (e) => {
+      this.lightSphere.center.set(e.x, e.y, e.z);
+      this.lightSphere.radius = e.distance;
+      return this.lightFrustum.intersectsSphere(this.lightSphere);
+    }, pool.length, this.lightChosen);
+
+    let used = 0;
+    for (const e of this.lightChosen) {
+      const light = pool[used++];
+      light.position.set(e.x, e.y, e.z);
+      light.color.setHex(e.color);
+      light.intensity = e.intensity;
+      light.distance = e.distance;
+    }
+    // Whatever is left over is turned off rather than removed.
+    for (let i = used; i < pool.length; i++) {
+      pool[i].intensity = 0;
+      pool[i].distance = 1;
+    }
+    this.litCount = used;
   }
 
   /// One box of wall, between two offsets along it and two heights up it. Used
@@ -2099,6 +2180,7 @@ export class Walk3D {
     if (this.physicsReady) this.tickPhysics(dt, forward, right);
 
     this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
+    this.updateCityLights();
     this.updateGun(dt);
   }
 
