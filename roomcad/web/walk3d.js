@@ -2293,7 +2293,12 @@ export class Walk3D {
         this.splats.splice(i, 1);
         continue;
       }
-      this.positionSplat(splat);
+      // Paint on a vehicle that is not being drawn is not drawn either. The
+      // traffic is culled to what can be seen, and a splat carried by a vehicle
+      // that has been culled would otherwise hang in the air where the
+      // invisible car is.
+      splat.visible = !carrier.vehicle || carrier.vehicle.slot >= 0;
+      if (splat.visible) this.positionSplat(splat);
     }
   }
 

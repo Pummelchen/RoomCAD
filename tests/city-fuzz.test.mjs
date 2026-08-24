@@ -2377,8 +2377,11 @@ for (const [w, l, label] of [
   city.applyTimeOfDay(1);
   const beforeDay = city.roomsLit.reduce((n, m) => n + m.count, 0);
   for (let f = 0; f < 12 * 60 * 20; f++) city.update(1 / 20, viewer, forward);
+  // Not "unchanged": in daylight the ones that went out overnight come back, so
+  // the count goes UP. What must never happen is another one going off.
   check("nothing switches off in broad daylight",
-    city.roomsLit.reduce((n, m) => n + m.count, 0) === beforeDay);
+    city.roomsLit.reduce((n, m) => n + m.count, 0) >= beforeDay,
+    `${city.roomsLit.reduce((n, m) => n + m.count, 0)} against ${beforeDay}`);
 
   city.dispose();
 }
@@ -2438,6 +2441,54 @@ for (const [w, l, label] of [
   check("and dim — it is a dashboard, not a headlight",
     atNight < 1, `${atNight.toFixed(2)}`);
   city.dispose();
+}
+
+// ── The lights come back ─────────────────────────────────────────────────
+//
+// Without this the city only ever gets darker: a night takes fifty windows and
+// morning gives none back, so after a few of them every window is dark for
+// good. Measured before the fix, 497 lit rooms became 395 over two nights and
+// would have kept going.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const forward = { x: 0, z: -1 };
+  const lit = () => city.roomsLit.reduce((n, m) => n + m.count, 0);
+  const bands = () => city.roomsLit.map(m => m.count).join(",");
+
+  const atBuild = lit();
+  const bandsAtBuild = bands();
+  const darkAtBuild = city.roomsDark.count;
+
+  for (let cycle = 0; cycle < 2; cycle++) {
+    city.applyTimeOfDay(0);
+    for (let f = 0; f < 40 * 60 * 20; f++) city.update(1 / 20, viewer, forward);
+    check(`windows go out overnight (night ${cycle + 1})`, lit() < atBuild,
+      `${lit()} of ${atBuild}`);
+    city.applyTimeOfDay(1);
+    for (let f = 0; f < 15 * 60 * 20; f++) city.update(1 / 20, viewer, forward);
+    check(`and are back on by morning (night ${cycle + 1})`, lit() === atBuild,
+      `${lit()} of ${atBuild}`);
+  }
+  check("each room returns to the band it left",
+    bands() === bandsAtBuild, `${bands()} against ${bandsAtBuild}`);
+  check("and the dark rooms go back to what they were",
+    city.roomsDark.count === darkAtBuild,
+    `${city.roomsDark.count} of ${darkAtBuild}`);
+  check("with every bulb still matching its room",
+    city.roomsLit.every((m, i) => m.count === city.litBulbs[i].count));
+  city.dispose();
+}
+
+// Paint on a vehicle nobody can see is not drawn either.
+{
+  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  check("a splat is hidden with the vehicle carrying it",
+    /splat\.visible = !carrier\.vehicle \|\| carrier\.vehicle\.slot >= 0;/.test(walk),
+    "the traffic is culled, and paint on a culled vehicle hangs in the air");
+  check("and is only repositioned when it is drawn",
+    /if \(splat\.visible\) this\.positionSplat\(splat\);/.test(walk));
 }
 
 const EXPECTED = [

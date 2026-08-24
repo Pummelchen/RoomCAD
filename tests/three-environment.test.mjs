@@ -165,8 +165,14 @@ check("a car has tail lights, not just brake lights",
 // side, so they can never stack in the same place.
 check("the tail light gives way to the brake light rather than being drawn under it",
   /if \(v\.braking\) brake\.setMatrixAt\(brakes\+\+, m\);\s*\n\s*else tail\.setMatrixAt/.test(city));
+// What this forbids is a dusk SWITCH — a flag that turns the lamps on and off —
+// not the letters "lightsOn" anywhere in the file. Matched on a flag being read
+// or written, so a method that happens to be named for putting a room's light
+// back on does not trip it.
 check("headlights are running lamps, not something that switches on at dusk",
-  !/lightsOn/.test(city) && /this\.headlights\.material\.emissiveIntensity = 0\.6 \+/.test(city));
+  !/\blightsOn\b\s*[=?)]/.test(city)
+  && !/this\.lightsOn/.test(city)
+  && /this\.headlights\.material\.emissiveIntensity = 0\.6 \+/.test(city));
 
 // The street grid is a closed network: a vehicle that reaches the outermost
 // road turns along it rather than being wrapped round to the far side, which

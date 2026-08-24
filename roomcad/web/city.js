@@ -891,6 +891,7 @@ export class City {
     this.turnLoads = new Map();
     this._turnRevision = 0;
     this._arrowsDrawn = -1;
+    this._extinguished = [];
     this.solids = [];
     this._turnControlAt = 0;
     this._turnLookahead = 0;
@@ -1164,6 +1165,7 @@ export class City {
     // the counts without having to know which instance is which.
     this.litInBand = this.roomsLit.map(m => (m ? m.count : 0));
     this._litOutAt = LIGHTS_OUT_EVERY;
+    this._extinguished = [];
     this.bulbs = sets.bulbs.build(this.group, "city-bulbs");
     sets.trunks.build(this.group, "city-tree-trunks");
     sets.canopies.build(this.group, "city-tree-canopies");
@@ -1298,6 +1300,39 @@ export class City {
       lit.count = last;
       const bulbs = this.litBulbs[band];
       if (bulbs && bulbs.count > 0) bulbs.count--;
+      // Which band it came from, so morning can put it back in the same one.
+      // The instance itself is still in the mesh's buffer just past the count,
+      // so turning it on again is a matter of counting it back in.
+      this._extinguished.push(band);
+      done++;
+    }
+    return done;
+  }
+
+  /// Puts the lights back on, in the order they went off.
+  ///
+  /// Without this the city only ever gets darker: a night takes fifty windows
+  /// and morning gives none of them back, so after a few of them every window
+  /// in the city is dark for good. Measured over two nights, 497 lit rooms
+  /// became 395 and would have kept going.
+  ///
+  /// Each room returns to the band it left, which is why the band was recorded.
+  /// Both meshes are strictly last-in-first-out — the room was taken from the
+  /// end of its band and appended to the end of the dark set — so this is a
+  /// pair of counters moving back, and the room that comes on is exactly the
+  /// room that went off.
+  _restoreLights(count) {
+    if (!this.roomsLit || !this.roomsDark) return 0;
+    let done = 0;
+    for (let n = 0; n < count; n++) {
+      const band = this._extinguished.pop();
+      if (band === undefined) break;
+      const lit = this.roomsLit[band];
+      if (!lit || lit.count >= lit.instanceMatrix.count) break;
+      lit.count++;
+      const bulbs = this.litBulbs[band];
+      if (bulbs && bulbs.count < bulbs.instanceMatrix.count) bulbs.count++;
+      if (this.roomsDark.count > 0) this.roomsDark.count--;
       done++;
     }
     return done;
@@ -4648,9 +4683,14 @@ export class City {
     // Another few windows go out every so often, once it is properly dark.
     if (this._clock >= (this._litOutAt || 0)) {
       this._litOutAt = this._clock + LIGHTS_OUT_EVERY;
-      if (1 - clamp01(this._dayAmount) > 0.6) {
+      const night = 1 - clamp01(this._dayAmount);
+      if (night > 0.6) {
         const stillLit = (this.roomsLit || []).reduce((n, m) => n + (m ? m.count : 0), 0);
         if (stillLit > 0) this._lightsOut(Math.max(1, Math.round(stillLit * LIGHTS_OUT_SHARE)));
+      } else if (night < 0.3 && this._extinguished.length) {
+        // Morning. Everything that went off overnight comes back, all at once
+        // because in daylight not one of them is visible either way.
+        this._restoreLights(this._extinguished.length);
       }
     }
 
