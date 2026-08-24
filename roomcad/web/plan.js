@@ -1703,6 +1703,11 @@ export const MIN_ROOM_DIM = 1.60;
 /// already marked as circulation is used as it is.
 export const CORRIDOR_WIDTH = 1.20;
 
+/// How much frontage onto the circulation a room needs before it counts as
+/// having a way in. A standard door is 90 cm; anything less than that and the
+/// door step cannot place one however much it would like to.
+export const DOOR_FRONTAGE = 0.90;
+
 
 /// Deterministic PRNG so a seed always gives the same design, and a different
 /// seed gives a different (but still balanced) one for "redesign".
@@ -2028,15 +2033,32 @@ function sliceByWeights(grid, cells, weights, rng, circ = null) {
   const { at, area } = grid;
   const fronts = circ && circ.fronts;
 
-  /// Does this piece still touch circulation?
+  /// Does this piece have somewhere to put its door?
   ///
-  /// A cut that leaves a piece with no frontage makes a room you can only reach
-  /// by walking through the room next door, which is not a way in. Refusing
-  /// such a cut here is what keeps that from being built in the first place:
-  /// the partition gives up a cut rather than producing a room nobody can get
-  /// to. `fronts` is null when there is no circulation to front onto at all,
-  /// and then this says yes to everything — there is nothing to strand.
-  const fronting = piece => !fronts || piece.some(([i, j]) => fronts[at(i, j)]);
+  /// Not "does it touch the circulation" — touching is not enough. A room whose
+  /// only contact with the hallway is the 35 cm where a walkway ends cannot
+  /// have a door onto it, and the door step, finding nowhere to put one, put it
+  /// in the outside wall instead: a bedroom opening onto the street. So this
+  /// asks for a door's worth of frontage, which is what the room actually
+  /// needs. Stops as soon as it has found enough, because it is asked once per
+  /// candidate cut.
+  ///
+  /// `circ` is null when there is no circulation to front onto at all, and then
+  /// this says yes to everything — there is nothing to strand.
+  const fronting = piece => {
+    if (!circ) return true;
+    let along = 0;
+    for (const [i, j] of piece) {
+      const dx = grid.xs[i + 1] - grid.xs[i];
+      const dz = grid.zs[j + 1] - grid.zs[j];
+      if (i > 0 && circ.circulation[at(i - 1, j)] && !stepBlocked(grid, i, j, i - 1, j)) along += dz;
+      if (i + 1 < grid.nx && circ.circulation[at(i + 1, j)] && !stepBlocked(grid, i, j, i + 1, j)) along += dz;
+      if (j > 0 && circ.circulation[at(i, j - 1)] && !stepBlocked(grid, i, j, i, j - 1)) along += dx;
+      if (j + 1 < grid.nz && circ.circulation[at(i, j + 1)] && !stepBlocked(grid, i, j, i, j + 1)) along += dx;
+      if (along >= DOOR_FRONTAGE) return true;
+    }
+    return false;
+  };
 
   const half = Math.max(1, Math.round(weights.length / 2));
   const left = weights.slice(0, half);
@@ -2148,7 +2170,7 @@ function sliceByWeights(grid, cells, weights, rng, circ = null) {
 /// them — around a walkway, across a wall the user drew, or either side of a
 /// hallway just carved through the middle of it.
 function connectedParts(grid, cells) {
-  const { at } = grid;
+  const { at, nx, nz } = grid;
   const left = new Set(cells.map(([i, j]) => at(i, j)));
   const byIndex = new Map(cells.map(c => [at(c[0], c[1]), c]));
   const parts = [];
@@ -2161,6 +2183,11 @@ function connectedParts(grid, cells) {
       const [i, j] = stack.pop();
       part.push([i, j]);
       for (const [ni, nj] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]]) {
+        // Bounds first. Cells are indexed i * nz + j, so stepping off the
+        // bottom of a column lands on a REAL cell — the top of the column to
+        // the left — and two pieces of floor with a wall between them are
+        // walked as if they were one.
+        if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
         const n = at(ni, nj);
         if (!left.has(n) || stepBlocked(grid, i, j, ni, nj)) continue;
         left.delete(n);
@@ -2264,6 +2291,117 @@ function carveHallway(grid, cells) {
   return picked;
 }
 
+/// Runs the hallway to any room that has been walled in.
+///
+/// Works on the finished ownership map, so it sees what was actually built
+/// rather than what the partition intended. For each room without a door's
+/// worth of frontage onto open floor, it finds the shortest way there from the
+/// circulation — through other rooms, since that is the only way left — widens
+/// that path to a corridor, and gives those cells back as open floor.
+///
+/// A room the corridor passes through is left in two pieces; the smaller piece
+/// becomes open floor as well, because half a room on the far side of a
+/// corridor is not a room, and the piece that keeps the room's id has to be the
+/// one you can still walk around in.
+function runHallwayToStrandedRooms(grid, owner, SPARE, roomCount) {
+  const { nx, nz, at, xs, zs } = grid;
+  const isOpen = c => owner[c] === SPARE;
+  const neighbours = (i, j) => {
+    const out = [];
+    if (i > 0) out.push([i - 1, j]);
+    if (i + 1 < nx) out.push([i + 1, j]);
+    if (j > 0) out.push([i, j - 1]);
+    if (j + 1 < nz) out.push([i, j + 1]);
+    return out.filter(([ni, nj]) => !stepBlocked(grid, i, j, ni, nj));
+  };
+
+  /// How much open floor a room's edge runs along.
+  const frontageOf = id => {
+    let along = 0;
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) {
+        if (owner[at(i, j)] !== id) continue;
+        for (const [ni, nj] of neighbours(i, j)) {
+          if (!isOpen(at(ni, nj))) continue;
+          along += ni === i ? xs[i + 1] - xs[i] : zs[j + 1] - zs[j];
+        }
+      }
+    }
+    return along;
+  };
+
+  for (let id = 0; id < roomCount; id++) {
+    let has = false;
+    for (let c = 0; c < owner.length && !has; c++) if (owner[c] === id) has = true;
+    if (!has || frontageOf(id) >= DOOR_FRONTAGE) continue;
+
+    // Breadth-first from every open cell at once, so the first cell of this
+    // room that is reached is the closest one to ANY of the circulation.
+    const from = new Int32Array(owner.length).fill(-2);
+    const queue = [];
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) {
+        const c = at(i, j);
+        if (!isOpen(c)) continue;
+        from[c] = -1;
+        queue.push([i, j]);
+      }
+    }
+    let reached = null;
+    for (let head = 0; head < queue.length && !reached; head++) {
+      const [i, j] = queue[head];
+      for (const [ni, nj] of neighbours(i, j)) {
+        const n = at(ni, nj);
+        if (from[n] !== -2) continue;
+        // Only through floor that belongs to a room. Anything else is a wall
+        // the user drew, a walkway, or a building already standing there.
+        if (owner[n] < 0) continue;
+        from[n] = at(i, j);
+        if (owner[n] === id) { reached = [ni, nj]; break; }
+        queue.push([ni, nj]);
+      }
+    }
+    if (!reached) continue;         // nothing can reach it; leave it alone
+
+    // Walk back along the path, opening a corridor's width as it goes.
+    let cursor = at(reached[0], reached[1]);
+    while (cursor >= 0) {
+      const ci = Math.floor(cursor / nz);
+      const cj = cursor % nz;
+      const x0 = xs[ci], z0 = zs[cj];
+      for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < nz; j++) {
+          if (owner[at(i, j)] < 0) continue;
+          // A square of corridor centred on the path cell. Cheaper than
+          // working out which way the path is running, and the result is the
+          // same once the squares overlap along it.
+          const near = xs[i] < x0 + CORRIDOR_WIDTH / 2 && xs[i + 1] > x0 - CORRIDOR_WIDTH / 2
+            && zs[j] < z0 + CORRIDOR_WIDTH / 2 && zs[j + 1] > z0 - CORRIDOR_WIDTH / 2;
+          if (near) owner[at(i, j)] = SPARE;
+        }
+      }
+      cursor = from[cursor];
+    }
+  }
+
+  // A room the corridor was cut through is now in pieces. The largest keeps the
+  // room; the rest is open floor.
+  for (let id = 0; id < roomCount; id++) {
+    const cells = [];
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) if (owner[at(i, j)] === id) cells.push([i, j]);
+    }
+    if (!cells.length) continue;
+    const parts = connectedParts(grid, cells);
+    if (parts.length <= 1) continue;
+    const areaOf = part => part.reduce((sum, [i, j]) => sum + grid.area[at(i, j)], 0);
+    parts.sort((a, b) => areaOf(b) - areaOf(a));
+    for (let k = 1; k < parts.length; k++) {
+      for (const [i, j] of parts[k]) owner[at(i, j)] = SPARE;
+    }
+  }
+}
+
 /// Shares `count` rooms of `targetArea` out over the free floor.
 ///
 /// Any floor left over once every room has its area becomes one more share,
@@ -2304,9 +2442,30 @@ function partitionFloor(grid, count, targetArea, rng, circ = null) {
     }
     const pieces = sliceByWeights(grid, cells, weights, rng, circ);
     // Pieces come back in weight order, so the first n are the rooms.
+    //
+    // A piece is not always in one lump. A hallway carved through it while the
+    // floor was being divided leaves it in two or three, and a piece asked for
+    // as a single room is handed back whole without anything ever checking —
+    // there is nothing to check when there is only one way to divide it. Handed
+    // on as it is, those lobes become ONE room: one door goes in one of them
+    // and the others are walled in with no way in at all.
+    //
+    // So a room keeps the largest lump it was given and the rest becomes open
+    // floor. Open floor is reachable; floor that belongs to a room you cannot
+    // get to is not.
     for (let k = 0; k < pieces.length; k++) {
       if (!pieces[k].length) continue;
-      (k < n ? rooms : spare).push(pieces[k]);
+      // Floor that was turned into hallway while this piece was being divided
+      // is still listed among its cells. It is not the room's any more, and
+      // leaving it in makes the lobes either side of it look joined.
+      const own = pieces[k].filter(([i, j]) => !grid.blocked[at(i, j)]);
+      if (!own.length) continue;
+      if (k >= n) { spare.push(own); continue; }
+      const parts = connectedParts(grid, own);
+      if (parts.length === 1) { rooms.push(own); continue; }
+      parts.sort((a, b) => areaOf(b) - areaOf(a));
+      rooms.push(parts[0]);
+      for (let i = 1; i < parts.length; i++) spare.push(parts[i]);
     }
   });
   return { rooms, spare };
@@ -2593,6 +2752,20 @@ export function autoLayoutRooms(room, opts = {}) {
     for (let c = 0; c < owner.length; c++) if (owner[c] === SPARE) { tmp[c] = 0; any = true; }
     return any ? ownedRects(grid, tmp, 0) : [];
   };
+
+  // ── Anything still cut off gets the hallway run to it ──────────────────
+  //
+  // The partition refuses to make a room without frontage, but it can only
+  // refuse a CUT: a room can still end up walled in by the pieces around it,
+  // and then the door step has nowhere to put its door except a neighbour's
+  // wall — which is the "walk through someone else's room" this is supposed to
+  // rule out — or the outside wall, which is a bedroom door onto the street.
+  //
+  // So the hallway is run to it: the shortest way from the circulation to that
+  // room, widened to a corridor, taken out of whatever it crosses. That costs
+  // the rooms it passes through some floor, which is what a corridor costs in
+  // a real building too.
+  runHallwayToStrandedRooms(grid, owner, SPARE, pieces.length);
 
   // Drop anything too small or too thin to be a room, then renumber so the ids
   // that survive are contiguous.

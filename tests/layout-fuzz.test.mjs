@@ -263,14 +263,26 @@ check("almost every room has a way in",
   check("no room can only be reached through another room",
     throughAnotherRoom === 0, share(throughAnotherRoom));
   check("almost every room opens onto the circulation",
-    reachable >= spaces * 0.9, share(reachable));
-  // Not zero: a few plans are pathological — a plate a couple of metres across,
-  // or one carved up by walkways until nothing is left to cut a hallway from.
-  // What matters is that it is rare and that it is measured, not assumed.
+    reachable >= spaces * 0.98, share(reachable));
+  // Not zero, and the reason is worth knowing. The two plans that still do it
+  // are ones where walls the USER drew subdivide a generated room: the grid the
+  // partition works on blocks a cell edge only when a wall covers the whole of
+  // it, so a stub that stops part-way through a cell is a barrier to the plan
+  // but not to the model, and the space it closes off is invisible until the
+  // walls are built. Six spaces across 660 plans.
   check("a room with no door at all is rare",
-    sealed <= spaces * 0.01, share(sealed));
+    sealed <= spaces * 0.005, share(sealed));
+  // A door onto the street is a front door. Some plans have nowhere else for
+  // it to go — a plate too shallow to take a hallway at all — but it should
+  // never be how you get into an ordinary room.
+  // The bound is close to the measured value on purpose. The corpus is fixed,
+  // so this number does not wander on its own — and the thing it guards is
+  // easy to lose by accident: accepting a single cell of contact with the
+  // hallway as "has a way in" rather than a door's width of it puts the number
+  // straight back up to 1.7%, and the rooms that changed are ones whose door
+  // moved into the outside wall.
   check("and so is one you can only enter from the street",
-    outsideOnly <= spaces * 0.05, share(outsideOnly));
+    outsideOnly <= spaces * 0.012, share(outsideOnly));
   console.log(`    ways in: ${share(reachable)} onto circulation, `
     + `${outsideOnly} from outside, ${throughAnotherRoom} through a room, ${sealed} sealed`);
 }

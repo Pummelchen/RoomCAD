@@ -798,9 +798,20 @@ for (const [w, l, label] of [
   check("every pace they pick is inside the range",
     everySeen.every(p => p >= 0.9 - 1e-9 && p <= 1.2 + 1e-9),
     everySeen.length ? `${Math.min(...everySeen).toFixed(2)}-${Math.max(...everySeen).toFixed(2)}` : "none seen");
+  // Varied means "drawn each time", not "almost all different". Rounded to four
+  // decimals there are 3,000 possible paces, and 1,431 draws from 3,000 values
+  // collide by the birthday effect: the expected number of distinct ones is
+  // 1,138, which is 79.5%. The bound was 80%, so this check passed or failed on
+  // a coin toss — and duly failed. What it is really guarding against is a pace
+  // that is fixed, or drawn from a handful of values, which would show up here
+  // as tens of distinct values rather than a thousand.
+  const distinct = new Set(everySeen.map(p => p.toFixed(4))).size;
   check("and they are genuinely varied, not one repeated value",
-    new Set(everySeen.map(p => p.toFixed(4))).size > everySeen.length * 0.8,
-    `${new Set(everySeen.map(p => p.toFixed(4))).size} distinct of ${everySeen.length}`);
+    distinct > everySeen.length * 0.5, `${distinct} distinct of ${everySeen.length}`);
+  // And they are spread over the range rather than clustered at one end of it.
+  const spread = Math.max(...everySeen) - Math.min(...everySeen);
+  check("and spread across the whole range",
+    everySeen.length > 100 && spread > 0.25, `${spread.toFixed(3)} of the 0.30 band`);
 
   // The city is reproducible; the traffic in it is not. Two builds of the same
   // room give the same streets, the same buildings and the same fleet drawn up
