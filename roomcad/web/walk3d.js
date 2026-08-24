@@ -41,6 +41,8 @@ const FOG_FAR = 380;
 
 // Player capsule dimensions (metres).
 const PLAYER_RADIUS = 0.20;
+const PLAYER_MASS = 75;         // kilograms
+const PLAYER_FRICTION = 0.6;
 const STAND_HALF_HEIGHT = 0.55; // total standing height 1.5 m
 const CROUCH_HALF_HEIGHT = 0.25; // total crouch height 0.9 m
 const WALK_SPEED = 2.5;
@@ -52,6 +54,12 @@ const GRAVITY = 11;
 const PHYSICS_STEP = 1 / 60;
 const MAX_SUBSTEPS = 6;
 const MAX_BACKLOG = 0.25;
+// Solid traffic. Only what is near enough to touch gets a body; the pool is
+// what the solver pays for every frame whether or not it is full.
+const VEHICLE_BODY_POOL = 20;
+const VEHICLE_SOLID_RANGE = 26;
+const VEHICLE_FRICTION = 1.4;   // enough to be carried along on a roof
+const PARKED_FAR_BELOW = -400;  // where an unused pool body waits
 // How far above the taller of the room and the street counts as still being in
 // the world. Enough to clear the tallest building the city puts up, so standing
 // on a roof is not mistaken for having fallen out of the simulation.
@@ -1500,13 +1508,96 @@ export class Walk3D {
     const collider = this.world.createCollider(
       RAPIER.ColliderDesc.capsule(halfH, PLAYER_RADIUS)
         .setTranslation(0, halfH + PLAYER_RADIUS, 0)
-        .setFriction(0.1),
+        // Seventy-five kilograms. Rapier works a body's mass out from its
+        // collider's volume and density, and a capsule this size at the default
+        // density weighs about 170 GRAMS — which did not matter while the only
+        // thing the player touched was a wall that never moves, and matters
+        // very much now that a car can hit them.
+        .setMass(PLAYER_MASS)
+        // Enough grip to be carried by something moving under you, not so much
+        // that you stick to a wall you brush past. Rapier averages the two
+        // surfaces, and the vehicles bring the rest.
+        .setFriction(PLAYER_FRICTION),
       body
     );
     this.playerBody = body;
     this.playerCollider = collider;
     this.physicsBodies.push(body);
     this.onGround = false;
+
+    this.buildVehicleBodies();
+  }
+
+  /// A pool of solid bodies lent to whichever vehicles are nearest.
+  ///
+  /// The traffic was scenery you walked through. It cannot simply be given
+  /// colliders — there are 240 of them and their positions come from the
+  /// traffic model, not from the solver — so each frame the nearest few are
+  /// lent a KINEMATIC body: one the traffic drives and the solver respects.
+  /// Standing on one, you are carried along by it; standing in front of one,
+  /// it shoves you out of the way.
+  ///
+  /// A pool rather than one each, because only what is within a few metres can
+  /// possibly be touched, and a body for every vehicle in the city is 240
+  /// bodies stepped every frame to no purpose.
+  buildVehicleBodies() {
+    this.vehicleBodies = [];
+    for (let i = 0; i < VEHICLE_BODY_POOL; i++) {
+      const body = this.world.createRigidBody(
+        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, PARKED_FAR_BELOW, 0)
+      );
+      const collider = this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(1, 1, 1).setFriction(VEHICLE_FRICTION), body
+      );
+      this.vehicleBodies.push({ body, collider, vehicle: null });
+    }
+  }
+
+  /// Hands the pool to the vehicles nearest the player, and drives them.
+  updateVehicleBodies() {
+    const pool = this.vehicleBodies;
+    if (!pool || !this.city || !this.city.cars) return;
+    const me = this.position;
+    // Nearest first, and only what is close enough to be stood on or run into.
+    const near = [];
+    for (const v of this.city.cars) {
+      const dx = v.x - me.x;
+      const dz = v.z - me.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > VEHICLE_SOLID_RANGE * VEHICLE_SOLID_RANGE) continue;
+      near.push({ v, d2 });
+    }
+    near.sort((a, b) => a.d2 - b.d2);
+
+    for (let i = 0; i < pool.length; i++) {
+      const slot = pool[i];
+      const pick = near[i];
+      if (!pick) {
+        // Parked well below the world rather than removed: adding and removing
+        // colliders every frame churns the broad phase for no reason.
+        if (slot.vehicle !== null) {
+          slot.vehicle = null;
+          slot.body.setNextKinematicTranslation({ x: 0, y: PARKED_FAR_BELOW, z: 0 });
+        }
+        continue;
+      }
+      const v = pick.v;
+      const body = v.bodyH + v.roofH;
+      if (slot.vehicle !== v) {
+        slot.vehicle = v;
+        slot.collider.setShape(new RAPIER.Cuboid(v.length / 2, body / 2, v.width / 2));
+      }
+      slot.body.setNextKinematicTranslation({
+        x: v.x, y: this.city.groundY() + body / 2, z: v.z,
+      });
+      // Heading only: a vehicle leans and dips on its springs, but a collider
+      // that rolled with it would tip the player off a car that is merely
+      // braking.
+      const half = -v.heading / 2;
+      slot.body.setNextKinematicRotation({
+        x: 0, y: Math.sin(half), z: 0, w: Math.cos(half),
+      });
+    }
   }
 
   /// Points the sun's shadow volume at wherever the viewer is standing.
@@ -2355,6 +2446,10 @@ export class Walk3D {
     // catching up costs more than the frame that fell behind, the next frame
     // falls further behind still. Past that point the world does run slow, and
     // slow is better than locked solid.
+    // The traffic's colliders follow the traffic, and must be where the model
+    // says before the solver looks at them.
+    this.updateVehicleBodies();
+
     this.physicsBacklog = Math.min((this.physicsBacklog || 0) + Math.max(0, dt), MAX_BACKLOG);
     let steps = 0;
     while (this.physicsBacklog >= PHYSICS_STEP && steps < MAX_SUBSTEPS) {

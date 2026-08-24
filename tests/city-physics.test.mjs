@@ -20,10 +20,23 @@ const {
   City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS, SIDEWALK,
 } = await loadWebModule("city.js");
 
+// The player, as walk3d builds them — read OUT of walk3d rather than written
+// down again here. A replica with its own copy of the numbers keeps passing
+// when the real ones change, which is the one thing a replica must not do.
+const walkSource = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+const walkConst = (name) => {
+  const m = new RegExp(`const ${name} = ([-0-9./ *]+);`).exec(walkSource);
+  if (!m) throw new Error(`walk3d has no constant ${name}`);
+  return Function(`"use strict"; return (${m[1]});`)();
+};
+
 // The player, as walk3d builds them.
-const STAND_HALF_HEIGHT = 0.55;
-const PLAYER_RADIUS = 0.20;
-const GRAVITY = 11;
+const STAND_HALF_HEIGHT = walkConst("STAND_HALF_HEIGHT");
+const PLAYER_RADIUS = walkConst("PLAYER_RADIUS");
+const GRAVITY = walkConst("GRAVITY");
+const CROUCH_HALF_HEIGHT = walkConst("CROUCH_HALF_HEIGHT");
+const PLAYER_MASS = walkConst("PLAYER_MASS");
+const PLAYER_FRICTION = walkConst("PLAYER_FRICTION");
 const ROAD_Y = -KERB_HEIGHT;
 const PAVEMENT_Y = 0;
 
@@ -411,6 +424,157 @@ const insideABuilding = (x, z) => buildings.some(b =>
       return true;
     })());
   c2.dispose();
+}
+
+
+// ── A person in the street ───────────────────────────────────────────────
+//
+// Out of a window, onto the pavement, and out of the way of the traffic. The
+// player used to weigh 170 grams — Rapier works a body's mass out from its
+// collider's volume and density, and nobody had told it otherwise. That did not
+// matter while the only thing they could touch was a wall that never moves.
+{
+  const city = new City();
+  city.build(bounds(9, 7), 2718, 0);
+
+  const world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
+  for (const sd of city.solids) {
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(sd.w / 2, sd.h / 2, sd.d / 2).setTranslation(sd.x, sd.y, sd.z));
+  }
+  const spawn = (x, y, z, halfH = STAND_HALF_HEIGHT) => {
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).lockRotations().setCanSleep(false));
+    world.createCollider(
+      RAPIER.ColliderDesc.capsule(halfH, PLAYER_RADIUS)
+        .setTranslation(0, halfH + PLAYER_RADIUS, 0)
+        .setMass(PLAYER_MASS).setFriction(PLAYER_FRICTION), body);
+    return body;
+  };
+
+  const me = spawn(30, 3.3, -40);
+  // Stated outright, not compared against whatever walk3d happens to say: a
+  // person weighs about 75 kg, and a build where they weigh seven or seven
+  // hundred is wrong however consistent it is with itself.
+  check("a person weighs what a person weighs",
+    me.mass() > 60 && me.mass() < 95, `${me.mass().toFixed(1)} kg`);
+
+  // Out of a first-floor window: a three metre drop onto the street.
+  let t = 0;
+  while (me.translation().y > 0.05 && t < 5) { world.timestep = 1 / 60; world.step(); t += 1 / 60; }
+  const expect = Math.sqrt(2 * 3.3 / GRAVITY);
+  check("stepping out of a window is a fall, at the rate a fall happens",
+    Math.abs(t - expect) < 0.12, `${t.toFixed(2)} s against ${expect.toFixed(2)}`);
+  check("and it ends on the street, not through it",
+    Math.abs(me.translation().y) < 0.2, `rested at ${me.translation().y.toFixed(2)}`);
+
+  // Crouched, a person is shorter — which is what gets them through a hole.
+  const ducked = spawn(34, 1.0, -40, CROUCH_HALF_HEIGHT);
+  for (let i = 0; i < 200; i++) { world.timestep = 1 / 60; world.step(); }
+  check("a crouched person stands lower than an upright one",
+    CROUCH_HALF_HEIGHT < STAND_HALF_HEIGHT
+    && Math.abs(ducked.translation().y) < 0.2);
+  city.dispose();
+}
+
+// ── Traffic you can touch ────────────────────────────────────────────────
+//
+// The vehicles were polygons that drove through you. They cannot simply be
+// given colliders — their positions come from the traffic model, not from the
+// solver — so the nearest few are lent a KINEMATIC body each: one the traffic
+// drives and the solver respects.
+{
+  const city = new City();
+  city.build(bounds(9, 7), 4242, 0);
+  const world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
+  for (const sd of city.solids) {
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(sd.w / 2, sd.h / 2, sd.d / 2).setTranslation(sd.x, sd.y, sd.z));
+  }
+
+  // The pool, as walk3d builds it.
+  const POOL = walkConst("VEHICLE_BODY_POOL");
+  const RANGE = walkConst("VEHICLE_SOLID_RANGE");
+  const pool = [];
+  for (let i = 0; i < POOL; i++) {
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -400, 0));
+    const collider = world.createCollider(
+      RAPIER.ColliderDesc.cuboid(1, 1, 1).setFriction(walkConst("VEHICLE_FRICTION")), body);
+    pool.push({ body, collider, vehicle: null });
+  }
+  const lendBodies = (at) => {
+    const near = city.cars
+      .map(v => ({ v, d2: (v.x - at.x) ** 2 + (v.z - at.z) ** 2 }))
+      .filter(e => e.d2 <= RANGE * RANGE)
+      .sort((a, b) => a.d2 - b.d2);
+    for (let i = 0; i < pool.length; i++) {
+      const slot = pool[i];
+      const pick = near[i];
+      if (!pick) {
+        if (slot.vehicle) { slot.vehicle = null; slot.body.setNextKinematicTranslation({ x: 0, y: -400, z: 0 }); }
+        continue;
+      }
+      const v = pick.v;
+      const h = v.bodyH + v.roofH;
+      if (slot.vehicle !== v) { slot.vehicle = v; slot.collider.setShape(new RAPIER.Cuboid(v.length / 2, h / 2, v.width / 2)); }
+      slot.body.setNextKinematicTranslation({ x: v.x, y: city.groundY() + h / 2, z: v.z });
+      const half = -v.heading / 2;
+      slot.body.setNextKinematicRotation({ x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) });
+    }
+  };
+
+  // Pick a vehicle that is actually moving and put someone on its roof.
+  for (let f = 0; f < 60 * 60; f++) city.update(1 / 60, { x: 0, y: 1.6, z: 0 }, { x: 0, z: -1 });
+  const ride = city.cars.find(v => !v.stop && !v.arc && v.speed > 3 && v.kind !== "car");
+  check("there is moving traffic to stand on", !!ride);
+  if (ride) {
+    const roof = city.groundY() + ride.bodyH + ride.roofH;
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(ride.x, roof + 0.03, ride.z)
+        .lockRotations().setCanSleep(false));
+    world.createCollider(
+      RAPIER.ColliderDesc.capsule(STAND_HALF_HEIGHT, PLAYER_RADIUS)
+        .setTranslation(0, STAND_HALF_HEIGHT + PLAYER_RADIUS, 0)
+        .setMass(PLAYER_MASS).setFriction(PLAYER_FRICTION), body);
+
+    const from = { x: body.translation().x, z: body.translation().z };
+    const vehicleFrom = { x: ride.x, z: ride.z };
+    for (let f = 0; f < 8 * 60; f++) {
+      city.update(1 / 60, { x: body.translation().x, y: 1.6, z: body.translation().z }, { x: 0, z: -1 });
+      lendBodies(body.translation());
+      world.timestep = 1 / 60;
+      world.step();
+    }
+    const rode = Math.hypot(body.translation().x - from.x, body.translation().z - from.z);
+    const drove = Math.hypot(ride.x - vehicleFrom.x, ride.z - vehicleFrom.z);
+    check("a vehicle carried its passenger", drove > 5 && rode > drove * 0.5,
+      `the vehicle went ${drove.toFixed(1)} m and the rider ${rode.toFixed(1)} m`);
+    check("who is still off the ground",
+      body.translation().y > city.groundY() + 0.5,
+      `at y ${body.translation().y.toFixed(2)}, street is ${city.groundY().toFixed(2)}`);
+  }
+  city.dispose();
+}
+
+// The renderer's side of it.
+{
+  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  check("the player is given a mass rather than a density",
+    /\.setMass\(PLAYER_MASS\)/.test(walk) && /const PLAYER_MASS = 75;/.test(walk));
+  check("the traffic is lent solid bodies",
+    /this\.updateVehicleBodies\(\);/.test(walk)
+    && /RigidBodyDesc\.kinematicPositionBased\(\)/.test(walk));
+  check("they are driven before the world is stepped, not after",
+    walk.indexOf("this.updateVehicleBodies();") < walk.indexOf("this.world.step();"));
+  check("only the nearest get one",
+    /const VEHICLE_BODY_POOL = \d+;/.test(walk) && /VEHICLE_SOLID_RANGE/.test(walk));
+  check("a collider follows its vehicle's heading, not its lean",
+    /setNextKinematicRotation\(\{[\s\S]{0,80}Math\.sin\(half\)/.test(walk),
+    "rolling with the suspension would tip a passenger off a car that is braking");
+  check("crouch and jump are not scoped to the room",
+    /e\.code === "KeyC" \|\| e\.code === "Space"/.test(walk)
+    && !/insideRoom|inRoom/.test(walk));
 }
 
 city.dispose();
