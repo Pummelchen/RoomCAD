@@ -43,7 +43,11 @@ const ROAD_Y = PAVEMENT_Y - KERB_HEIGHT;
 export const GRID_RADIUS = 4;
 
 const FLOOR_HEIGHT = 3;         // matches walk3d's per-storey lift
-const STOREYS_MIN = 8;
+// Every tower is a high rise: fifty, fifty-five or sixty floors. Three heights
+// rather than one keeps a skyline — a city of identical towers reads as a
+// texture, not as buildings — and rather than a range because these are the
+// heights that were asked for.
+const STOREY_CHOICES = [50, 55, 60];
 const STOREYS_MAX = 60;         // 180 m
 // How far up a building you can see into. Rooms behind the windows are what
 // gives a facade depth, and they cost an instance each — a sixty storey tower
@@ -142,6 +146,11 @@ const LIT_BANDS = [0.10, 0.28, 0.46, 0.64, 0.82, 1.00];
 const LIGHTS_OUT_SHARE = 0.01;
 const LIGHTS_OUT_EVERY = 5 * 60;
 const LIGHTS_OUT_SPARE = 700;   // dark-room instances held back for them
+/// The share of a tower's lit windows that can go dark before the night runs
+/// out of room to put them. At one per cent every five minutes, a quarter is a
+/// couple of hours of night — longer than anyone watches one — and costs a
+/// matrix apiece for windows that are mostly never used.
+const LIGHTS_OUT_HEADROOM = 0.25;
 const BULB_COLOR = 0xfff0cc;
 // The glow from inside a vehicle: dim, warm, and a little above the lamps.
 const CABIN_GLOW = 0xffc98a;
@@ -324,6 +333,17 @@ const TURN_LOAD_FLOOR = 0.5;    // never red-out a street emptier than this
 const TURN_LOAD_FACTOR = 1.35;  // ... nor one within this much of the average
 const ROUTE_CONGESTION = 2.5;   // how many junctions of detour a full street is worth
 
+/// How far a street lamp keeps from a signal pole.
+///
+/// A signal head is 3.4 m up and read from tens of metres back along the arm;
+/// a lamp post 2 m in front of one hides it from exactly the traffic it is
+/// telling to stop. Measured as a box rather than a radius because the thing
+/// being kept clear is the sight line down the street, not a circle.
+const SIGNAL_CLEAR = 3.2;
+/// How close two street lamps may stand. They are 23 m apart by design; this is
+/// only a floor to stop one that has been moved out of the way of a signal
+/// ending up beside its neighbour.
+const LAMP_MIN_GAP = 9;
 const SIGNAL_HEIGHT = 3.4;
 const SIGNAL_HEAD_H = 0.86;
 const SIGNAL_POLE_COLOR = 0x33363b;
@@ -887,6 +907,7 @@ export class City {
     this.carParts = null;
     this.vehicleMeshes = null;
     this.litWindows = null;
+    this.darkWindows = null;
     this.roomsLit = null;
     this.roomsDark = null;
     this.crossings = null;
@@ -987,7 +1008,9 @@ export class City {
       darkGlass: new InstanceSet(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshStandardMaterial({ color: WINDOW_DARK, roughness: 0.25, metalness: 0.1 }),
-        { colored: false }
+        // Room to take the windows that go dark as the night wears on, the way
+        // the near blocks' rooms already do.
+        { colored: false, spare: LIGHTS_OUT_SPARE }
       ),
       // Glazing for the buildings you can see into. The distant ones get an
       // opaque pane apiece and that is all a window needs at that range; the
@@ -1002,13 +1025,19 @@ export class City {
         }),
         { colored: false }
       ),
-      litGlass: new InstanceSet(
+      // A lit window in a tower is a lit ROOM behind it, and rooms are not all
+      // lit the same. The near blocks have had bands of brightness since the
+      // interiors were built; the towers had one flat value for every window in
+      // the city, so a hundred floors of glass all came on at exactly the same
+      // brightness at exactly the same moment. Same bands, same night, one set
+      // of rules for every tower.
+      litGlass: LIT_BANDS.map(() => new InstanceSet(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshStandardMaterial({
           color: WINDOW_DARK, emissive: WINDOW_LIT, emissiveIntensity: 0, roughness: 0.3,
         }),
         { colored: false }
-      ),
+      )),
       // Interiors are boxes seen from the inside: only their back faces are
       // drawn, so looking through a window opening shows the far wall of the
       // room rather than the outside of a block sitting in the hole.
@@ -1144,7 +1173,7 @@ export class City {
           const near = Math.abs(gx) <= 1 && Math.abs(gz) <= 1;
           this._blockBuildings(sets, bx, bz, block, rnd, near, gx, gz);
         }
-        this._blockTrees(sets, bx, bz, block, rnd);
+        this._blockTrees(sets, bx, bz, block, rnd, laybys);
       }
     }
 
@@ -1152,7 +1181,7 @@ export class City {
     this._roadMarkings(sets.flats, cx, cz, block, span);
     this._paintKerbside(sets.flats, laybys);
     this._trafficSignals(sets.signalPoles, sets.signalHousings, sets.signalDark, cx, cz);
-    this._streetLamps(sets.poles, sets.lampHeads, cx, cz, block, span);
+    this._streetLamps(sets.poles, sets.lampHeads, cx, cz, block, span, laybys);
     // Destinations come after the bays exist, and only for cars: a bus runs a
     // route and a truck stops where the work is.
     for (const v of this.cars) if (v.kind === "car") v.goal = this._pickGoal(v);
@@ -1167,9 +1196,17 @@ export class City {
     sets.roofs.build(this.group, "city-roofs");
     sets.flats.build(this.group, "city-ground-details");
     this.crossings = sets.crossings.build(this.group, "city-crossings");
+    // Headroom for the windows that go dark as the night wears on, sized to
+    // the city rather than to a number picked in advance: a fixed 700 was a
+    // whole night's worth for the near blocks' 1,000 rooms and about seven
+    // minutes' worth for a hundred thousand tower windows, so the city stopped
+    // getting darker almost as soon as it started.
+    const litCount = sets.litGlass.reduce((n, set) => n + set.items.length, 0);
+    sets.darkGlass.spare = Math.max(LIGHTS_OUT_SPARE, Math.ceil(litCount * LIGHTS_OUT_HEADROOM));
     sets.darkGlass.build(this.group, "city-windows-dark");
     sets.glazing.build(this.group, "city-window-glass");
-    this.litWindows = sets.litGlass.build(this.group, "city-windows-lit");
+    this.litWindows = sets.litGlass.map((set, i) => set.build(this.group, `city-windows-lit-${i}`));
+    this.darkWindows = sets.darkGlass.mesh;
     this.roomsDark = sets.roomsDark.build(this.group, "city-rooms-dark");
     this.roomsLit = sets.roomsLit.map((set, i) => set.build(this.group, `city-rooms-lit-${i}`));
     this.litBulbs = sets.litBulbs.map((set, i) => set.build(this.group, `city-bulbs-${i}`));
@@ -1290,32 +1327,54 @@ export class City {
   /// Instances are packed, so the one taken is always the last in its band, and
   /// the bulb that goes with it is the last in the matching bulb mesh: the two
   /// were filled in step, one entry each per lit room.
-  _lightsOut(count) {
-    if (!this.roomsLit || !this.roomsDark) return 0;
+  /// The lit things a night can turn off, each with the dark thing that takes
+  /// its place. The near blocks have rooms behind their glass; the towers have
+  /// the glass alone. Both are lit rooms as far as the night is concerned, and
+  /// listing them here is what stops that being two systems that drift apart.
+  _litPopulations() {
+    const out = [];
+    if (this.roomsLit && this.roomsDark) {
+      out.push({ lit: this.roomsLit, dark: this.roomsDark, bulbs: this.litBulbs });
+    }
+    if (this.litWindows && this.darkWindows) {
+      out.push({ lit: this.litWindows, dark: this.darkWindows, bulbs: null });
+    }
+    return out;
+  }
+
+  _lightsOut(count, only = null) {
+    const all = this._litPopulations();
+    const groups = only ? all.filter(g => g.lit === only.lit) : all;
+    if (!groups.length) return 0;
     let done = 0;
     for (let n = 0; n < count; n++) {
-      // From the band with the most left, so they empty together rather than
-      // one whole band at a time.
+      // From the band with the most left, across every population, so they
+      // empty together rather than one whole band — or one whole city block —
+      // at a time.
       let band = -1;
       let most = 0;
-      for (let i = 0; i < this.roomsLit.length; i++) {
-        const mesh = this.roomsLit[i];
-        if (mesh && mesh.count > most) { most = mesh.count; band = i; }
+      let group = null;
+      for (const g of groups) {
+        if (g.dark.count >= g.dark.instanceMatrix.count) continue;
+        for (let i = 0; i < g.lit.length; i++) {
+          const mesh = g.lit[i];
+          if (mesh && mesh.count > most) { most = mesh.count; band = i; group = g; }
+        }
       }
-      if (band < 0) break;
-      if (this.roomsDark.count >= this.roomsDark.instanceMatrix.count) break;
-      const lit = this.roomsLit[band];
+      if (band < 0 || !group) break;
+      const lit = group.lit[band];
       const last = lit.count - 1;
       lit.getMatrixAt(last, _m);
-      this.roomsDark.setMatrixAt(this.roomsDark.count++, _m);
-      this.roomsDark.instanceMatrix.needsUpdate = true;
+      group.dark.setMatrixAt(group.dark.count++, _m);
+      group.dark.instanceMatrix.needsUpdate = true;
       lit.count = last;
-      const bulbs = this.litBulbs[band];
+      const bulbs = group.bulbs && group.bulbs[band];
       if (bulbs && bulbs.count > 0) bulbs.count--;
-      // Which band it came from, so morning can put it back in the same one.
-      // The instance itself is still in the mesh's buffer just past the count,
-      // so turning it on again is a matter of counting it back in.
-      this._extinguished.push(band);
+      // Which band it came from AND which population, so morning can put it
+      // back exactly where it was. The instance itself is still in the mesh's
+      // buffer just past the count, so turning it on again is a matter of
+      // counting it back in.
+      this._extinguished.push({ band, group: all.indexOf(group) });
       done++;
     }
     return done;
@@ -1334,17 +1393,20 @@ export class City {
   /// pair of counters moving back, and the room that comes on is exactly the
   /// room that went off.
   _restoreLights(count) {
-    if (!this.roomsLit || !this.roomsDark) return 0;
+    const groups = this._litPopulations();
+    if (!groups.length) return 0;
     let done = 0;
     for (let n = 0; n < count; n++) {
-      const band = this._extinguished.pop();
-      if (band === undefined) break;
-      const lit = this.roomsLit[band];
+      const went = this._extinguished.pop();
+      if (went === undefined) break;
+      const group = groups[went.group];
+      if (!group) break;
+      const lit = group.lit[went.band];
       if (!lit || lit.count >= lit.instanceMatrix.count) break;
       lit.count++;
-      const bulbs = this.litBulbs[band];
+      const bulbs = group.bulbs && group.bulbs[went.band];
       if (bulbs && bulbs.count < bulbs.instanceMatrix.count) bulbs.count++;
-      if (this.roomsDark.count > 0) this.roomsDark.count--;
+      if (group.dark.count > 0) group.dark.count--;
       done++;
     }
     return done;
@@ -1688,10 +1750,7 @@ export class City {
         const gapD = 2 + rnd() * 3;
         const w = Math.max(6, cellW - gapW);
         const d = Math.max(6, cellD - gapD);
-        // High rise. Everything is a tower now, from eight storeys to sixty —
-        // the draw is squared so the tallest are the exception rather than the
-        // rule, which is what a skyline looks like.
-        const storeys = STOREYS_MIN + Math.floor(rnd() ** 2 * (STOREYS_MAX - STOREYS_MIN + 1));
+        const storeys = STOREY_CHOICES[Math.floor(rnd() * STOREY_CHOICES.length)];
         const h = storeys * FLOOR_HEIGHT;
         const x = bx - core / 2 + cellW * (i + 0.5);
         const z = bz - core / 2 + cellD * (j + 0.5);
@@ -2057,14 +2116,30 @@ export class City {
           const px = x + face.offX + (face.along === "x" ? along : 0);
           const pz = z + face.offZ + (face.along === "z" ? along : 0);
           const m = boxMatrix(px, y, pz, winW, winH, 1, face.turn);
-          if (rnd() < 0.34) litGlass.add(m);
+          if (rnd() < 0.34) litGlass[Math.floor(rnd() * litGlass.length)].add(m);
           else darkGlass.add(m);
         }
       }
     }
   }
 
-  _blockTrees(sets, bx, bz, block, rnd) {
+  /// Is this spot inside a bus layby, or close enough to be in the way of one?
+  ///
+  /// A layby is CUT OUT of the pavement — the pad has a hole where it goes — so
+  /// anything placed on the pavement ring by position alone can end up standing
+  /// in the middle of it, or hanging over it in mid-air. A bus also needs the
+  /// kerb clear at both ends to swing in and out, which is why this is asked
+  /// with a margin rather than about the rectangle alone.
+  static _inLayby(laybys, x, z, margin = 0) {
+    if (!laybys) return false;
+    for (const r of laybys) {
+      if (x >= r.x0 - margin && x <= r.x1 + margin
+        && z >= r.z0 - margin && z <= r.z1 + margin) return true;
+    }
+    return false;
+  }
+
+  _blockTrees(sets, bx, bz, block, rnd, laybys = null) {
     // Far enough in that the widest canopy still stops short of the kerb. On
     // the middle of the pavement a big one reached 20 cm past it and hung over
     // the parking space beyond — a tree growing through a parked car.
@@ -2088,6 +2163,10 @@ export class City {
         else { x = bx - ring; z = bz + along; }
         const trunkH = 1.6 + rnd() * 1.1;
         const r = 1.1 + rnd() * 0.7;
+        // Drawn from the sequence first, THEN discarded: taking the numbers in
+        // the same order whether or not a tree is planted is what keeps the
+        // same seed building the same city.
+        if (City._inLayby(laybys, x, z, TREE_MAX_RADIUS)) continue;
         sets.trunks.add(boxMatrix(x, PAVEMENT_Y + trunkH / 2, z, 1, trunkH, 1));
         const canopy = new THREE.Matrix4().compose(
           new THREE.Vector3(x, PAVEMENT_Y + trunkH + r * 0.6, z),
@@ -2258,7 +2337,10 @@ export class City {
           }
           housings.add(boxMatrix(px + fx * (faceOut - 0.06), armY, pz + fz * (faceOut - 0.06),
             ARROW_PITCH * 2 + 0.16, 0.2, 0.1, -heading));
-          this.signals.push({ axis, dir, ix, iz, heading, lamps, arrows });
+          // The pole's own position is kept, not only the lenses on it: the
+          // street lamps have to stand clear of it, and working the position
+          // out a second time somewhere else is how the two end up disagreeing.
+          this.signals.push({ axis, dir, ix, iz, heading, lamps, arrows, x: px, z: pz });
         }
       }
     }
@@ -2298,9 +2380,17 @@ export class City {
     return "red";
   }
 
-  _streetLamps(poles, heads, cx, cz, block, span) {
+  _streetLamps(poles, heads, cx, cz, block, span, laybys = null) {
     const h = 4.6;
     this.lampPosts = [];
+    // A lamp standing in front of a signal is worse than no lamp: the light you
+    // have to see to know whether to stop is behind a pole. The signals are
+    // already placed by the time this runs, so their poles are simply avoided —
+    // and the lamp is MOVED rather than dropped, because a junction with no
+    // light on it is the other way to get this wrong.
+    const signalPoles = (this.signals || []).map(s => ({ x: s.x, z: s.z }));
+    const clearOfSignals = (x, z) =>
+      !signalPoles.some(p => Math.abs(p.x - x) < SIGNAL_CLEAR && Math.abs(p.z - z) < SIGNAL_CLEAR);
     for (let gx = -GRID_RADIUS; gx <= GRID_RADIUS; gx++) {
       for (let gz = -GRID_RADIUS; gz <= GRID_RADIUS; gz++) {
         const bx = cx + gx * span;
@@ -2316,11 +2406,38 @@ export class City {
           [edge, 0], [-edge, 0], [0, edge], [0, -edge],
         ];
         for (const [ox, oz] of spots) {
-          poles.add(boxMatrix(bx + ox, PAVEMENT_Y + h / 2, bz + oz, 1, h, 1));
-          heads.add(boxMatrix(bx + ox, PAVEMENT_Y + h + 0.12, bz + oz, 0.44, 0.16, 0.44));
+          // Slide along the kerb until the lamp is clear of the signals and out
+          // of the layby, taking the shortest move that works. A corner lamp
+          // that cannot be freed at all is dropped: the next lamp along the
+          // side is 23 m away, so the junction is still lit.
+          let x = bx + ox;
+          let z = bz + oz;
+          const alongX = Math.abs(oz) > Math.abs(ox) || (ox === 0);
+          // Moving a lamp out of the way must not park it next to the lamp it
+          // was moved towards: two posts a few metres apart light the same
+          // patch of pavement twice and leave the street between them dark.
+          const spaced = (px, pz) => !this.lampPosts.some(p =>
+            Math.hypot(p.x - px, p.z - pz) < LAMP_MIN_GAP);
+          const usable = (px, pz) =>
+            clearOfSignals(px, pz) && !City._inLayby(laybys, px, pz, 1.0) && spaced(px, pz);
+          let placed = usable(x, z);
+          for (let step = 1; !placed && step <= 8; step++) {
+            for (const away of [step, -step]) {
+              const tx = alongX ? bx + ox + away * 1.2 : x;
+              const tz = alongX ? z : bz + oz + away * 1.2;
+              // Never past the end of its own block side.
+              if (Math.abs(alongX ? tx - bx : tz - bz) > block / 2) continue;
+              if (!usable(tx, tz)) continue;
+              x = tx; z = tz; placed = true;
+              break;
+            }
+          }
+          if (!placed) continue;
+          poles.add(boxMatrix(x, PAVEMENT_Y + h / 2, z, 1, h, 1));
+          heads.add(boxMatrix(x, PAVEMENT_Y + h + 0.12, z, 0.44, 0.16, 0.44));
           // Where the light actually comes from, kept so something can light
           // the street with it rather than only drawing a bright box.
-          this.lampPosts.push({ x: bx + ox, y: PAVEMENT_Y + h - 0.02, z: bz + oz });
+          this.lampPosts.push({ x, y: PAVEMENT_Y + h - 0.02, z });
         }
       }
     }
@@ -4748,8 +4865,17 @@ export class City {
       this._litOutAt = this._clock + LIGHTS_OUT_EVERY;
       const night = 1 - clamp01(this._dayAmount);
       if (night > 0.6) {
-        const stillLit = (this.roomsLit || []).reduce((n, m) => n + (m ? m.count : 0), 0);
-        if (stillLit > 0) this._lightsOut(Math.max(1, Math.round(stillLit * LIGHTS_OUT_SHARE)));
+        // A hundredth of EACH population, not a hundredth of the city. Taken
+        // from the city as a whole, the towers hold a hundred times more lit
+        // glass than the near blocks do, so every window that went out was a
+        // tower window and the rooms you are standing next to never changed
+        // again.
+        for (const group of this._litPopulations()) {
+          const stillLit = group.lit.reduce((k, m) => k + (m ? m.count : 0), 0);
+          if (stillLit > 0) {
+            this._lightsOut(Math.max(1, Math.round(stillLit * LIGHTS_OUT_SHARE)), group);
+          }
+        }
       } else if (night < 0.3 && this._extinguished.length) {
         // Morning. Everything that went off overnight comes back, all at once
         // because in daylight not one of them is visible either way.
@@ -4888,7 +5014,9 @@ export class City {
     this._dayAmount = dayAmount;
     const cfg = WEATHER[this._weather] || WEATHER.clear;
     const night = clamp01(1 - Math.max(0, Math.min(1, dayAmount)) + cfg.dim * 0.5);
-    if (this.litWindows) this.litWindows.material.emissiveIntensity = night * 1.7;
+    for (let i = 0; i < (this.litWindows || []).length; i++) {
+      if (this.litWindows[i]) this.litWindows[i].material.emissiveIntensity = night * 1.7 * LIT_BANDS[i];
+    }
     for (let i = 0; i < (this.roomsLit || []).length; i++) {
       if (this.roomsLit[i]) this.roomsLit[i].material.emissiveIntensity = night * 1.15 * LIT_BANDS[i];
       if (this.litBulbs[i]) this.litBulbs[i].material.emissiveIntensity = night * 3.2 * LIT_BANDS[i];
@@ -4935,6 +5063,7 @@ export class City {
     this.precipitation = null;
     this.terrain = null;
     this.litWindows = null;
+    this.darkWindows = null;
     this.roomsLit = null;
     this.roomsDark = null;
     this.crossings = null;

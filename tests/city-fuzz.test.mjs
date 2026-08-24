@@ -195,9 +195,18 @@ for (let trial = 0; trial < TRIALS; trial++) {
     try { city.applyTimeOfDay(amount); }
     catch (err) { note("applyTimeOfDay threw", `${amount}: ${err.message}`); }
   }
-  for (const mesh of [city.litWindows, city.lampHeads, city.headlights]) {
+  // The tower windows are one mesh per brightness band, like the rooms behind
+  // the near blocks' glass, so this walks the bands as well as the single
+  // meshes rather than reading emissiveIntensity off an array and finding
+  // undefined — which is not a number, and would have passed unnoticed.
+  const litThings = [
+    ...(city.litWindows || []), ...(city.roomsLit || []), ...(city.litBulbs || []),
+    city.lampHeads, city.headlights, city.crossings,
+  ];
+  for (const mesh of litThings) {
     if (mesh && !finite(mesh.material.emissiveIntensity)) note("a non-finite emissive strength", "");
   }
+  if (!litThings.filter(Boolean).length) note("nothing in the city lights up", "");
 
   // Frame lengths walk3d can actually produce — it feeds the city
   // Math.min(clock.getDelta(), 0.05), so dt is finite, non-negative and
@@ -1099,6 +1108,114 @@ for (const [w, l, label] of [
   check("and a vehicle that is not drawn cannot be hit",
     city.vehicleForInstance("city-vehicles-car", -1) === null);
   city.dispose();
+}
+
+// ── Street furniture keeps out of the way ─────────────────────────────────
+//
+// Reported twice: trees and street lamps standing in the bus stops. A layby is
+// CUT OUT of the pavement, so anything placed on the pavement by position alone
+// ends up in the middle of one, or hanging over it in mid-air. And a lamp post
+// two metres in front of a signal head hides the light from exactly the traffic
+// it is telling to stop.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+
+  const laybys = city._laybyRects();
+  check("the city has bus stops to keep clear", laybys.length > 20, `${laybys.length}`);
+  const inLayby = (x, z) => laybys.some(r =>
+    x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
+
+  const lampsIn = city.lampPosts.filter(p => inLayby(p.x, p.z));
+  check("no street lamp stands in a bus stop", lampsIn.length === 0,
+    `${lampsIn.length} of ${city.lampPosts.length}`);
+
+  // Trees are read back from the instances actually written, not from the
+  // placement code: what matters is where the trunk ended up.
+  const trunks = [];
+  city.group.traverse(node => {
+    if (!node.isInstancedMesh || !/trunk/i.test(node.name || "")) return;
+    const m = new THREE.Matrix4();
+    const v = new THREE.Vector3();
+    for (let i = 0; i < node.count; i++) {
+      node.getMatrixAt(i, m);
+      v.setFromMatrixPosition(m);
+      trunks.push({ x: v.x, z: v.z });
+    }
+  });
+  check("the city has street trees", trunks.length > 100, `${trunks.length}`);
+  const treesIn = trunks.filter(t => inLayby(t.x, t.z));
+  check("no tree grows in a bus stop", treesIn.length === 0,
+    `${treesIn.length} of ${trunks.length}`);
+
+  // The lamps still have to light the junctions, so they are moved rather than
+  // dropped: almost all of them survive.
+  check("the junctions are still lit", city.lampPosts.length > 500,
+    `${city.lampPosts.length} lamps`);
+  let closest = Infinity;
+  for (const p of city.lampPosts) {
+    for (const sig of city.signals) {
+      closest = Math.min(closest, Math.max(Math.abs(sig.x - p.x), Math.abs(sig.z - p.z)));
+    }
+  }
+  check("no street lamp stands in front of a traffic signal", closest >= 3.2,
+    `closest ${closest.toFixed(2)} m`);
+  check("every signal knows where its own pole is",
+    city.signals.length > 0 && city.signals.every(sig => finite(sig.x) && finite(sig.z)));
+}
+
+// ── Towers, and the lights in them ────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+
+  // Every tower is 50, 55 or 60 floors. Measured from the roofs, which is where
+  // the height actually ends up, rather than from the number that was drawn.
+  const heights = [];
+  city.group.traverse(node => {
+    if (!node.isInstancedMesh || !/facade/i.test(node.name || "")) return;
+    const m = new THREE.Matrix4();
+    const scale = new THREE.Vector3();
+    for (let i = 0; i < node.count; i++) {
+      node.getMatrixAt(i, m);
+      m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      if (scale.y > 20) heights.push(scale.y);      // towers, not street furniture
+    }
+  });
+  check("the city is built of towers", heights.length > 50, `${heights.length}`);
+  const floorsOf = h => Math.round(h / 3);
+  const odd = heights.filter(h => ![50, 55, 60].includes(floorsOf(h)));
+  check("every tower is 50, 55 or 60 floors", odd.length === 0,
+    `${odd.length} others, e.g. ${odd.slice(0, 3).map(h => floorsOf(h)).join(", ")}`);
+
+  // The room light system, in every tower: bands of brightness rather than one
+  // value for every window in the city, and windows that go out as the night
+  // wears on and come back in the morning.
+  const bands = (city.litWindows || []).map(m => (m ? m.count : 0));
+  check("tower windows are lit in bands", bands.length >= 6 && bands.every(n => n > 0),
+    bands.join("/"));
+  city.applyTimeOfDay(0);
+  const brightness = (city.litWindows || []).map(m => m.material.emissiveIntensity);
+  check("and the bands are actually different brightnesses",
+    new Set(brightness.map(v => v.toFixed(3))).size === brightness.length,
+    brightness.map(v => v.toFixed(2)).join("/"));
+
+  const litNow = () => city._litPopulations()
+    .reduce((n, g) => n + g.lit.reduce((k, m) => k + (m ? m.count : 0), 0), 0);
+  const atDusk = litNow();
+  check("the towers hold most of the city's lit windows", atDusk > 10000, `${atDusk}`);
+  for (let f = 0; f < 60 * 60 * 12; f++) city.update(1 / 60, { x: 0, y: 1.6, z: 0 });
+  const afterNight = litNow();
+  check("the city gets darker as the night wears on", afterNight < atDusk,
+    `${atDusk} -> ${afterNight}`);
+  // A fixed allowance of 700 was a whole night for the near blocks' rooms and
+  // about seven minutes for a hundred thousand tower windows.
+  check("and enough of it does to be visible", atDusk - afterNight > 700,
+    `${atDusk - afterNight} went out`);
+  city.applyTimeOfDay(1);
+  for (let f = 0; f < 60 * 60 * 5 + 60; f++) city.update(1 / 60, { x: 0, y: 1.6, z: 0 });
+  check("and every one of them is back in the morning", litNow() === atDusk,
+    `${litNow()} of ${atDusk}`);
 }
 
 // ── Entrances and house numbers ───────────────────────────────────────────
