@@ -900,17 +900,25 @@ for (const [w, l, label] of [
 {
   const city = new City();
   city.build(boundsFor(0, 0, 9, 7), 4242, 0);
-  const paint = city.group.children.find(n => n.name === "city-ground-details");
-  const e = paint.instanceMatrix.array;
+  // Both paint meshes. The crossings were split onto their own set so they can
+  // glow at night — a material has one emissive term for everything drawn with
+  // it — so looking only at the ground details finds no crossings at all.
+  const paintMeshes = city.group.children.filter(
+    n => n.name === "city-ground-details" || n.name === "city-crossings");
   const marks = [];
-  for (let i = 0; i < paint.count; i++) {
-    const o = i * 16;
-    marks.push({
-      x: e[o + 12], y: e[o + 13], z: e[o + 14],
-      w: Math.hypot(e[o + 0], e[o + 1], e[o + 2]),
-      d: Math.hypot(e[o + 8], e[o + 9], e[o + 10]),
-    });
+  for (const mesh of paintMeshes) {
+    const e = mesh.instanceMatrix.array;
+    for (let i = 0; i < mesh.count; i++) {
+      const o = i * 16;
+      marks.push({
+        x: e[o + 12], y: e[o + 13], z: e[o + 14],
+        w: Math.hypot(e[o + 0], e[o + 1], e[o + 2]),
+        d: Math.hypot(e[o + 8], e[o + 9], e[o + 10]),
+      });
+    }
   }
+  check("both paint meshes are there", paintMeshes.length === 2,
+    paintMeshes.map(m => m.name).join(", "));
   // Lane dashes must stop clear of the junctions rather than running through
   // them — paint across a junction is the giveaway that it was drawn from one
   // side of the city to the other without looking.
@@ -2193,9 +2201,11 @@ for (const [w, l, label] of [
 
   // Glass and the interior boxes do neither: a pane you can see through has no
   // business blocking the sun, and the room boxes are drawn inside out.
-  for (const name of ["city-window-glass", "city-rooms-dark", "city-rooms-lit"]) {
-    const mesh = named(name);
-    check(`${name} throws no shadow`, !!mesh && mesh.castShadow === false);
+  // The lit rooms are one mesh per brightness band now, so the name has a
+  // number on the end.
+  for (const mesh of meshes) {
+    if (!/^city-(window-glass|rooms-dark|rooms-lit)/.test(mesh.name)) continue;
+    check(`${mesh.name} throws no shadow`, mesh.castShadow === false);
   }
   city.dispose();
 }
@@ -2310,6 +2320,124 @@ for (const [w, l, label] of [
     "ninety-six cube faces a frame, each drawing the whole city");
   check("the sun is not restricted to it — it shadows everything",
     !/sun\.shadow\.camera\.layers/.test(walk));
+}
+
+// ── The city after dark ──────────────────────────────────────────────────
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const viewer = { x: 0, y: 1.6, z: 0 };
+  const forward = { x: 0, z: -1 };
+
+  // Rooms burn at different brightnesses. One material has one emissive term,
+  // so this is one mesh per band rather than one mesh for all lit rooms — a
+  // wall of identically lit squares reads as a texture, not as rooms.
+  check("lit rooms come in several brightnesses",
+    city.roomsLit.length >= 4, `${city.roomsLit.length} bands`);
+  check("every band has rooms in it",
+    city.roomsLit.every(m => m && m.count > 0),
+    city.roomsLit.map(m => (m ? m.count : 0)).join(", "));
+  city.applyTimeOfDay(0);
+  const lit = city.roomsLit.map(m => m.material.emissiveIntensity);
+  check("the dimmest is about a tenth of the brightest",
+    lit[0] > 0 && lit[0] < lit[lit.length - 1] * 0.2,
+    `${lit[0].toFixed(2)} against ${lit[lit.length - 1].toFixed(2)}`);
+  check("they get brighter band by band",
+    lit.every((v, i) => i === 0 || v > lit[i - 1]), lit.map(v => v.toFixed(2)).join(" "));
+  city.applyTimeOfDay(1);
+  check("and all of them are out in daylight",
+    city.roomsLit.every(m => m.material.emissiveIntensity === 0));
+
+  // A bulb per lit room, in the matching band.
+  check("each band's bulbs match its rooms",
+    city.roomsLit.every((m, i) => m.count === city.litBulbs[i].count),
+    city.roomsLit.map((m, i) => `${m.count}/${city.litBulbs[i].count}`).join(" "));
+
+  // Windows go out through the night, and a dark room takes each one's place.
+  city.applyTimeOfDay(0);
+  const litAtDusk = city.roomsLit.reduce((n, m) => n + m.count, 0);
+  const darkAtDusk = city.roomsDark.count;
+  // Stepped coarsely: what is being tested is a clock, and at a sixtieth of a
+  // second this one check cost more frames than the rest of the suite together.
+  for (let f = 0; f < 21 * 60 * 20; f++) city.update(1 / 20, viewer, forward);
+  const litLater = city.roomsLit.reduce((n, m) => n + m.count, 0);
+  const wentOut = litAtDusk - litLater;
+  check("windows go out as the night goes on", wentOut > 0, `${wentOut} in 21 minutes`);
+  // A hundredth of the lit rooms every five minutes: four periods in 21.
+  check("about a hundredth of them every five minutes",
+    wentOut >= litAtDusk * 0.02 && wentOut <= litAtDusk * 0.06,
+    `${wentOut} of ${litAtDusk} — expected around ${(litAtDusk * 0.04).toFixed(0)}`);
+  check("a room that goes dark is still a room",
+    city.roomsDark.count - darkAtDusk === wentOut,
+    "otherwise the window looks through to nothing");
+  check("its bulb goes out with it",
+    city.roomsLit.every((m, i) => m.count === city.litBulbs[i].count));
+
+  // And nothing goes out in daylight.
+  city.applyTimeOfDay(1);
+  const beforeDay = city.roomsLit.reduce((n, m) => n + m.count, 0);
+  for (let f = 0; f < 12 * 60 * 20; f++) city.update(1 / 20, viewer, forward);
+  check("nothing switches off in broad daylight",
+    city.roomsLit.reduce((n, m) => n + m.count, 0) === beforeDay);
+
+  city.dispose();
+}
+
+// Street lamps, crossings and the traffic's own lights.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 4242, 0);
+  for (let f = 0; f < 300; f++) city.update(1 / 60, { x: 0, y: 1.6, z: 0 }, { x: 0, z: -1 });
+
+  // Lamps along the streets, not four to a block at the corners. A block side
+  // is BLOCK_SIZE long, so corners alone leave that much unlit between them.
+  const gaps = city.lampPosts.map(a => {
+    let best = Infinity;
+    for (const b of city.lampPosts) {
+      if (a === b) continue;
+      best = Math.min(best, Math.hypot(a.x - b.x, a.z - b.z));
+    }
+    return best;
+  }).sort((x, y) => x - y);
+  check("the streets are lit along their length",
+    gaps[gaps.length - 1] < BLOCK_SIZE * 0.6,
+    `the loneliest lamp is ${gaps[gaps.length - 1].toFixed(0)} m from its neighbour, on a ${BLOCK_SIZE} m block`);
+  check("and not so densely that it is a runway",
+    gaps[0] > 8, `closest pair ${gaps[0].toFixed(1)} m`);
+
+  // Half strength.
+  const out = [];
+  city.applyTimeOfDay(0);
+  city.collectLights(out, { x: 0, y: 1.6, z: 0 }, 60);
+  const lamps = out.filter(l => l.distance > 15);
+  check("street lamps are on at night", lamps.length > 0);
+  check("but only at half strength",
+    lamps.every(l => l.intensity > 5 && l.intensity < 18),
+    `${lamps[0] ? lamps[0].intensity : "?"} — a street lamp is not a floodlight`);
+
+  // Crossings pick up the light after dark.
+  check("the crossings are their own paint", !!city.crossings && city.crossings.count > 100,
+    city.crossings ? `${city.crossings.count} bars` : "no crossing mesh");
+  check("they glow at night",
+    city.crossings.material.emissiveIntensity > 0
+    && city.crossings.material.emissive.getHexString() === "39ff9e");
+  city.applyTimeOfDay(1);
+  check("and are plain paint by day", city.crossings.material.emissiveIntensity === 0);
+
+  // Something lit inside every vehicle that is drawn.
+  const drawn = Object.values(city.vehicleMeshes).reduce((n, m) => n + m.count, 0);
+  check("every vehicle drawn has a light inside it",
+    city.carParts.cabin.count === drawn, `${city.carParts.cabin.count} for ${drawn}`);
+  city.applyTimeOfDay(0);
+  const atNight = city.carParts.cabin.material.emissiveIntensity;
+  city.applyTimeOfDay(1);
+  const byDay = city.carParts.cabin.material.emissiveIntensity;
+  check("brighter after dark, but never off",
+    byDay > 0 && atNight > byDay * 2,
+    `${byDay.toFixed(2)} by day, ${atNight.toFixed(2)} at night`);
+  check("and dim — it is a dashboard, not a headlight",
+    atNight < 1, `${atNight.toFixed(2)}`);
+  city.dispose();
 }
 
 const EXPECTED = [

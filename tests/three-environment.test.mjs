@@ -135,8 +135,14 @@ check("nearby buildings are hollow, with rooms behind the windows",
   city.includes("_hollowBuilding(") && city.includes("ROOM_DEPTH"));
 check("a room is seen from the inside, which is what gives the window depth",
   /roomsDark[\s\S]{0,400}side: THREE\.BackSide/.test(city));
+// The bulbs are per brightness band now, one set each, because a material has a
+// single emissive intensity and the rooms no longer all burn at the same one.
 check("lit rooms have a bulb in them rather than a glowing pane",
-  city.includes("sets.bulbs.add(") && city.includes("this.bulbs.material.emissiveIntensity"));
+  city.includes("sets.litBulbs[band].add(")
+  && /this\.litBulbs\[i\]\.material\.emissiveIntensity/.test(city));
+check("every lit room is given a brightness of its own",
+  /const LIT_BANDS = \[/.test(city)
+  && /const band = lit \? Math\.floor\(rnd\(\) \* LIT_BANDS\.length\) : -1;/.test(city));
 
 check("there are trucks and buses, not only cars",
   /kind: "truck"/.test(city) && /kind: "bus"/.test(city));

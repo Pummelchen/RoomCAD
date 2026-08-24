@@ -69,6 +69,10 @@ const SIDEWALK_COLOR = 0xb9b6ad;
 const KERB_COLOR = 0x9a978f;
 const GRASS_COLOR = 0x6f9457;
 const MARKING_COLOR = 0xe6e2d4;
+// A crossing picks up the light at night the way retroreflective paint does —
+// soft, green, and clearly a crossing from the far end of the street.
+const CROSSING_GLOW = 0x39ff9e;
+const CROSSING_GLOW_POWER = 0.5;
 const BAY_LINE_COLOR = 0xd8d3c2;    // the box a car parks inside
 const BUS_BOX_COLOR = 0xb8452f;     // bus stops are painted, and only for buses
 const TRUNK_COLOR = 0x6b4f36;
@@ -87,7 +91,7 @@ const LAMP_POLE_COLOR = 0x4a4d53;
 // forever is a light that has to be considered everywhere — and the only way to
 // afford three hundred of them is to know which few can be seen.
 const LAMP_LIGHT_COLOR = 0xffd9a0;
-const LAMP_LIGHT_POWER = 26;
+const LAMP_LIGHT_POWER = 13;   // half strength: a street lamp is not a floodlight
 const LAMP_LIGHT_REACH = 17;
 const HEADLAMP_COLOR = 0xfff4e0;
 const HEADLAMP_POWER = 12;
@@ -118,7 +122,20 @@ const CORE_CLEAR = 0.16;
 const INTERIOR_COLOR = 0x5d564c;
 const INTERIOR_LIT_COLOR = 0x7a6a55;
 const INTERIOR_GLOW = 0xffd9a2;
+// How brightly a lit room burns, as a fraction of full. Every room draws one of
+// these when the city is built, so no two windows on a facade match — a wall of
+// identically lit squares reads as a texture rather than as rooms with people
+// in them.
+const LIT_BANDS = [0.10, 0.28, 0.46, 0.64, 0.82, 1.00];
+// And they go out. As the night gets deeper a room every so often goes dark, at
+// this share of the lit ones per five minutes.
+const LIGHTS_OUT_SHARE = 0.01;
+const LIGHTS_OUT_EVERY = 5 * 60;
+const LIGHTS_OUT_SPARE = 700;   // dark-room instances held back for them
 const BULB_COLOR = 0xfff0cc;
+// The glow from inside a vehicle: dim, warm, and a little above the lamps.
+const CABIN_GLOW = 0xffc98a;
+const CABIN_HEIGHT = 0.34;
 const CORE_COLOR = 0x241f1b;    // the solid middle, so you cannot see through
 // House numbers, drawn as blocks rather than as text. A texture per building
 // would mean a canvas and an upload each; a 3x5 block font costs a handful of
@@ -859,6 +876,10 @@ export class City {
     this.vehicleMeshes = null;
     this.litWindows = null;
     this.roomsLit = null;
+    this.roomsDark = null;
+    this.crossings = null;
+    this.litBulbs = null;
+    this.litInBand = null;
     this.bulbs = null;
     this.lampHeads = null;
     this.headlights = null;
@@ -978,21 +999,47 @@ export class City {
       // Interiors are boxes seen from the inside: only their back faces are
       // drawn, so looking through a window opening shows the far wall of the
       // room rather than the outside of a block sitting in the hole.
+      // The zebra crossings, on their own set: they are the one piece of paint
+      // that lights up after dark, and a material has one emissive term for
+      // everything drawn with it.
+      crossings: new InstanceSet(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({
+          color: MARKING_COLOR, emissive: CROSSING_GLOW, emissiveIntensity: 0,
+          roughness: 0.7, metalness: 0,
+        }),
+        { colored: false, casts: false, receives: true }
+      ),
+      // With room to take every light that goes out overnight. A room whose
+      // light is switched off is still a room: drop the lit instance without
+      // adding a dark one and the window shows through to nothing.
       roomsDark: new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
         new THREE.MeshStandardMaterial({
           color: INTERIOR_COLOR, roughness: 0.95, metalness: 0, side: THREE.BackSide,
         }),
-        { colored: false }
+        { colored: false, spare: LIGHTS_OUT_SPARE }
       ),
-      roomsLit: new InstanceSet(
+      // One set per brightness band. A material has ONE emissive intensity, so
+      // rooms of different brightness cannot share a mesh; instance colour
+      // multiplies the diffuse term, not the emissive one, so that will not do
+      // it either. Six bands from a tenth to full is enough that no two windows
+      // on a facade look the same, and it costs five extra draw calls.
+      roomsLit: LIT_BANDS.map(() => new InstanceSet(
         new THREE.BoxGeometry(1, 1, 1),
         new THREE.MeshStandardMaterial({
           color: INTERIOR_LIT_COLOR, emissive: INTERIOR_GLOW, emissiveIntensity: 0,
           roughness: 0.95, metalness: 0, side: THREE.BackSide,
         }),
         { colored: false }
-      ),
+      )),
+      litBulbs: LIT_BANDS.map(() => new InstanceSet(
+        new THREE.SphereGeometry(0.085, 6, 4),
+        new THREE.MeshStandardMaterial({
+          color: BULB_COLOR, emissive: BULB_COLOR, emissiveIntensity: 0, roughness: 0.4,
+        }),
+        { colored: false }
+      )),
       bulbs: new InstanceSet(
         new THREE.SphereGeometry(0.085, 6, 4),
         new THREE.MeshStandardMaterial({
@@ -1088,6 +1135,7 @@ export class City {
       }
     }
 
+    this._crossingSet = sets.crossings;
     this._roadMarkings(sets.flats, cx, cz, block, span);
     this._paintKerbside(sets.flats, laybys);
     this._trafficSignals(sets.signalPoles, sets.signalHousings, sets.signalDark, cx, cz);
@@ -1105,11 +1153,17 @@ export class City {
     this.facadeSet = sets.facades;
     sets.roofs.build(this.group, "city-roofs");
     sets.flats.build(this.group, "city-ground-details");
+    this.crossings = sets.crossings.build(this.group, "city-crossings");
     sets.darkGlass.build(this.group, "city-windows-dark");
     sets.glazing.build(this.group, "city-window-glass");
     this.litWindows = sets.litGlass.build(this.group, "city-windows-lit");
-    sets.roomsDark.build(this.group, "city-rooms-dark");
-    this.roomsLit = sets.roomsLit.build(this.group, "city-rooms-lit");
+    this.roomsDark = sets.roomsDark.build(this.group, "city-rooms-dark");
+    this.roomsLit = sets.roomsLit.map((set, i) => set.build(this.group, `city-rooms-lit-${i}`));
+    this.litBulbs = sets.litBulbs.map((set, i) => set.build(this.group, `city-bulbs-${i}`));
+    // How many rooms each band started with, so turning them off can walk down
+    // the counts without having to know which instance is which.
+    this.litInBand = this.roomsLit.map(m => (m ? m.count : 0));
+    this._litOutAt = LIGHTS_OUT_EVERY;
     this.bulbs = sets.bulbs.build(this.group, "city-bulbs");
     sets.trunks.build(this.group, "city-tree-trunks");
     sets.canopies.build(this.group, "city-tree-canopies");
@@ -1212,6 +1266,43 @@ export class City {
   /// One slab layer of a block, as up to four strips around an optional hole.
   /// The room's own plot is the hole: paving over it would push pavement up
   /// through the floor of a ground-floor room.
+  /// Turns off a share of the lit rooms, and puts a dark one in each place.
+  ///
+  /// A city does not keep the same windows burning all night. Every so often
+  /// another goes out, and by the small hours most of them have. The lit
+  /// instance is dropped from its band and a dark room is drawn where it was —
+  /// dropping it alone would leave the window looking through to nothing.
+  ///
+  /// Instances are packed, so the one taken is always the last in its band, and
+  /// the bulb that goes with it is the last in the matching bulb mesh: the two
+  /// were filled in step, one entry each per lit room.
+  _lightsOut(count) {
+    if (!this.roomsLit || !this.roomsDark) return 0;
+    let done = 0;
+    for (let n = 0; n < count; n++) {
+      // From the band with the most left, so they empty together rather than
+      // one whole band at a time.
+      let band = -1;
+      let most = 0;
+      for (let i = 0; i < this.roomsLit.length; i++) {
+        const mesh = this.roomsLit[i];
+        if (mesh && mesh.count > most) { most = mesh.count; band = i; }
+      }
+      if (band < 0) break;
+      if (this.roomsDark.count >= this.roomsDark.instanceMatrix.count) break;
+      const lit = this.roomsLit[band];
+      const last = lit.count - 1;
+      lit.getMatrixAt(last, _m);
+      this.roomsDark.setMatrixAt(this.roomsDark.count++, _m);
+      this.roomsDark.instanceMatrix.needsUpdate = true;
+      lit.count = last;
+      const bulbs = this.litBulbs[band];
+      if (bulbs && bulbs.count > 0) bulbs.count--;
+      done++;
+    }
+    return done;
+  }
+
   /// Every light in the city that could reach a given point, nearest first.
   ///
   /// Candidates, not lights: there are a hundred street lamps and a headlamp on
@@ -1706,7 +1797,9 @@ export class City {
             rx, roomCY, rz,
             alongX ? roomW : depth, roomH, alongX ? depth : roomW
           );
-          (lit ? sets.roomsLit : sets.roomsDark).add(box);
+          // Which band this room burns at, drawn once and kept.
+          const band = lit ? Math.floor(rnd() * LIT_BANDS.length) : -1;
+          if (lit) sets.roomsLit[band].add(box); else sets.roomsDark.add(box);
 
           // The pane, set INTO the opening rather than flush with the facade.
           // Flush puts its outer face in the same plane as the masonry around
@@ -1724,7 +1817,7 @@ export class City {
             // so it reads as the source of the light rather than as a sticker
             // on the window.
             const bulbIn = other / 2 - depth * 0.55;
-            sets.bulbs.add(boxMatrix(
+            sets.litBulbs[band].add(boxMatrix(
               alongX ? x + c : x + face.nx * bulbIn,
               roomCY + roomH / 2 - 0.34,
               alongX ? z + face.nz * bulbIn : z + c,
@@ -1958,6 +2051,7 @@ export class City {
   /// junction, each approach gets a stop line, and the crossing sits between
   /// the line and the carriageway — which is the order a driver meets them in.
   _roadMarkings(flats, cx, cz, block, span) {
+    // Crossings are painted into their own set — see sets.crossings.
     const y = ROAD_Y + 0.02;
     const halfRoad = ROAD_WIDTH / 2;
     const outer = GRID_RADIUS * span + block / 2 + ROAD_WIDTH / 2;
@@ -2031,9 +2125,9 @@ export class City {
     for (let i = 0; i < bars; i++) {
       const off = -usable / 2 + pitch * (i + 0.5);
       const at = dir * (near + CROSS_DEPTH / 2);
-      flats.add(alongX
+      this._crossingSet.add(alongX
         ? boxMatrix(rx + at, y, rz + off, CROSS_DEPTH, 0.04, CROSS_BAR)
-        : boxMatrix(rx + off, y, rz + at, CROSS_BAR, 0.04, CROSS_DEPTH), MARKING_COLOR);
+        : boxMatrix(rx + off, y, rz + at, CROSS_BAR, 0.04, CROSS_DEPTH));
     }
 
     // The stop line covers the approaching half of the carriageway only. Which
@@ -2157,7 +2251,16 @@ export class City {
         const bx = cx + gx * span;
         const bz = cz + gz * span;
         const edge = block / 2 - 0.9;
-        for (const [ox, oz] of [[edge, edge], [-edge, edge], [edge, -edge], [-edge, -edge]]) {
+        // Along the streets at a real spacing, not four to a block at the
+        // corners. A block side is 46 m, so a lamp at each corner leaves 46 m
+        // of unlit street between them; on a real street they stand about every
+        // 25 m. Corners plus the middle of each side gives 23 m, which is what
+        // the pools of light either side of you should look like.
+        const spots = [
+          [edge, edge], [-edge, edge], [edge, -edge], [-edge, -edge],
+          [edge, 0], [-edge, 0], [0, edge], [0, -edge],
+        ];
+        for (const [ox, oz] of spots) {
           poles.add(boxMatrix(bx + ox, PAVEMENT_Y + h / 2, bz + oz, 1, h, 1));
           heads.add(boxMatrix(bx + ox, PAVEMENT_Y + h + 0.12, bz + oz, 0.44, 0.16, 0.44));
           // Where the light actually comes from, kept so something can light
@@ -2437,6 +2540,11 @@ export class City {
       tail: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x4a1210, 0xd8241a, 1.1), n * 2),
       brake: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x5a1512, 0xff2a18, 3.0), n * 2),
       indicator: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x5a3a10, 0xffa621, 3.0), n * 2),
+      // The cabin: a dim warm panel inside the greenhouse, one per vehicle.
+      // Every car on a road at night has something lit inside it — the dash at
+      // least — and without it the traffic reads as empty shells with lamps
+      // bolted on.
+      cabin: make(new THREE.BoxGeometry(1, 1, 1), lamp(0x2a2118, CABIN_GLOW, 0.35), n),
     };
     this.headlights = this.carParts.head;
   }
@@ -4379,13 +4487,14 @@ export class City {
 
   _writeCarMatrices() {
     if (!this.carParts || !this.vehicleMeshes) return;
-    const { head, tail, brake, indicator } = this.carParts;
+    const { head, tail, brake, indicator, cabin } = this.carParts;
     const night = 1 - clamp01(this._dayAmount);
     const blinkOn = ((this._clock * BLINK_HZ) % 1) < 0.55;
     let heads = 0;
     let tails = 0;
     let brakes = 0;
     let indicators = 0;
+    let cabins = 0;
 
     // Only the traffic near enough to be worth drawing.
     //
@@ -4489,6 +4598,15 @@ export class City {
           0.12, 0.16, 0.20, rotY, _m
         ));
       }
+
+      // Something lit inside. Sat where the greenhouse is — back from the
+      // nose, up at window height — and sized to the vehicle, so a bus glows
+      // along its whole length and a car shows a patch above the dash.
+      cabin.setMatrixAt(cabins++, boxMatrix(
+        v.x - fx * v.length * 0.05, ROAD_Y + ref.lampY + CABIN_HEIGHT,
+        v.z - fz * v.length * 0.05,
+        v.length * 0.42, 0.16, v.width * 0.62, rotY, _m
+      ));
     }
 
     for (const kind of Object.keys(this.vehicleMeshes)) {
@@ -4498,10 +4616,12 @@ export class City {
     tail.count = tails;
     brake.count = brakes;
     indicator.count = indicators;
+    cabin.count = cabins;
     head.instanceMatrix.needsUpdate = true;
     tail.instanceMatrix.needsUpdate = true;
     brake.instanceMatrix.needsUpdate = true;
     indicator.instanceMatrix.needsUpdate = true;
+    cabin.instanceMatrix.needsUpdate = true;
   }
 
   /// Advances the traffic and the weather. `viewer` is where the camera is, so
@@ -4525,6 +4645,15 @@ export class City {
     // The lights run whether or not anybody is driving, but what they run ON
     // is who is waiting — so the picture is taken first, then the signals, then
     // the turn arrows, and only then does anyone move.
+    // Another few windows go out every so often, once it is properly dark.
+    if (this._clock >= (this._litOutAt || 0)) {
+      this._litOutAt = this._clock + LIGHTS_OUT_EVERY;
+      if (1 - clamp01(this._dayAmount) > 0.6) {
+        const stillLit = (this.roomsLit || []).reduce((n, m) => n + (m ? m.count : 0), 0);
+        if (stillLit > 0) this._lightsOut(Math.max(1, Math.round(stillLit * LIGHTS_OUT_SHARE)));
+      }
+    }
+
     this._collectDemand();
     this._updateSignals(step);
 
@@ -4656,12 +4785,20 @@ export class City {
     const cfg = WEATHER[this._weather] || WEATHER.clear;
     const night = clamp01(1 - Math.max(0, Math.min(1, dayAmount)) + cfg.dim * 0.5);
     if (this.litWindows) this.litWindows.material.emissiveIntensity = night * 1.7;
-    if (this.roomsLit) this.roomsLit.material.emissiveIntensity = night * 1.15;
+    for (let i = 0; i < (this.roomsLit || []).length; i++) {
+      if (this.roomsLit[i]) this.roomsLit[i].material.emissiveIntensity = night * 1.15 * LIT_BANDS[i];
+      if (this.litBulbs[i]) this.litBulbs[i].material.emissiveIntensity = night * 3.2 * LIT_BANDS[i];
+    }
     if (this.bulbs) this.bulbs.material.emissiveIntensity = night * 3.2;
+    // Soft, not a light source: it reads as paint catching the street lamps.
+    if (this.crossings) this.crossings.material.emissiveIntensity = night * CROSSING_GLOW_POWER;
     if (this.lampHeads) this.lampHeads.material.emissiveIntensity = night * 2.2;
     // Never fully off: these are running lamps. Bright enough to read against
     // daylight, far brighter after dark.
     if (this.headlights) this.headlights.material.emissiveIntensity = 0.6 + night * 2.2;
+    if (this.carParts && this.carParts.cabin) {
+      this.carParts.cabin.material.emissiveIntensity = 0.12 + night * 0.55;
+    }
     if (this.carParts && this.carParts.tail) {
       this.carParts.tail.material.emissiveIntensity = 0.55 + night * 0.95;
     }
@@ -4695,6 +4832,10 @@ export class City {
     this.terrain = null;
     this.litWindows = null;
     this.roomsLit = null;
+    this.roomsDark = null;
+    this.crossings = null;
+    this.litBulbs = null;
+    this.litInBand = null;
     this.bulbs = null;
     this.lampHeads = null;
     this.headlights = null;
