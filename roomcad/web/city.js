@@ -186,6 +186,13 @@ const TURN_REVIEW_FROM = 14;    // ... and the last point one can be reconsidere
 export const NEAR_SIDE_TURN = 1;
 export const CROSSING_TURN = -1;
 const BLINK_HZ = 1.5;
+// Suspension. Small angles — a car under heavy braking dips a couple of
+// degrees, not ten — but the eye reads them immediately.
+const PITCH_PER_G = 0.012;      // radians per m/s2 of acceleration
+const PITCH_MAX = 0.055;
+const ROLL_PER_G = 0.016;       // radians per m/s2 of sideways push
+const ROLL_MAX = 0.075;
+const SUSPENSION_RATE = 5;      // how fast it settles, per second
 const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
 // Every driver has their own pace. The kind of vehicle sets the base speed —
 // a bus is not a hatchback — and this is the multiplier on top of it, so some
@@ -317,6 +324,7 @@ const VEHICLE_KINDS = [
     kind: "car", share: 0.66, length: [4.0, 4.9], width: 1.78,
     bodyH: 0.70, roofH: 0.58, roofFrac: 0.52, axles: 2,
     cruise: 11.5, accel: 2.8, brake: 5.6, colors: CAR_COLORS,
+    mass: 1350, load: 350, grip: 3.6,
   },
   {
     // The delivery van: short enough to pull into a parking bay, which is the
@@ -326,16 +334,23 @@ const VEHICLE_KINDS = [
     kind: "van", share: 0.12, length: [5.4, 6.6], width: 1.9,
     bodyH: 1.02, roofH: 0.72, roofFrac: 0.62, axles: 2,
     cruise: 10.0, accel: 2.2, brake: 5.0, colors: VAN_COLORS,
+    // A van's load is most of its weight, which is why an empty one drives
+    // like a car and a full one does not.
+    mass: 2100, load: 1400, grip: 3.0,
   },
   {
     kind: "truck", share: 0.08, length: [8.4, 11.0], width: 2.42,
     bodyH: 1.18, roofH: 1.25, roofFrac: 0.3, axles: 3,
     cruise: 8.8, accel: 1.5, brake: 4.2, colors: TRUCK_COLORS,
+    mass: 9000, load: 16000, grip: 2.3,
   },
   {
     kind: "bus", share: 0.14, length: [10.5, 12.2], width: 2.5,
     bodyH: 2.05, roofH: 0.5, roofFrac: 0.9, axles: 3,
     cruise: 8.5, accel: 1.4, brake: 4.0, colors: BUS_COLORS,
+    // Tall and heavy: the limit on how fast it can corner is the risk of going
+    // over, not of sliding.
+    mass: 11000, load: 6000, grip: 2.2,
   },
 ];
 
@@ -385,6 +400,7 @@ export function seedFromString(text) {
 }
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const smoothstep = t => t * t * (3 - 2 * t);
 const smootherstep = t => t * t * t * (t * (t * 6 - 15) + 10);
 
@@ -516,6 +532,22 @@ function boxMatrix(x, y, z, w, h, d, rotY = 0, into = null) {
   _pos.set(x, y, z);
   _scale.set(w, h, d);
   _q.setFromEuler(_euler.set(0, rotY, 0));
+  return (into || new THREE.Matrix4()).compose(_pos, _q, _scale);
+}
+
+/// The same, but leaning. `pitch` is the nose going down under the brakes and
+/// up under power; `roll` is the body leaning out of a corner. Applied in the
+/// vehicle's own frame — yaw first, then the lean about the axes that yaw
+/// leaves pointing along and across the vehicle — so a car diving under braking
+/// dives towards where it is going rather than towards north.
+function bodyMatrix(x, y, z, w, h, d, rotY, pitch, roll, into = null) {
+  _pos.set(x, y, z);
+  _scale.set(w, h, d);
+  // The body is modelled with its LENGTH along local X, so leaning about that
+  // axis is roll and nodding about local Z is pitch. Taking the Euler angles in
+  // the order they are named instead gives a car that leans sideways under the
+  // brakes and lifts its nose going round a corner.
+  _q.setFromEuler(_euler.set(roll, rotY, pitch, "YXZ"));
   return (into || new THREE.Matrix4()).compose(_pos, _q, _scale);
 }
 
@@ -2232,6 +2264,7 @@ export class City {
         // one the constants describe.
         const pace = PACE_SLOWEST + rnd() * (PACE_FASTEST - PACE_SLOWEST);
         const cruise = spec.cruise * pace;
+        const mass = spec.mass + rnd() * spec.load;
         const forward = City.forwardOf(lane.axis, lane.dir);
         const v = {
           id: id++,
@@ -2249,10 +2282,21 @@ export class City {
           // Everything starts off slowly and works up to its cruising speed,
           // rather than the whole city being at full tilt on frame one.
           pace,
+          pitch: 0,
+          roll: 0,
+          accelNow: 0,
           speed: cruise * (0.15 + rnd() * 0.3),
           cruise,
-          accel: spec.accel,
-          brakeRate: spec.brake,
+          // Weight, and what it does. Acceleration is a force divided by a
+          // mass, so a loaded van pulls away like a loaded van; braking is
+          // mostly the tyres, which do not care how heavy the vehicle is, but
+          // not entirely — a heavy one takes longer to stop than the same
+          // vehicle empty. Before this, every car in the city accelerated at
+          // exactly the same rate and only its top speed differed.
+          mass,
+          accel: spec.accel * (spec.mass / mass),
+          brakeRate: spec.brake * (0.8 + 0.2 * (spec.mass / mass)),
+          grip: spec.grip,
           length,
           width: spec.width,
           bodyH: spec.bodyH,
@@ -3231,11 +3275,58 @@ export class City {
 
     v.atTurnPoint = false;
     v.arc = { cx: C.x, cz: C.z, r: R, theta0, sweep, u: 0, lane, newAxis, newDir, exitProgress };
+    // Down to the bend's own limit on the frame it commits, not on the next
+    // one. Waiting a frame let a vehicle that arrived fast take the first slice
+    // of the corner at whatever it was doing.
+    v.speed = Math.min(v.speed, City.corneringSpeed(v, R));
+  }
+
+  /// What the suspension is doing: the nose dipping under the brakes, the body
+  /// leaning out of a corner.
+  ///
+  /// Both are read off the forces already in the model rather than faked from
+  /// the steering input — the lean is the sideways push the corner is applying,
+  /// the dip is the acceleration this frame — and both are eased rather than
+  /// snapped, because springs take time. Without it a vehicle is a box that
+  /// changes direction, and it is the single clearest tell that nothing in the
+  /// city has any weight.
+  _settleSuspension(v, dt) {
+    let wantPitch = 0;
+    let wantRoll = 0;
+    if (Number.isFinite(v.accelNow)) {
+      // Nose down under braking, up under power. Softer springs on the heavy
+      // ones, so a loaded truck wallows rather than nodding.
+      wantPitch = clamp(v.accelNow * PITCH_PER_G, -PITCH_MAX, PITCH_MAX);
+    }
+    if (v.arc && v.arc.r > 0.01) {
+      const lateral = (v.speed * v.speed) / v.arc.r;
+      // Leaning AWAY from the turn, which is what a body on springs does.
+      wantRoll = clamp(-Math.sign(v.arc.sweep) * lateral * ROLL_PER_G, -ROLL_MAX, ROLL_MAX);
+    }
+    const ease = Math.min(1, dt * SUSPENSION_RATE);
+    v.pitch = (v.pitch || 0) + (wantPitch - (v.pitch || 0)) * ease;
+    v.roll = (v.roll || 0) + (wantRoll - (v.roll || 0)) * ease;
+  }
+
+  /// How fast this vehicle can go round a bend of this radius.
+  ///
+  /// Cornering is the one place where mass does NOT set the limit — sliding is
+  /// about grip, and grip scales with weight just as the sideways push does, so
+  /// the two cancel. What does differ is what the vehicle is: a bus is tall
+  /// enough that it tips before it slides, and is held to less.
+  static corneringSpeed(v, radius) {
+    return Math.sqrt(Math.max(0.5, v.grip) * Math.max(0.5, radius));
   }
 
   /// Moves a vehicle round its turn. Returns true while the turn is running.
   _advanceTurn(v, dt) {
     const arc = v.arc;
+    // Held to what the bend allows for as long as it is in it, not only on the
+    // way in. Clamped on approach alone, a vehicle that entered the junction
+    // fast — carried in by the queue behind, or released late on a green —
+    // went round at whatever speed it arrived with: nine corners in ten were
+    // taken harder than the tyres would have allowed.
+    v.speed = Math.min(v.speed, City.corneringSpeed(v, arc.r));
     const sweepLen = arc.r * Math.abs(arc.sweep);
     arc.u += (v.speed * dt) / Math.max(0.01, sweepLen);
     const u = Math.min(1, arc.u);
@@ -3512,14 +3603,22 @@ export class City {
       // A compulsory turn is approached slowly, but only over the last few
       // metres: crawling all the way in makes a long vehicle too slow to clear
       // the junction inside one phase.
-      if (v.mustTurn && junction.distance < 2.5) desired = Math.min(desired, 4.5);
+      if (v.mustTurn && junction.distance < 2.5) {
+        desired = Math.min(desired, City.corneringSpeed(v, TURN_RADIUS));
+      }
       // Once it is INSIDE the junction the light no longer decides anything —
       // a manoeuvre already begun gets finished, which is both what a driver
       // does and what stops a vehicle being stranded mid-junction by a phase
       // change with nowhere legal to go.
       const committed = mayEnter || junction.distance < 0;
       if (v.turn !== 0 && committed && junction.distance < TURN_RADIUS + 3) {
-        desired = Math.min(desired, 6.5);   // slow down into the corner
+        // Slowing for the corner, at the speed the corner allows rather than a
+        // number: a vehicle going round a bend of radius R at speed s is being
+        // pushed sideways at s squared over R, and there is only so much of
+        // that a set of tyres will take — less for something tall, which goes
+        // over before it slides. It used to take every corner in the city at a
+        // flat 6.5 m/s whatever it was.
+        desired = Math.min(desired, City.corneringSpeed(v, TURN_RADIUS));
         this._beginTurn(v, junction);
         if (v.arc) return;
         // A wait inside the junction is bounded. Standing still in the box is
@@ -3549,7 +3648,7 @@ export class City {
         if (v.axis === "x") v.z = v.fixed; else v.x = v.fixed;
         const forward = City.forwardOf(v.axis, v.dir);
         v.heading = Math.atan2(forward.z, forward.x);
-        v.speed = Math.min(v.speed, 4);
+        v.speed = Math.min(v.speed, City.corneringSpeed(v, v.arc ? v.arc.r : TURN_RADIUS));
         v.turn = 0;
         v.mustTurn = false;
         v.turnDecidedAt = -1;
@@ -3558,6 +3657,7 @@ export class City {
     }
 
     desired = Math.max(0, Math.min(desired, v.cruise));
+    const was = v.speed;
     if (desired > v.speed) {
       v.speed = Math.min(desired, v.speed + v.accel * dt);
       v.braking = false;
@@ -3568,6 +3668,7 @@ export class City {
       v.braking = desired < v.speed - 0.05 || v.speed < 0.3;
     }
     v.stopped = v.speed < 0.15;
+    void was;
 
     this._considerStopping(v, dt);
 
@@ -4231,7 +4332,8 @@ export class City {
   /// drift apart.
   vehicleMatrix(v, into = null) {
     const ref = VEHICLE_REF[v.kind];
-    return boxMatrix(v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1, -v.heading, into || new THREE.Matrix4());
+    return bodyMatrix(v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1,
+      -v.heading, v.pitch || 0, v.roll || 0, into || new THREE.Matrix4());
   }
 
   _writeCarMatrices() {
@@ -4257,8 +4359,8 @@ export class City {
 
       // The body is modelled at a reference length and stretched to this
       // vehicle's own; everything else about it is already in the mesh.
-      mesh.setMatrixAt(v.slot, boxMatrix(
-        v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1, rotY, _m
+      mesh.setMatrixAt(v.slot, bodyMatrix(
+        v.x, ROAD_Y, v.z, v.length / ref.L, 1, 1, rotY, v.pitch || 0, v.roll || 0, _m
       ));
 
       // Lamps, arranged the way a real car's are: a cluster at each of the
@@ -4351,7 +4453,18 @@ export class City {
       // crossing, so everyone else has to be told about them explicitly.
       this._turning.length = 0;
       for (const v of this.cars) if (v.arc) this._turning.push(v);
-      for (const v of this.cars) this._driveVehicle(v, step);
+      for (const v of this.cars) {
+        // Measured around the WHOLE of driving, not inside it. _driveVehicle
+        // returns early half a dozen ways — stopped at a kerb, part-way round a
+        // turn, reversing into a space — and a vehicle that took one of those
+        // paths never reached the suspension at all: its springs were left
+        // undefined, and nothing ever leaned into a corner, because leaning
+        // into a corner is exactly the case that returns early.
+        const was = v.speed;
+        this._driveVehicle(v, step);
+        v.accelNow = step > 0 ? (v.speed - was) / step : 0;
+        this._settleSuspension(v, step);
+      }
       this._writeCarMatrices();
     }
     this._writeSignalLamps();

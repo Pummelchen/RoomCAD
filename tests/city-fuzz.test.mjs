@@ -1310,15 +1310,28 @@ for (const [w, l, label] of [
   {
     const van = city.cars.find(v => v.kind === "van");
     const car = city.cars.find(v => v.kind === "car");
-    const lane = [...city.lanes.values()].find(l => (l.bays || []).length >= 4);
-    const target = lane.bays[Math.floor(lane.bays.length / 2)];
-    // The bays immediately either side — one pitch away, stated from the pitch
-    // rather than from the clearance the model happens to use.
-    const near = lane.bays
-      .filter(b => b !== target && Math.abs(Math.abs(b.at - target.at) - BAY_PITCH) < 0.5);
-
-    check("the test found the spaces either side of the one it is using",
-      near.length > 0, `van ${van.length.toFixed(1)} m, bays every ${BAY_PITCH} m`);
+    // A space that actually HAS one either side of it. Bays are not a
+    // continuous run — junctions break them, and a block side with a bus stop
+    // has none at all — so the middle of a lane's list can be an isolated one
+    // with nothing a pitch away to test against.
+    let lane = null;
+    let target = null;
+    let near = [];
+    for (const candidate of city.lanes.values()) {
+      for (const bay of candidate.bays || []) {
+        const beside = (candidate.bays || []).filter(b =>
+          b !== bay && Math.abs(Math.abs(b.at - bay.at) - BAY_PITCH) < 0.5);
+        if (beside.length < 2) continue;
+        lane = candidate;
+        target = bay;
+        near = beside;
+        break;
+      }
+      if (lane) break;
+    }
+    check("the test found a space with one either side of it",
+      !!lane && near.length >= 2,
+      `van ${van.length.toFixed(1)} m, bays every ${BAY_PITCH} m`);
     check("a van very nearly fills a single space on its own",
       van.length > BAY_PITCH - 1.5,
       `${van.length.toFixed(1)} m in a ${BAY_PITCH} m space leaves too much room to matter`);
@@ -1975,6 +1988,114 @@ for (const [w, l, label] of [
   });
   check("no pane shares a plane with the masonry around it",
     clashes.length === 0, `${clashes.length} clashes`);
+  city.dispose();
+}
+
+// ── Vehicles with weight ─────────────────────────────────────────────────
+//
+// Every car in the city used to accelerate at exactly the same rate; only its
+// top speed differed. A vehicle now has a mass, and what it can do follows from
+// that: acceleration is a force divided by it, cornering is limited by grip
+// rather than by a flat number, and the body leans and dips because something
+// with weight on springs does.
+{
+  const city = new City();
+  city.build(boundsFor(0, 0, 9, 7), 2718, 0);
+  const of = (kind) => city.cars.filter(v => v.kind === kind);
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+
+  check("every vehicle has a mass",
+    city.cars.every(v => Number.isFinite(v.mass) && v.mass > 0));
+  check("an artic weighs more than a car",
+    Math.min(...of("truck").map(v => v.mass)) > Math.max(...of("car").map(v => v.mass)),
+    `truck from ${Math.min(...of("truck").map(v => v.mass)).toFixed(0)} kg, car to ${Math.max(...of("car").map(v => v.mass)).toFixed(0)} kg`);
+  check("two vehicles of a kind are not the same weight",
+    of("van").some(v => Math.abs(v.mass - of("van")[0].mass) > 100),
+    "a load is most of a van's weight");
+
+  // The point of the mass: it is what sets the acceleration.
+  for (const kind of ["car", "van", "truck", "bus"]) {
+    const list = of(kind);
+    if (list.length < 4) continue;
+    const heavy = list.slice().sort((a, b) => b.mass - a.mass)[0];
+    const light = list.slice().sort((a, b) => a.mass - b.mass)[0];
+    check(`a heavy ${kind} pulls away more slowly than a light one`,
+      heavy.accel < light.accel - 1e-6,
+      `${heavy.accel.toFixed(2)} against ${light.accel.toFixed(2)} m/s2`);
+  }
+  check("an artic takes far longer to reach speed than a car",
+    mean(of("truck").map(v => v.accel)) < mean(of("car").map(v => v.accel)) / 2,
+    `${mean(of("truck").map(v => v.accel)).toFixed(2)} against ${mean(of("car").map(v => v.accel)).toFixed(2)} m/s2`);
+
+  // Cornering, which mass does NOT set — grip does, and the two cancel.
+  {
+    const R = 5.4;
+    const car = City.corneringSpeed(of("car")[0], R);
+    const bus = City.corneringSpeed(of("bus")[0], R);
+    check("a corner is taken far slower than a straight",
+      car < of("car")[0].cruise / 2, `${car.toFixed(1)} m/s against a cruise of ${of("car")[0].cruise.toFixed(1)}`);
+    check("a bus corners slower than a car — it goes over before it slides",
+      bus < car, `${bus.toFixed(1)} against ${car.toFixed(1)} m/s`);
+    check("a wider bend can be taken faster",
+      City.corneringSpeed(of("car")[0], R * 4) > car * 1.5,
+      "speed goes with the square root of the radius");
+  }
+
+  // And they actually drive that way.
+  let fastestCorner = 0;
+  let overGrip = 0;
+  let corners = 0;
+  let dived = 0;
+  let pitchSampled = 0;
+  let pitchAgreed = 0;
+  let squatted = 0;
+  let leaned = 0;
+  let wrongWay = 0;
+  let extreme = 0;
+  let nonFinite = 0;
+  for (let f = 0; f < 6 * 60 * 60; f++) {
+    city.update(1 / 60, { x: 0, y: 1.6, z: 0 });
+    for (const v of city.cars) {
+      if (!Number.isFinite(v.pitch) || !Number.isFinite(v.roll)) nonFinite++;
+      if (Math.abs(v.pitch) > 0.09 || Math.abs(v.roll) > 0.12) extreme++;
+      if (v.pitch > 0.01) squatted++;          // nose up under power
+      if (v.pitch < -0.01) dived++;            // nose down under the brakes
+      // Only while the force is firm and the springs have caught up with it,
+      // so the easing lag is not counted as disagreement.
+      if (Math.abs(v.accelNow) > 1.2 && Math.abs(v.pitch) > 0.008) {
+        pitchSampled++;
+        if (Math.sign(v.pitch) === Math.sign(v.accelNow)) pitchAgreed++;
+      }
+      if (!v.arc) continue;
+      corners++;
+      fastestCorner = Math.max(fastestCorner, v.speed);
+      // A tenth of a metre a second of slack for the frame it is entered on.
+      if (v.speed > City.corneringSpeed(v, v.arc.r) + 0.1) overGrip++;
+      if (Math.abs(v.roll) > 0.005) {
+        leaned++;
+        // Leaning OUT of the corner: a right-hand turn sweeps positive, and the
+        // body should go the other way.
+        if (Math.sign(v.roll) === Math.sign(v.arc.sweep)) wrongWay++;
+      }
+    }
+  }
+  check("vehicles were seen going round corners", corners > 1000, `${corners} vehicle-frames`);
+  check("nothing corners harder than its tyres allow",
+    overGrip === 0, `${overGrip} of ${corners} vehicle-frames over the limit`);
+  check("the suspension is always somewhere", nonFinite === 0, `${nonFinite} frames`);
+  check("and never in an absurd place", extreme === 0, `${extreme} frames beyond a few degrees`);
+  check("the nose dips under the brakes", dived > 1000, `${dived} frames`);
+  check("and lifts under power", squatted > 1000, `${squatted} frames`);
+  // Which way round, not just that it moves. Counting dips and lifts alone
+  // passes just as happily with the sign inverted — a car that lifts its nose
+  // under the brakes does both, only backwards.
+  check("the nose goes the way the forces send it",
+    pitchAgreed > pitchSampled * 0.9,
+    `${pitchAgreed} of ${pitchSampled} hard accelerations tilted the right way`);
+  check("the body leans in a corner", leaned > 200, `${leaned} frames`);
+  check("and leans out of it, not into it",
+    wrongWay === 0, `${wrongWay} of ${leaned} leaned the wrong way`);
+
   city.dispose();
 }
 

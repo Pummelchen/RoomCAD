@@ -240,12 +240,17 @@ check("weather is a view setting, never saved into the plan",
 {
   const carPath = city.slice(city.indexOf("_writeCarMatrices() {"),
     city.indexOf("/// Advances the traffic"));
-  const calls = (carPath.match(/boxMatrix\(/g) || []).length;
+  // Both matrix helpers: the body is placed with bodyMatrix, which carries the
+  // lean and the dip as well as the heading, and everything hung on it — lamps,
+  // indicators — with boxMatrix. Counting only one of them let the other slip
+  // back to allocating.
+  const calls = (carPath.match(/\b(box|body)Matrix\(/g) || []).length;
   const scratch = (carPath.match(/, _m\s*\)/g) || []).length;
   check("the per-frame car path allocates no matrices", calls > 0 && calls === scratch,
     `${scratch} of ${calls} reuse the scratch matrix`);
-  check("boxMatrix can compose into a caller's matrix",
-    city.includes("into = null") && city.includes("(into || new THREE.Matrix4())"));
+  check("both matrix helpers can compose into a caller's matrix",
+    city.includes("into = null") && city.includes("(into || new THREE.Matrix4())")
+    && /function bodyMatrix\([^)]*into = null\)/.test(city));
 }
 check("the 3D viewmodel reuses its offset vector rather than allocating each frame",
   walk.includes("_gunOffset.set(") && !/updateGun[\s\S]{0,400}new THREE\.Vector3/.test(walk));
