@@ -58,6 +58,9 @@ let reachable = 0;
 let throughAnotherRoom = 0;
 let sealed = 0;
 let outsideOnly = 0;
+// Spaces you cannot walk to from the rest of the plan at all.
+let cutOff = 0;
+let spacesChecked = 0;
 
 for (const step of GRIDS) {
   let seed = 7;
@@ -175,8 +178,9 @@ for (const step of GRIDS) {
       format: "com.maria.roomcad-v2.room", version: 1,
       room: {
         ...room, walls: result.walls, doors: result.doors, windows: result.windows,
-        publicAreas: room.publicAreas.concat(
-          result.corridors.map(c => ({ id: P.uid(), ...c, generated: true }))),
+        // As the app applies it: the generator marks no public floor, so the
+        // plan carries the user's areas and nothing else.
+        publicAreas: room.publicAreas,
       },
     }));
     if (P.overlappingWallAreas(applied).length) doubled++;
@@ -190,20 +194,23 @@ for (const step of GRIDS) {
     // How each space is actually entered, worked out from the plan rather than
     // from what the engine believes it did: for every door, which spaces lie on
     // either side of it.
-    const publics = applied.publicAreas || [];
     const inRegion = pt => regions.findIndex(r =>
       r.rects.some(c => pt.x > c.x && pt.x < c.x + c.w && pt.z > c.z && pt.z < c.z + c.l));
-    const isCirculation = regions.map(r => {
-      let total = 0, marked = 0;
-      for (const c of r.rects) {
-        const a = c.w * c.l;
-        total += a;
-        const cx = c.x + c.w / 2, cz = c.z + c.l / 2;
-        if (publics.some(pa => cx > pa.x - 0.02 && cx < pa.x + pa.w + 0.02
-                            && cz > pa.z - 0.02 && cz < pa.z + pa.l + 0.02)) marked += a;
-      }
-      return total > 0 && marked / total > 0.5;
-    });
+
+    // Which detected spaces are the rooms the generator laid out, and which are
+    // the floor between them.
+    //
+    // Worked out from the ROOMS rather than from public marking. The generator
+    // no longer marks its hallways as public floor — that is the user's to
+    // mark — so "is this space circulation" cannot be answered by looking for
+    // grey any more. Each generated room is matched to the space containing a
+    // point known to be inside it; every other space is floor between rooms.
+    const isCirculation = regions.map(() => true);
+    for (const room of result.rooms) {
+      const biggest = room.rects.reduce((a, b) => (a.w * a.l >= b.w * b.l ? a : b));
+      const at = inRegion({ x: biggest.x + biggest.w / 2, z: biggest.z + biggest.l / 2 });
+      if (at >= 0) isCirculation[at] = false;
+    }
     const joins = regions.map(() => new Set());
     const toOutside = new Set();
     for (const d of applied.doors || []) {
@@ -234,6 +241,31 @@ for (const step of GRIDS) {
       else if ([...joins[i]].some(j => isCirculation[j])) reachable++;
       else if (toOutside.has(i)) outsideOnly++;
       else throughAnotherRoom++;
+    }
+
+    // Can you walk from any space to any other? Doors are the only way between
+    // spaces, so this is the plan's own connectivity — and it catches what
+    // counting doors per room cannot: a piece of hallway closed off from the
+    // rest of the hallway is a void whether or not it is called circulation.
+    {
+      const seen = new Array(regions.length).fill(false);
+      const stack = [];
+      // Start from the biggest space; in a plan that hangs together everything
+      // else is reachable from it.
+      let biggest = 0;
+      for (let i = 1; i < regions.length; i++) {
+        if (regions[i].area > regions[biggest].area) biggest = i;
+      }
+      if (regions.length) { seen[biggest] = true; stack.push(biggest); }
+      while (stack.length) {
+        const at = stack.pop();
+        for (const j of joins[at]) if (!seen[j]) { seen[j] = true; stack.push(j); }
+      }
+      for (let i = 0; i < regions.length; i++) {
+        if (regions[i].area < 1) continue;         // slivers between doubled walls
+        spacesChecked++;
+        if (!seen[i]) cutOff++;
+      }
     }
   }
 }
@@ -283,8 +315,18 @@ check("almost every room has a way in",
   // moved into the outside wall.
   check("and so is one you can only enter from the street",
     outsideOnly <= spaces * 0.012, share(outsideOnly));
+  // Doors are the only way between spaces, so this is the plan's own
+  // connectivity — and it catches what counting doors per room cannot: a room
+  // and the pocket of hallway it opens onto, closed off from the rest by the
+  // rooms in between. Every room on such an island has a door, and every door
+  // leads somewhere, and you still cannot get there.
+  //
+  // Was 536 of 3417 before the plan was checked for this at all.
+  check("every space over a square metre connects to the rest of the plan",
+    cutOff <= spacesChecked * 0.01, `${cutOff} of ${spacesChecked} cut off`);
   console.log(`    ways in: ${share(reachable)} onto circulation, `
-    + `${outsideOnly} from outside, ${throughAnotherRoom} through a room, ${sealed} sealed`);
+    + `${outsideOnly} from outside, ${throughAnotherRoom} through a room, ${sealed} sealed`
+    + ` · ${cutOff} of ${spacesChecked} spaces cut off from the rest`);
 }
 
 check("no wall is too short to survive a reload", shortestWall >= 0.15, `shortest ${shortestWall.toFixed(3)} m`);

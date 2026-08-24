@@ -196,10 +196,11 @@ function areaOf(r) { return r.w * r.l; }
   check("no room intrudes into floor the user marked public", intrudes.length === 0,
     JSON.stringify(intrudes));
 
-  // A previous run's own corridors are reclaimed, not treated as user floor.
+  // Public floor is the user's. A plan carrying an area some earlier run left
+  // behind is still laid out around the user's own and reclaims the rest.
   room.publicAreas = [hall, { id: "g", x: origin.x, z: origin.z, w: 12, l: 1.2, generated: true }];
   const again = P.autoLayoutRooms(room, { count: 5, area: 12, seed: 1 });
-  check("the generator reclaims its own previous corridors",
+  check("the generator reclaims floor an earlier run left marked",
     Math.abs(again.rooms.reduce((s, x) => s + areaOf(x), 0)
       - r.rooms.reduce((s, x) => s + areaOf(x), 0)) < 0.5);
 }
@@ -490,7 +491,9 @@ function areaOf(r) { return r.w * r.l; }
     format: "com.maria.roomcad-v2.room", version: 1,
     room: {
       ...room, walls: r.walls, doors: r.doors, windows: r.windows,
-      publicAreas: room.publicAreas.concat(r.corridors.map(c => ({ id: P.uid(), ...c, generated: true }))),
+      // Exactly as the app applies it: the generator does not mark public
+      // floor, so the plan carries the user's areas and nothing else.
+      publicAreas: room.publicAreas,
     },
   }));
   const regions = P.detectRooms(applied);

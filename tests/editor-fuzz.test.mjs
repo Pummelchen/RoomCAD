@@ -569,6 +569,47 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── Public floor is the user's ───────────────────────────────────────────
+//
+// The generator used to add the hallways it carved as public areas, so running
+// it painted grey floor over the plan that nobody had asked for. It still
+// carves hallways — that is the floor the rooms open onto — it just does not
+// mark them as shared space, which is the user's to decide.
+{
+  store.room = P.freshRoom("Bare", 10, 8, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
+  check("a bare plate starts with no public floor", (store.room.publicAreas || []).length === 0);
+
+  store.generateLayout({ count: 5, area: 12, windows: false });
+  check("the generator lays out rooms on it", P.detectRooms(store.room).length > 1);
+  check("and marks no public floor of its own",
+    (store.room.publicAreas || []).length === 0,
+    JSON.stringify(store.room.publicAreas));
+
+  // Floor the user drew survives a run untouched.
+  const origin = P.roomOrigin(store.room);
+  store.room.publicAreas = [{ id: "mine", x: origin.x, z: origin.z, w: 10, l: 1.4 }];
+  const mine = JSON.stringify(store.room.publicAreas);
+  store.generateLayout({ count: 4, area: 12, windows: false });
+  check("floor the user marked survives a run exactly as drawn",
+    JSON.stringify(store.room.publicAreas) === mine,
+    JSON.stringify(store.room.publicAreas));
+  check("and nothing was added beside it", (store.room.publicAreas || []).length === 1);
+
+  // An area some earlier version left behind is cleared out rather than kept:
+  // the generator had no business marking it in the first place.
+  store.room.publicAreas = [
+    { id: "mine", x: origin.x, z: origin.z, w: 10, l: 1.4 },
+    { id: "old", x: origin.x, z: origin.z + 4, w: 8, l: 1.2, generated: true },
+  ];
+  store.generateLayout({ count: 4, area: 12, windows: false });
+  check("floor an earlier run marked is cleared away",
+    (store.room.publicAreas || []).length === 1
+    && !(store.room.publicAreas || []).some(a => a.generated),
+    JSON.stringify(store.room.publicAreas));
+}
+
 dom.restore();
 console.log(`${passed} passed, ${failed} failed — ${gestures} gestures driven through the real editor`);
 if (failed) process.exit(1);

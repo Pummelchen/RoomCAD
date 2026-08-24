@@ -2295,6 +2295,151 @@ function carveHallway(grid, cells) {
   return picked;
 }
 
+/// Puts doors in until you can walk from any space on the plan to any other.
+///
+/// Reads the finished plan the way the editor reads it — the spaces the walls
+/// enclose, and which spaces each door joins — rather than from the grid the
+/// partition worked on. That is the difference that matters here: the grid
+/// knows what the layout MEANT, and this has to work on what the walls actually
+/// did. Adds doors to `doorList` in place; returns how many it added.
+///
+/// `openingAt(wall, width, range)` is the same door-fitting the layout uses, so
+/// a door added here lands in a free stretch of wall and never on a window.
+function joinSeparatePieces(plan, doorList, openingAt) {
+  const DOOR_WIDTHS = [0.9, 0.75, 0.6];
+  let added = 0;
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const spaces = detectRooms(plan);
+    if (spaces.length <= 1) return added;
+
+    const inSpace = pt => spaces.findIndex(r =>
+      r.rects.some(c => pt.x > c.x && pt.x < c.x + c.w && pt.z > c.z && pt.z < c.z + c.l));
+
+    // Which spaces each door joins. Probed a little to either side of the
+    // opening, and a little along it as well: a door's midpoint often sits
+    // exactly on the line between two cells, which is inside neither.
+    const linked = spaces.map(() => new Set());
+    for (const d of plan.doors) {
+      const wall = plan.walls.find(w => w.id === d.wallID);
+      if (!wall) continue;
+      const n = wallPerp(wall);
+      const nudge = Math.min(0.13, d.width / 4);
+      const probe = sign => {
+        for (const along of [nudge, -nudge, 0]) {
+          const at = wallPointAt(wall, d.offset + d.width / 2 + along);
+          const hit = inSpace({ x: at.x + n.x * 0.14 * sign, z: at.z + n.z * 0.14 * sign });
+          if (hit >= 0) return hit;
+        }
+        return -1;
+      };
+      const a = probe(1);
+      const b = probe(-1);
+      if (a >= 0 && b >= 0) { linked[a].add(b); linked[b].add(a); }
+    }
+
+    // The piece containing the largest space is the plan; anything not
+    // connected to it is what has to be joined on.
+    let main = 0;
+    for (let i = 1; i < spaces.length; i++) if (spaces[i].area > spaces[main].area) main = i;
+    const reached = new Array(spaces.length).fill(false);
+    const stack = [main];
+    reached[main] = true;
+    while (stack.length) {
+      const at = stack.pop();
+      for (const j of linked[at]) if (!reached[j]) { reached[j] = true; stack.push(j); }
+    }
+    if (reached.every((r, i) => r || spaces[i].area < 1)) return added;
+
+    // The best wall to open: the longest stretch with a connected space on one
+    // side and a cut-off one on the other.
+    let best = null;
+    for (const wall of plan.walls) {
+      const length = wallLength(wall);
+      if (length < 0.6) continue;
+      const n = wallPerp(wall);
+      // Walked along the wall so a run between two particular spaces is found
+      // even when the wall borders several.
+      const step = Math.min(0.25, length / 4);
+      for (let t = step / 2; t < length; t += step) {
+        const at = wallPointAt(wall, t);
+        const a = inSpace({ x: at.x + n.x * 0.14, z: at.z + n.z * 0.14 });
+        const b = inSpace({ x: at.x - n.x * 0.14, z: at.z - n.z * 0.14 });
+        if (a < 0 || b < 0 || a === b) continue;
+        if (reached[a] === reached[b]) continue;
+        const cutOff = reached[a] ? b : a;
+        const score = spaces[cutOff].area;
+        if (!best || score > best.score) {
+          best = { wall, at: t, score, cutOff };
+        }
+      }
+    }
+    if (!best) return added;
+
+    // Centre the door on the run that was found, and let the door fitter push
+    // it into whatever gap the wall actually has.
+    const span = wallLength(best.wall);
+    const range = { lo: Math.max(0, best.at - 1.2), hi: Math.min(span, best.at + 1.2) };
+    let door = null;
+    for (const width of DOOR_WIDTHS) {
+      door = openingAt(best.wall, width, range);
+      if (door) break;
+    }
+    if (!door) {
+      // Nowhere on that stretch; try the whole wall before giving up on it.
+      for (const width of DOOR_WIDTHS) {
+        door = openingAt(best.wall, width, { lo: 0, hi: span });
+        if (door) break;
+      }
+    }
+    if (!door) return added;
+    doorList.push(door);
+    plan.doors = doorList;
+    added++;
+  }
+  return added;
+}
+
+/// Gives away pockets of open floor that lead nowhere.
+///
+/// The largest run of open floor is the hallway — that is what the rooms open
+/// onto. Anything else is a piece cut off from it by the rooms in between, and
+/// on the finished plan it is a space with walls all round and no door. It
+/// becomes part of whichever room it borders most, so it is floor somebody can
+/// actually stand on rather than a hole in the middle of the drawing.
+function absorbStrandedFloor(grid, owner, SPARE) {
+  const { nx, nz, at, xs, zs, area } = grid;
+  const open = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) if (owner[at(i, j)] === SPARE) open.push([i, j]);
+  }
+  if (!open.length) return;
+  const parts = connectedParts(grid, open);
+  if (parts.length <= 1) return;
+  const areaOf = part => part.reduce((sum, [i, j]) => sum + area[at(i, j)], 0);
+  parts.sort((a, b) => areaOf(b) - areaOf(a));
+
+  for (let k = 1; k < parts.length; k++) {
+    // Which room does this pocket share the most wall with?
+    const shared = new Map();
+    for (const [i, j] of parts[k]) {
+      for (const [ni, nj] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]]) {
+        if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
+        if (stepBlocked(grid, i, j, ni, nj)) continue;
+        const id = owner[at(ni, nj)];
+        if (id < 0) continue;                       // not a room
+        const run = ni === i ? xs[i + 1] - xs[i] : zs[j + 1] - zs[j];
+        shared.set(id, (shared.get(id) || 0) + run);
+      }
+    }
+    let best = -1;
+    let most = 0;
+    for (const [id, run] of shared) if (run > most) { most = run; best = id; }
+    if (best < 0) continue;                         // nothing borders it; leave it
+    for (const [i, j] of parts[k]) owner[at(i, j)] = best;
+  }
+}
+
 /// Runs the hallway to any room that has been walled in.
 ///
 /// Works on the finished ownership map, so it sees what was actually built
@@ -2757,6 +2902,16 @@ export function autoLayoutRooms(room, opts = {}) {
     return any ? ownedRects(grid, tmp, 0) : [];
   };
 
+  // ── Leftover floor that leads nowhere becomes part of the room it sits in
+  //
+  // The floor not needed for rooms is open floor, and open floor is fine when
+  // it is the hallway. But it does not come out in one piece: a corner left
+  // over behind a room is its own little enclosure, walled in by the rooms
+  // around it, with no door and no way in — floor you can see on the plan and
+  // never stand on. Every such pocket is given to the room beside it, which is
+  // what it looks like anyway.
+  absorbStrandedFloor(grid, owner, SPARE);
+
   // ── Anything still cut off gets the hallway run to it ──────────────────
   //
   // The partition refuses to make a room without frontage, but it can only
@@ -3074,6 +3229,21 @@ export function autoLayoutRooms(room, opts = {}) {
     .filter(w => live.has(w.wallID));
   const finalDoors = [...keptDoors, ...doors.map(rehome).filter(Boolean)]
     .filter(d => live.has(d.wallID));
+
+  // ── One plan, not several ───────────────────────────────────────────────
+  //
+  // Every room has a door onto the floor outside it, and that is still not
+  // enough to be able to walk around: a room and the pocket of hallway it
+  // opens onto can be an island, closed off from the rest by the rooms in
+  // between. 121 rooms across 660 plans were on one, each with a door that
+  // led only to its own private scrap of floor.
+  //
+  // So the finished plan is read back the way the editor reads it — spaces and
+  // the doors between them — and wherever it falls into separate pieces, a
+  // door is put in the wall between them until it does not.
+  joinSeparatePieces(
+    { ...room, walls: [...walls], doors: finalDoors, windows: finalWindows },
+    finalDoors, opening);
 
   const rooms = kept.map(r => ({
     rects: r.rects,

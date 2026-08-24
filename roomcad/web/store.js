@@ -1055,13 +1055,14 @@ export const store = {
       room.walls = result.walls;
       room.doors = result.doors;
       room.windows = result.windows;
-      // The corridors the generator carved become public floor, so they show
-      // on the plan and are excluded from the next run's partition. Only this
-      // generator's own corridors are replaced; floor the user marked stays.
-      const kept = (room.publicAreas || []).filter(a => !a.generated);
-      room.publicAreas = kept.concat(result.corridors.map(c => ({
-        id: P.uid(), x: c.x, z: c.z, w: c.w, l: c.l, generated: true,
-      })));
+      // Public floor is the user's to mark, and only the user's. The generator
+      // used to add its own hallways as public areas, so running it painted
+      // grey floor over a plan nobody had asked it to paint. The hallways it
+      // carves are still there — they are the floor between the rooms, and
+      // every room opens onto them — they are simply not marked as shared
+      // space. Anything a previous run marked is cleared out, since the
+      // generator had no business putting it there either.
+      room.publicAreas = (room.publicAreas || []).filter(a => !a.generated);
     });
     this.status = this.describeLayout(result);
     this.emit();
@@ -1073,6 +1074,8 @@ export const store = {
   describeLayout(result) {
     const asked = result.requested || {};
     const actual = result.areaPerRoom;
+    // Floor that ended up as hallway rather than as a room. Reported so the
+    // count adds up to the space; NOT marked on the plan as public floor.
     const walk = result.corridors.reduce((s, c) => s + c.w * c.l, 0);
 
     // Say so when the space would not take as many rooms as were asked for,
@@ -1087,7 +1090,7 @@ export const store = {
     if (wanted > 0 && Math.abs(actual - wanted) / wanted > 0.02) {
       text += " (asked " + wanted.toFixed(1) + " — that is the closest the space allows)";
     }
-    if (walk > 0.5) text += " · " + walk.toFixed(1) + " m² walk paths";
+    if (walk > 0.5) text += " · " + walk.toFixed(1) + " m² hallway";
     return text;
   },
 
