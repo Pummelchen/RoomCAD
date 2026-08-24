@@ -52,6 +52,12 @@ let worstOverlap = 0;
 let doubled = 0;
 let roomsWithoutADoor = 0;
 let totalRooms = 0;
+// Every room has to be enterable from the circulation, not through another
+// room. Counted here over every plan the engine produces.
+let reachable = 0;
+let throughAnotherRoom = 0;
+let sealed = 0;
+let outsideOnly = 0;
 
 for (const step of GRIDS) {
   let seed = 7;
@@ -180,6 +186,55 @@ for (const step of GRIDS) {
       const candidates = regions.filter(x => Math.abs(x.area - g.area) < 0.2);
       if (candidates.length && candidates.every(x => !x.hasDoor)) roomsWithoutADoor++;
     }
+
+    // How each space is actually entered, worked out from the plan rather than
+    // from what the engine believes it did: for every door, which spaces lie on
+    // either side of it.
+    const publics = applied.publicAreas || [];
+    const inRegion = pt => regions.findIndex(r =>
+      r.rects.some(c => pt.x > c.x && pt.x < c.x + c.w && pt.z > c.z && pt.z < c.z + c.l));
+    const isCirculation = regions.map(r => {
+      let total = 0, marked = 0;
+      for (const c of r.rects) {
+        const a = c.w * c.l;
+        total += a;
+        const cx = c.x + c.w / 2, cz = c.z + c.l / 2;
+        if (publics.some(pa => cx > pa.x - 0.02 && cx < pa.x + pa.w + 0.02
+                            && cz > pa.z - 0.02 && cz < pa.z + pa.l + 0.02)) marked += a;
+      }
+      return total > 0 && marked / total > 0.5;
+    });
+    const joins = regions.map(() => new Set());
+    const toOutside = new Set();
+    for (const d of applied.doors || []) {
+      const wall = (applied.walls || []).find(w => w.id === d.wallID);
+      if (!wall) continue;
+      const n = P.wallPerp(wall);
+      // Probed a little to the side as well as through: a door's midpoint often
+      // sits exactly on a cell boundary, and a point on the line between two
+      // cells is inside neither.
+      const nudge = Math.min(0.13, d.width / 4);
+      const probe = sign => {
+        for (const along of [nudge, -nudge, 0]) {
+          const at = P.wallPointAt(wall, d.offset + d.width / 2 + along);
+          const hit = inRegion({ x: at.x + n.x * 0.14 * sign, z: at.z + n.z * 0.14 * sign });
+          if (hit >= 0) return hit;
+        }
+        return -1;
+      };
+      const a = probe(1), b = probe(-1);
+      if (a >= 0 && b >= 0) { joins[a].add(b); joins[b].add(a); }
+      else if (a >= 0) toOutside.add(a);
+      else if (b >= 0) toOutside.add(b);
+    }
+    for (let i = 0; i < regions.length; i++) {
+      if (isCirculation[i]) continue;              // the hallway itself
+      const doors = joins[i].size + (toOutside.has(i) ? 1 : 0);
+      if (doors === 0) sealed++;
+      else if ([...joins[i]].some(j => isCirculation[j])) reachable++;
+      else if (toOutside.has(i)) outsideOnly++;
+      else throughAnotherRoom++;
+    }
   }
 }
 
@@ -192,6 +247,34 @@ check("no plan comes back with two walls on top of each other",
 check("almost every room has a way in",
   roomsWithoutADoor <= totalRooms * 0.01,
   `${roomsWithoutADoor} of ${totalRooms} rooms (${(roomsWithoutADoor / totalRooms * 100).toFixed(2)}%)`);
+// ── Every room has its own way in ─────────────────────────────────────────
+//
+// "The auto layout cannot make rooms which have no public door. Going through
+// other rooms is not allowed."
+//
+// Before this was enforced, of every space on a generated plan: 12.3% had no
+// door at all, and 58.7% could only be entered from the open air — a bedroom
+// with its door in the outside wall. Both came from the same place: the
+// partition knew nothing about how a room would be reached, so it cut floor
+// into pieces and hoped a door could be found afterwards.
+{
+  const spaces = reachable + outsideOnly + throughAnotherRoom + sealed;
+  const share = n => `${n} of ${spaces} (${(n / spaces * 100).toFixed(1)}%)`;
+  check("no room can only be reached through another room",
+    throughAnotherRoom === 0, share(throughAnotherRoom));
+  check("almost every room opens onto the circulation",
+    reachable >= spaces * 0.9, share(reachable));
+  // Not zero: a few plans are pathological — a plate a couple of metres across,
+  // or one carved up by walkways until nothing is left to cut a hallway from.
+  // What matters is that it is rare and that it is measured, not assumed.
+  check("a room with no door at all is rare",
+    sealed <= spaces * 0.01, share(sealed));
+  check("and so is one you can only enter from the street",
+    outsideOnly <= spaces * 0.05, share(outsideOnly));
+  console.log(`    ways in: ${share(reachable)} onto circulation, `
+    + `${outsideOnly} from outside, ${throughAnotherRoom} through a room, ${sealed} sealed`);
+}
+
 check("no wall is too short to survive a reload", shortestWall >= 0.15, `shortest ${shortestWall.toFixed(3)} m`);
 check("no room is laid on floor the user marked",
   worstOverlap < 1e-6, `largest overlap ${worstOverlap.toExponential(2)} m²`);

@@ -31,6 +31,8 @@ const appVersion = document.getElementById("app-version");
 const main = document.getElementById("main");
 const leftSidebarResizer = document.getElementById("left-sidebar-resizer");
 const rightSidebarResizer = document.getElementById("right-sidebar-resizer");
+const toggleSidebarButton = document.getElementById("toggle-sidebar");
+const toggleInspectorButton = document.getElementById("toggle-inspector");
 
 const editor = new Editor2D(planCanvas);
 let walk3d = null;
@@ -94,6 +96,7 @@ function chromeWidth() {
 }
 
 let sidebarWidths = loadSidebarWidths();
+let panelsShown = loadPanelsShown();
 
 function validWidth(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
@@ -113,10 +116,50 @@ function loadSidebarWidths() {
 
 function saveSidebarWidths() {
   try {
-    localStorage.setItem(SIDEBAR_LAYOUT_KEY, JSON.stringify(sidebarWidths));
+    localStorage.setItem(SIDEBAR_LAYOUT_KEY,
+      JSON.stringify({ ...sidebarWidths, shown: panelsShown }));
   } catch {
     // Private browsing can reject storage; resizing should still work now.
   }
+}
+
+/// Which panels were left showing. Both, unless the user hid one: a panel that
+/// came back every reload would have to be hidden again every reload.
+function loadPanelsShown() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIDEBAR_LAYOUT_KEY) || "{}").shown || {};
+    return { left: saved.left !== false, right: saved.right !== false };
+  } catch {
+    return { left: true, right: true };
+  }
+}
+
+/// Shows or hides one panel. The drawing area is a flex child, so it simply
+/// takes the room back — nothing has to be resized by hand.
+function applyPanelsShown({ persist = false } = {}) {
+  document.body.classList.toggle("sidebar-collapsed", !panelsShown.left);
+  document.body.classList.toggle("inspector-collapsed", !panelsShown.right);
+  for (const [button, on, what] of [
+    [toggleSidebarButton, panelsShown.left, "left"],
+    [toggleInspectorButton, panelsShown.right, "right"],
+  ]) {
+    if (!button) continue;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.title = (on ? "Hide" : "Show") + " the " + what + " panel"
+      + (what === "left" ? " (\u2318\\)" : " (\u2318\u21e7\\)");
+  }
+  // The widths are clamped against the space available, and hiding a panel
+  // changes that space. Without this the panel that is still open keeps a width
+  // that was only valid while it had a neighbour.
+  applySidebarWidths({ persist });
+  if (persist) saveSidebarWidths();
+  // The plan is drawn to the canvas's pixel size, so it has to be told.
+  window.dispatchEvent(new Event("resize"));
+}
+
+function togglePanel(side) {
+  panelsShown[side] = !panelsShown[side];
+  applyPanelsShown({ persist: true });
 }
 
 function widthLimit(side) {
@@ -204,8 +247,11 @@ function installSidebarResizer(handle, side, defaultWidth) {
 
 installSidebarResizer(leftSidebarResizer, "left", LEFT_SIDEBAR_DEFAULT);
 installSidebarResizer(rightSidebarResizer, "right", RIGHT_SIDEBAR_DEFAULT);
+toggleSidebarButton.addEventListener("click", () => togglePanel("left"));
+toggleInspectorButton.addEventListener("click", () => togglePanel("right"));
 edgeGapPx = measureEdgeGap();
 applySidebarWidths();
+applyPanelsShown();
 window.addEventListener("resize", () => applySidebarWidths({ persist: true }));
 
 // MARK: - Mode switching
@@ -1250,6 +1296,13 @@ document.addEventListener("keydown", e => {
     if (key === "2") {
       e.preventDefault();
       setMode("3d");
+      return;
+    }
+    // One panel each, on the same key: the modifier says which side, the way
+    // an editor hides its navigator and its inspector.
+    if (key === "\\") {
+      e.preventDefault();
+      togglePanel(e.shiftKey ? "right" : "left");
       return;
     }
     if (key === "[") {

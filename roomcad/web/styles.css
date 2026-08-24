@@ -353,6 +353,43 @@ body {
 }
 
 /* Drag either inner edge to make its sidebar fit the way you work. */
+/* The panel toggles sit at the far right of the menu bar, away from the tools,
+   because they act on the window rather than on the drawing. */
+.toolbar-group.panel-toggles {
+  margin-left: auto;
+}
+
+#toolbar button.panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Pressed means the panel is showing. A toggle that looks the same either way
+   makes the user click it to find out which state they are in. */
+#toolbar button.panel-toggle[aria-pressed="false"] {
+  color: var(--muted);
+  background: transparent;
+}
+
+#toolbar button.panel-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Hidden means gone, including its resizer: leaving an 8px drag handle against
+   the window edge gives you something to grab that resizes nothing. */
+body.sidebar-collapsed #sidebar,
+body.sidebar-collapsed #left-sidebar-resizer,
+body.inspector-collapsed #inspector,
+body.inspector-collapsed #right-sidebar-resizer {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  #toolbar button.panel-toggle .label { display: none; }
+}
+
 .sidebar-resizer {
   position: relative;
   z-index: 20;

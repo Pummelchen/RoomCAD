@@ -30,8 +30,13 @@ function check(name, cond, detail = "") {
   else { failed++; console.error(`FAIL: ${name}${detail ? " — " + detail : ""}`); }
 }
 
+// Rooms that share an edge are not overlapping. Exact arithmetic said they
+// were: a room at x 2.41 that is 2.76 wide ends at 5.170000000000001, and the
+// room starting at 5.17 then "overlapped" it by a millionth of a millimetre.
+const TOUCHING = 1e-6;
 function rectsOverlap(a, b) {
-  return a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.l && b.z < a.z + a.l;
+  return a.x < b.x + b.w - TOUCHING && b.x < a.x + a.w - TOUCHING
+    && a.z < b.z + b.l - TOUCHING && b.z < a.z + a.l - TOUCHING;
 }
 
 function areaOf(r) { return r.w * r.l; }
@@ -107,8 +112,14 @@ function areaOf(r) { return r.w * r.l; }
     return r.rooms.map(x => `${x.w.toFixed(2)}x${x.l.toFixed(2)}`).sort().join("|");
   };
   const runs = [1, 2, 3, 4, 5, 6].map(shapeOf);
+  // Two, not three. Every room has to front the circulation now, and that rules
+  // out whole families of arrangement: the 2 x 2 grid this used to offer put a
+  // back row of rooms behind the front row, reachable only by walking through
+  // it. What is left to vary is where the cuts fall, and in a strip this size
+  // there are only so many places to put them. Buying the variety back by
+  // loosening the cut choice was measured and rejected — it cost room sizes.
   check("pressing Redesign gives more than one arrangement",
-    new Set(runs).size >= 3, `${new Set(runs).size} distinct in 6 presses`);
+    new Set(runs).size >= 2, `${new Set(runs).size} distinct in 6 presses`);
   check("consecutive presses change the plan",
     runs.some((r, i) => i > 0 && r !== runs[i - 1]), "no press changed anything");
   check("the same seed always reproduces its plan", shapeOf(3) === shapeOf(3));
@@ -536,8 +547,18 @@ function areaOf(r) { return r.w * r.l; }
   check("its windows are all still there",
     r.windows.filter(w => w.wallID === top.id).length === 3,
     `${r.windows.filter(w => w.wallID === top.id).length} of 3`);
-  check("and it can still take a door",
-    r.doors.some(d => d.wallID === top.id), "the wall was refused a door");
+  // The rooms open onto the hallway, not through the windowed outer wall: a
+  // door in the outside wall is a front door, not the way into a bedroom. What
+  // this section is really about — that a wall with openings on it is not
+  // refused a door outright, and that a door put there lands in a gap rather
+  // than on top of a window — is checked below and by the clash test that
+  // follows. So: every room has a way in, and none of them is through the
+  // window wall unless there was nothing else.
+  check("every room still has its own door", r.doors.length >= r.rooms.length,
+    `${r.doors.length} doors for ${r.rooms.length} rooms`);
+  check("the windowed outer wall is not where the rooms are entered",
+    !r.doors.some(d => d.wallID === top.id),
+    "a bedroom door in the outside wall");
 
   const clashes = [];
   const byWall = new Map();
