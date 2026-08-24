@@ -239,7 +239,7 @@ const SEPARATE_STEP = 0.06;     // how far one may be nudged back in a frame    
 const PACE_SLOWEST = 0.90;
 const PACE_FASTEST = 1.20;
 // How many vehicles are on the streets altogether, spread over every lane.
-export const FLEET_SIZE = 480;
+export const FLEET_SIZE = 580;
 // Which traffic is worth drawing. A vehicle is around a thousand triangles and
 // there are 240 of them, so the fleet is half of everything in the city.
 //
