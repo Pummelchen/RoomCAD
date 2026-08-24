@@ -77,6 +77,13 @@ WATCH_LOCK = threading.Lock()
 # is fine — they are drafts). A new watcher receives this on connect so it
 # joins mid-edit in sync with everyone else.
 LIVE = {}
+# How many times the shared state of a room has moved on, counted per room and
+# handed out with every copy of it. A client publishes the number its edit was
+# built on; anything built on an older one is refused rather than applied,
+# because a client that is behind would otherwise republish its stale copy and
+# silently destroy everyone else's newer work. Survives a draft being saved and
+# cleared, so drafts based on the pre-save state are stale too.
+LIVE_SEQ = {}
 LIVE_LOCK = threading.Lock()
 DB_LOCK = threading.Lock()
 _conn = None
@@ -408,12 +415,20 @@ def publish(q, payload):
         pass
 
 
-def notify(name, room_json, client_id, version):
-    payload = json.dumps({"name": name, "json": room_json, "clientId": client_id, "version": version})
+def notify(name, room_json, client_id, version, seq=None):
+    payload = json.dumps({"name": name, "json": room_json, "clientId": client_id,
+                          "version": version, "seq": seq})
     with WATCH_LOCK:
         queues = list(WATCHERS.get(name, set()))
     for q in queues:
         publish(q, payload)
+
+
+def digest_of(room_json):
+    """A short fingerprint of a room, for asking "are we the same?" without
+    sending the whole thing. The client computes it the same way over the same
+    UTF-8 bytes, so the two can only agree by actually agreeing."""
+    return hashlib.sha256(room_json.encode("utf-8")).hexdigest()
 
 
 def notify_live(name, draft):
@@ -423,6 +438,7 @@ def notify_live(name, draft):
         "json": draft["json"],
         "clientId": draft["clientId"],
         "version": draft["version"],
+        "seq": draft.get("seq"),
         "live": True,
     })
     with WATCH_LOCK:
@@ -626,9 +642,12 @@ class Handler(BaseHTTPRequestHandler):
         with WATCH_LOCK:
             WATCHERS.setdefault(name, set()).add(q)
         try:
+            with LIVE_LOCK:
+                seq = LIVE_SEQ.get(name, 0)
             cur = load_room(name)
             if cur:
-                self._sse_write(json.dumps({"name": name, "json": cur["json"], "clientId": "", "version": cur["version"]}))
+                self._sse_write(json.dumps({"name": name, "json": cur["json"], "clientId": "",
+                                            "version": cur["version"], "seq": seq}))
             with LIVE_LOCK:
                 draft = LIVE.get(name)
             if draft:
@@ -638,6 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                     "json": draft["json"],
                     "clientId": draft["clientId"],
                     "version": draft["version"],
+                    "seq": draft.get("seq"),
                     "live": True,
                 }))
             while True:
@@ -777,6 +797,46 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send({"ok": True})
             return
+        if path.startswith("/api/live-check/"):
+            # "Am I still looking at what everyone else is looking at?"
+            #
+            # A client publishes its edits and hopes they land. If one is lost —
+            # a dropped stream, a reconnect, a client that was asleep — nothing
+            # ever corrects it and the two sides quietly diverge for the rest of
+            # the session. So every live client asks this every couple of
+            # seconds, with a digest rather than the whole room, and is handed
+            # the current state back only if it has drifted.
+            #
+            # This never takes work AWAY from a client: it answers with what the
+            # room currently is, and a client only asks when it has nothing
+            # unpublished of its own.
+            name = sanitize(urllib.parse.unquote(path[len("/api/live-check/"):]))
+            if not name:
+                self._send({"error": "bad name"}, 400)
+                return
+            data = self._read_json()
+            if data is None:
+                return
+            digest = str(data.get("digest", ""))
+            expire_live_drafts()
+            with LIVE_LOCK:
+                draft = LIVE.get(name)
+            with LIVE_LOCK:
+                seq = LIVE_SEQ.get(name, 0)
+            if draft:
+                current, version, live = draft["json"], draft["version"], True
+            else:
+                row = load_room(name)
+                if not row:
+                    self._send({"error": "not found"}, 404)
+                    return
+                current, version, live = row["json"], row["version"], False
+            if digest_of(current) == digest:
+                self._send({"inSync": True, "version": version, "seq": seq})
+            else:
+                self._send({"inSync": False, "json": current, "version": version,
+                            "seq": seq, "live": live})
+            return
         if path.startswith("/api/live/"):
             name = sanitize(urllib.parse.unquote(path[len("/api/live/"):]))
             if not name:
@@ -793,11 +853,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"error": "bad request"}, 400)
                 return
             expire_live_drafts()
-            draft = {"json": room_json, "clientId": client_id, "version": version, "at": time.time()}
+            base = data.get("baseSeq")
+            base = base if isinstance(base, int) else 0
             with LIVE_LOCK:
-                LIVE[name] = draft
+                current = LIVE_SEQ.get(name, 0)
+                if base != current:
+                    # This edit was made against a copy of the room that has
+                    # since moved on. Publishing it would replace everyone
+                    # else's newer work with this client's older picture — the
+                    # failure that loses an afternoon of design in one click.
+                    # Hand back what the room actually is instead.
+                    stale_draft = LIVE.get(name)
+                    behind = True
+                else:
+                    behind = False
+                    current += 1
+                    LIVE_SEQ[name] = current
+                    draft = {"json": room_json, "clientId": client_id,
+                             "version": version, "at": time.time(), "seq": current}
+                    LIVE[name] = draft
+            if behind:
+                if stale_draft:
+                    current_json, current_version = stale_draft["json"], stale_draft["version"]
+                else:
+                    row = load_room(name)
+                    if not row:
+                        self._send({"error": "not found"}, 404)
+                        return
+                    current_json, current_version = row["json"], row["version"]
+                self._send({"ok": False, "stale": True, "seq": current,
+                            "json": current_json, "version": current_version})
+                return
             notify_live(name, draft)
-            self._send({"ok": True})
+            self._send({"ok": True, "seq": current})
             return
         if path != "/api/save":
             self._send({"error": "not found"}, 404)
@@ -814,10 +902,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         name, version = save_room(name, room_json, client_id)
         remember_last_room(self._cookie(SESSION_COOKIE), name, version)
-        # A real save supersedes any unsaved draft for this room.
+        # A real save supersedes any unsaved draft for this room, and moves the
+        # shared state on: an edit built on the room as it was before the save
+        # must not be publishable afterwards.
         with LIVE_LOCK:
             LIVE.pop(name, None)
-        notify(name, room_json, client_id, version)
+            seq = LIVE_SEQ.get(name, 0) + 1
+            LIVE_SEQ[name] = seq
+        notify(name, room_json, client_id, version, seq)
         self._send({"name": name, "version": version})
 
     def do_DELETE(self):

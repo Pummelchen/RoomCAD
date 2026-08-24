@@ -104,7 +104,7 @@ const storeURL = "file://" + join(root, "roomcad", "web", "store.js");
 const clients = [];
 for (let i = 0; i < 5; i++) {
   const mod = await import(`${storeURL}?client=${i}`);
-  clients.push({ id: "client-" + i, store: mod.store, applied: 0, ignored: 0, held: 0 });
+  clients.push({ id: "client-" + i, store: mod.store, applied: 0, ignored: 0, held: 0, seq: 0 });
 }
 check("five separate clients, five separate rooms",
   new Set(clients.map(c => c.store.room)).size === 5);
@@ -150,6 +150,9 @@ async function watch(client) {
           if (!line) continue;
           let data;
           try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          // The sequence arrives with every copy of the room, including the
+          // client's own echo, and is what the next edit is published against.
+          if (typeof data.seq === "number" && data.seq > client.seq) client.seq = data.seq;
           const { action, version } = liveUpdateAction(data, {
             serverRoomName: client.store.serverRoomName,
             serverRoomVersion: client.store.serverRoomVersion,
@@ -172,16 +175,29 @@ async function watch(client) {
 for (const c of clients) await watch(c);
 await new Promise(r => setTimeout(r, 400));
 
+const waitUntil = async (test, ms = 3000) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (test()) return true;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  return false;
+};
+
 const author = clients[0];
 const audience = clients.slice(1);
-const push = async (version) => {
-  await fetch(BASE + "/api/live/" + ROOM, {
+const push = async (version, who = author) => {
+  const res = await fetch(BASE + "/api/live/" + ROOM, {
     method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
     body: JSON.stringify({
-      json: P.serializeRoom(author.store.room), clientId: author.id, version,
+      json: P.serializeRoom(who.store.room), clientId: who.id, version,
+      baseSeq: who.seq,
     }),
   });
+  const answer = await res.json();
+  if (typeof answer.seq === "number") who.seq = answer.seq;
   await new Promise(r => setTimeout(r, 250));
+  return answer;
 };
 
 // ── One of them draws walls ──────────────────────────────────────────────
@@ -292,13 +308,16 @@ check("every one of the four received every update",
     });
 
     const at = Date.now();
-    await fetch(BASE + "/api/live/" + ROOM, {
+    const answer = await (await fetch(BASE + "/api/live/" + ROOM, {
       method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
       body: JSON.stringify({
         json: P.serializeRoom(who.store.room), clientId: who.id,
-        version: who.store.serverRoomVersion,
+        version: who.store.serverRoomVersion, baseSeq: who.seq,
       }),
-    });
+    })).json();
+    check(`client ${turn} was publishing from an up-to-date copy`,
+      answer.ok === true, JSON.stringify(answer).slice(0, 100));
+    if (typeof answer.seq === "number") who.seq = answer.seq;
     const seen = () => {
       const started = Date.now();
       return new Promise(resolve => {
@@ -348,6 +367,191 @@ check("every one of the four received every update",
   check("with all five turns' work present, not just the last",
     settled.split(" | ")[0].split(",").filter(id => id.startsWith("w-turn-")).length === clients.length,
     settled.slice(0, 120));
+}
+
+// ── A client that misses an update catches itself up ─────────────────────
+//
+// Publishing an edit and hoping it lands is fine until one does not: a dropped
+// stream, a reconnect, a laptop that was asleep. Nothing corrected that, and
+// the two sides diverged quietly for the rest of the session — the worst way
+// for a shared drawing to fail, because everyone believes they are looking at
+// the same thing.
+//
+// Here one client's stream is cut, work happens without it, and it has to
+// notice and catch up from the periodic check alone.
+{
+  const lost = clients[3];
+  lost.stop();                                   // its event stream is gone
+  await new Promise(r => setTimeout(r, 100));
+
+  const before = P.serializeRoom(lost.store.room);
+  author.store.room.walls.push({
+    id: "w-missed", start: P.point(2, 0.5), end: P.point(2, 3.5),
+  });
+  await push(saved.version);
+  check("a client with no stream really does miss the edit",
+    P.serializeRoom(lost.store.room) === before
+    && !lost.store.room.walls.some(w => w.id === "w-missed"));
+
+  // What the app does every couple of seconds, driven here directly.
+  const digestOf = async (json) => {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json));
+    return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+  const answer = await (await fetch(BASE + "/api/live-check/" + ROOM, {
+    method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
+    body: JSON.stringify({
+      clientId: lost.id,
+      digest: await digestOf(P.serializeRoom(lost.store.room)),
+    }),
+  })).json();
+  check("the check tells it that it has drifted", answer.inSync === false,
+    JSON.stringify(answer).slice(0, 120));
+  lost.store.applyRemoteRoom(P.parseRoom(answer.json),
+    answer.version != null ? answer.version : null);
+  check("and hands back enough to catch up",
+    lost.store.room.walls.some(w => w.id === "w-missed"));
+
+  // A client that IS up to date is told so, and handed nothing.
+  const fine = await (await fetch(BASE + "/api/live-check/" + ROOM, {
+    method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
+    body: JSON.stringify({
+      clientId: clients[1].id,
+      digest: await digestOf(P.serializeRoom(clients[1].store.room)),
+    }),
+  })).json();
+  check("a client that is up to date is left alone",
+    fine.inSync === true && fine.json === undefined, JSON.stringify(fine).slice(0, 120));
+
+  // The digest is the whole point: it must not be the room.
+  check("the check sends a fingerprint, not the drawing",
+    JSON.stringify({ clientId: "x", digest: "a".repeat(64) }).length < 200);
+
+  // Every live client does this every two seconds, so it has to stay cheap.
+  // The answer to "still in sync?" is a couple of dozen bytes, and the room
+  // only crosses the wire on the rare occasion somebody has actually drifted.
+  {
+    const digests = await Promise.all(clients.map(c => digestOf(P.serializeRoom(c.store.room))));
+    const began = Date.now();
+    let bytes = 0;
+    for (let round = 0; round < 10; round++) {
+      const answers = await Promise.all(clients.map((c, i) =>
+        fetch(BASE + "/api/live-check/" + ROOM, {
+          method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
+          body: JSON.stringify({ clientId: c.id, digest: digests[i] }),
+        }).then(r => r.text())));
+      bytes += answers.reduce((n, a) => n + a.length, 0);
+    }
+    const each = bytes / 50;
+    console.log(`    sync check: 50 asks in ${Date.now() - began}ms, ${each.toFixed(0)} bytes each`);
+    check("an in-sync answer costs almost nothing", each < 200, `${each.toFixed(0)} bytes`);
+  }
+
+  await watch(lost);                             // reconnect it for what follows
+  await new Promise(r => setTimeout(r, 200));
+}
+
+// ── Somebody who joins mid-edit sees the work in progress ────────────────
+//
+// The unsaved draft lives only in the server's memory, so a client that joins
+// late gets the last SAVE from its stream unless the stream hands over the
+// draft as well. Without that, a latecomer sits looking at an older room until
+// the next edit — or, once the room is quiet, indefinitely.
+{
+  const late = {
+    id: "client-5", applied: 0, ignored: 0, held: 0,
+    store: (await import(`${storeURL}?client=5`)).store,
+  };
+  late.store.room = P.parseRoom(P.serializeRoom(blank));
+  late.store.serverRoomName = ROOM;
+  late.store.serverRoomVersion = created.version;
+  late.store.live = true;
+  await watch(late);
+  await new Promise(r => setTimeout(r, 400));
+
+  check("a latecomer is handed the saved room", late.applied > 0, `applied ${late.applied}`);
+  check("and the unsaved work on top of it, straight from the stream",
+    late.store.room.walls.some(w => w.id === "w-missed"),
+    late.store.room.walls.map(w => w.id).join(","));
+  late.stop();
+}
+
+// ── A client that has fallen behind cannot undo everyone else's work ─────
+//
+// This is the failure that cost a real afternoon of design work. One person
+// draws rooms and publishes them. A second person's copy never received them —
+// a dropped stream, a sleeping laptop — and when they nudge anything at all,
+// their client publishes ITS whole room. The server took it, so the drawing
+// everybody else was looking at was replaced by the older picture: the rooms
+// appeared for a moment and then were gone, for everyone, with no way back.
+//
+// A live edit is now published against the sequence the client's copy is based
+// on, and one built on a copy that has moved on is refused rather than applied.
+{
+  const behind = clients[2];
+  const designer = clients[0];
+
+  behind.stop();                                  // its stream is gone
+  await new Promise(r => setTimeout(r, 100));
+  const staleSeq = behind.seq;                    // what it last saw
+
+  for (let i = 0; i < 9; i++) {
+    designer.store.room.walls.push({
+      id: "w-design-" + i,
+      start: P.point(1, 1 + i * 0.2), end: P.point(4, 1 + i * 0.2),
+    });
+  }
+  const published = await push(designer.store.serverRoomVersion, designer);
+  check("the designer's work is published", published.ok === true);
+  check("the client that lost its stream never saw it",
+    !behind.store.room.walls.some(w => w.id === "w-design-0"));
+
+  // Now it nudges something — the smallest edit a person can make.
+  behind.store.room.furniture.push({
+    id: "f-behind", kind, center: P.point(4.5, 4.5), rotation: 0,
+  });
+  const refused = await (await fetch(BASE + "/api/live/" + ROOM, {
+    method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
+    body: JSON.stringify({
+      json: P.serializeRoom(behind.store.room), clientId: behind.id,
+      version: behind.store.serverRoomVersion, baseSeq: staleSeq,
+    }),
+  })).json();
+  check("an edit built on an out-of-date copy is refused",
+    refused.ok === false && refused.stale === true, JSON.stringify(refused).slice(0, 120));
+
+  // The whole point: the design is still there, for everyone.
+  const after = P.parseRoom((await (await fetch(BASE + "/api/live-check/" + ROOM, {
+    method: "POST", headers: { "Content-Type": "application/json", ...COOKIE },
+    body: JSON.stringify({ clientId: "probe", digest: "0".repeat(64) }),
+  })).json()).json);
+  check("the design survives the stale client",
+    [...Array(9).keys()].every(i => after.walls.some(w => w.id === "w-design-" + i)),
+    after.walls.map(w => w.id).join(","));
+  check("and the other clients still hold it",
+    clients[1].store.room.walls.some(w => w.id === "w-design-8"));
+
+  // A refusal is not a dead end: the client is handed the room as it now is,
+  // and can publish again from there.
+  check("the refusal hands back the room to catch up on",
+    !!refused.json && P.parseRoom(refused.json).walls.some(w => w.id === "w-design-8"));
+  check("and the sequence to publish against next", typeof refused.seq === "number");
+  behind.store.applyRemoteRoom(P.parseRoom(refused.json),
+    refused.version != null ? refused.version : null);
+  behind.seq = refused.seq;
+  behind.store.room.furniture.push({
+    id: "f-behind-2", kind, center: P.point(4.5, 4.5), rotation: 0,
+  });
+  const second = await push(behind.store.serverRoomVersion, behind);
+  check("once caught up, the same client can publish again", second.ok === true,
+    JSON.stringify(second).slice(0, 120));
+  check("and its work reaches the others",
+    await waitUntil(() => clients[1].store.room.furniture.some(f => f.id === "f-behind-2")));
+  check("without losing the design it was catching up on",
+    clients[1].store.room.walls.some(w => w.id === "w-design-8"));
+
+  await watch(behind);
+  await new Promise(r => setTimeout(r, 200));
 }
 
 // ── A viewer who has not joined only holds the draft ─────────────────────

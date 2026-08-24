@@ -142,12 +142,36 @@ def main():
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check("new project session has no room to resume", status == 200 and resp is None, f"{status} {resp}")
 
+    def current_seq(name):
+        """What a client's copy is based on, asked for the way a client asks."""
+        _, resp, _ = request(port, "POST", "/api/live-check/" + name,
+                             {"clientId": "probe", "digest": "0" * 64}, cookie)
+        return (resp or {}).get("seq", 0)
+
     # 1. A live draft is stored and broadcast, but NOT saved to the DB.
-    draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1}
+    draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1,
+              "baseSeq": 0}
     status, resp, _ = request(port, "POST", "/api/live/room1", draft1, cookie)
     check("live POST returns ok", status == 200 and resp.get("ok") is True, f"{status} {resp}")
     check("draft stored in memory", server.LIVE.get("room1", {}).get("json") == draft1["json"])
     check("draft not saved to DB", server.load_room("room1") is None)
+
+    # An edit built on a copy that has since moved on is refused rather than
+    # applied: publishing it would replace newer work by other people with this
+    # client's older picture, which is how a finished design disappears.
+    seq_now = current_seq("room1")
+    status, resp, _ = request(port, "POST", "/api/live/room1",
+                              {"json": '{"room":{"width":99}}', "clientId": "stale",
+                               "version": 1, "baseSeq": seq_now - 1}, cookie)
+    check("an edit built on an out-of-date copy is refused",
+          status == 200 and resp.get("ok") is False and resp.get("stale") is True,
+          f"{status} {resp}")
+    check("and the room still holds what was really published",
+          server.LIVE.get("room1", {}).get("json") == draft1["json"],
+          server.LIVE.get("room1", {}).get("json"))
+    check("the refusal hands back the current room to catch up on",
+          resp.get("json") == draft1["json"])
+    check("with the sequence to publish against next", resp.get("seq") == seq_now)
 
     # 2. A new watcher receives the current draft on connect.
     reader = SseReader(port, "room1", cookie)
@@ -213,7 +237,8 @@ def main():
     reader2.start()
     wait_for(lambda: len(reader2.events) >= 1)  # initial saved-room event
     initial_count = len(reader2.events)
-    draft2 = {"json": '{"room":{"width":7}}', "clientId": "C", "version": 1}
+    draft2 = {"json": '{"room":{"width":7}}', "clientId": "C", "version": 1,
+              "baseSeq": current_seq("room1")}
     request(port, "POST", "/api/live/room1", draft2, cookie)
     check("watcher receives a live draft pushed mid-stream",
           wait_for(lambda: len(reader2.events) >= initial_count + 1),
@@ -501,7 +526,8 @@ def main():
 
     # Point a session at it and leave an unsaved draft under its name.
     request(port, "POST", "/api/live/" + bulk,
-            {"json": bulk_json, "clientId": "other", "version": 119}, cookie)
+            {"json": bulk_json, "clientId": "other", "version": 119,
+             "baseSeq": current_seq(bulk)}, cookie)
     request(port, "POST", "/api/session/last", {"name": bulk, "version": 0}, cookie)
     check("the draft is there before the delete", bulk in server.LIVE)
 

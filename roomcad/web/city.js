@@ -37,9 +37,19 @@ const TOWER_REVEAL = 0.02;
 // floor room opens straight onto the street; the carriageway is one kerb down.
 const PAVEMENT_Y = 0;
 const ROAD_Y = PAVEMENT_Y - KERB_HEIGHT;
-export const GRID_RADIUS = 2;   // blocks each way from the room -> 5 x 5
+// Blocks each way from the room. The room stands on the middle block, so the
+// grid is always odd — four each way is nine by nine, which is the nearest a
+// centred grid gets to eight.
+export const GRID_RADIUS = 4;
 
 const FLOOR_HEIGHT = 3;         // matches walk3d's per-storey lift
+const STOREYS_MIN = 8;
+const STOREYS_MAX = 60;         // 180 m
+// How far up a building you can see into. Rooms behind the windows are what
+// gives a facade depth, and they cost an instance each — a sixty storey tower
+// modelled all the way up is thousands of them for floors nobody can see into
+// from the street. Above this it is windows only.
+const ROOM_STOREYS = 8;
 
 // Terrain. The streets themselves stay dead flat — a city is levelled ground,
 // and the room's own floor sits on it — so the land only starts moving beyond
@@ -210,7 +220,9 @@ const PITCH_MAX = 0.055;
 const ROLL_PER_G = 0.016;       // radians per m/s2 of sideways push
 const ROLL_MAX = 0.075;
 const SUSPENSION_RATE = 5;      // how fast it settles, per second
-const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
+const SAFE_GAP = 2.4;
+const NOSE_TO_TAIL = 0.12;      // the least space two vehicles may share a lane with
+const SEPARATE_STEP = 0.06;     // how far one may be nudged back in a frame           // bumper-to-bumper metres at a standstill
 // Every driver has their own pace. The kind of vehicle sets the base speed —
 // a bus is not a hatchback — and this is the multiplier on top of it, so some
 // press on and some dawdle. Without it a lane of the same kind moves as one
@@ -218,7 +230,7 @@ const SAFE_GAP = 2.4;           // bumper-to-bumper metres at a standstill
 const PACE_SLOWEST = 0.90;
 const PACE_FASTEST = 1.20;
 // How many vehicles are on the streets altogether, spread over every lane.
-const FLEET_SIZE = 240;
+export const FLEET_SIZE = 480;
 // Which traffic is worth drawing. A vehicle is around a thousand triangles and
 // there are 240 of them, so the fleet is half of everything in the city.
 //
@@ -973,7 +985,7 @@ export class City {
         { casts: false, receives: true }
       ),
       darkGlass: new InstanceSet(
-        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.PlaneGeometry(1, 1),
         new THREE.MeshStandardMaterial({ color: WINDOW_DARK, roughness: 0.25, metalness: 0.1 }),
         { colored: false }
       ),
@@ -991,7 +1003,7 @@ export class City {
         { colored: false }
       ),
       litGlass: new InstanceSet(
-        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.PlaneGeometry(1, 1),
         new THREE.MeshStandardMaterial({
           color: WINDOW_DARK, emissive: WINDOW_LIT, emissiveIntensity: 0, roughness: 0.3,
         }),
@@ -1676,7 +1688,10 @@ export class City {
         const gapD = 2 + rnd() * 3;
         const w = Math.max(6, cellW - gapW);
         const d = Math.max(6, cellD - gapD);
-        const storeys = 1 + Math.floor(rnd() * 6);
+        // High rise. Everything is a tower now, from eight storeys to sixty —
+        // the draw is squared so the tallest are the exception rather than the
+        // rule, which is what a skyline looks like.
+        const storeys = STOREYS_MIN + Math.floor(rnd() ** 2 * (STOREYS_MAX - STOREYS_MIN + 1));
         const h = storeys * FLOOR_HEIGHT;
         const x = bx - core / 2 + cellW * (i + 0.5);
         const z = bz - core / 2 + cellD * (j + 0.5);
@@ -1823,6 +1838,10 @@ export class City {
         for (let r = 0; r < rowsY.length; r++) {
           // The ground floor of the door column is the lobby, not a room.
           if (ci === doorAt && r === 0) continue;
+          // Only the storeys you could see into from the street get a room
+          // behind the glass. A sixty storey tower modelled all the way up is
+          // thousands of interiors for floors nobody will ever look into.
+          if (r >= ROOM_STOREYS) continue;
           const lit = rnd() < 0.34;
           const roomCY = baseY + r * FLOOR_HEIGHT + roomH / 2 + 0.12;
           const back = other / 2 - depth / 2;
@@ -2016,14 +2035,17 @@ export class City {
   _facadeWindows(darkGlass, litGlass, x, z, w, d, storeys, baseY, rnd) {
     const winW = 1.0;
     const winH = 1.3;
-    const thin = 0.08;
     const proud = 0.06;
-    // Each face: the axis the windows march along, and the outward offset.
+    // Each face: the axis the windows march along, the outward offset, and
+    // which way the pane looks. The turn matters because a window is a PANE
+    // now, not a box — one face where there were six, which on a city of sixty
+    // storey towers is the difference between 1.8 million triangles of window
+    // and 300,000. You never see the back or the sides of a window.
     const faces = [
-      { along: "x", span: w, offX: 0, offZ: d / 2 + proud },
-      { along: "x", span: w, offX: 0, offZ: -(d / 2 + proud) },
-      { along: "z", span: d, offX: w / 2 + proud, offZ: 0 },
-      { along: "z", span: d, offX: -(w / 2 + proud), offZ: 0 },
+      { along: "x", span: w, offX: 0, offZ: d / 2 + proud, turn: 0 },
+      { along: "x", span: w, offX: 0, offZ: -(d / 2 + proud), turn: Math.PI },
+      { along: "z", span: d, offX: w / 2 + proud, offZ: 0, turn: Math.PI / 2 },
+      { along: "z", span: d, offX: -(w / 2 + proud), offZ: 0, turn: -Math.PI / 2 },
     ];
     for (const face of faces) {
       const count = Math.max(1, Math.floor((face.span - 1.4) / 2.2));
@@ -2034,9 +2056,7 @@ export class City {
           const along = -face.span / 2 + step * i;
           const px = x + face.offX + (face.along === "x" ? along : 0);
           const pz = z + face.offZ + (face.along === "z" ? along : 0);
-          const sx = face.along === "x" ? winW : thin;
-          const sz = face.along === "x" ? thin : winW;
-          const m = boxMatrix(px, y, pz, sx, winH, sz);
+          const m = boxMatrix(px, y, pz, winW, winH, 1, face.turn);
           if (rnd() < 0.34) litGlass.add(m);
           else darkGlass.add(m);
         }
@@ -4386,6 +4406,49 @@ export class City {
     }
   }
 
+  /// Pushes apart any two vehicles that have ended up inside one another.
+  ///
+  /// The driving model stops a vehicle before it reaches the one in front, and
+  /// checks there is room in a lane before turning into it — but a turn takes
+  /// time, and a gap that was there at the stop line can be gone by the time
+  /// the vehicle comes out of the arc. At ordinary density that is rare and
+  /// brief. At twice the density it is neither: measured over fifteen minutes,
+  /// one overlap in ten lasted twenty seconds, the worst lasted eight minutes,
+  /// and eighteen pairs were still interpenetrated at the end.
+  ///
+  /// Nothing ever separated them, because nothing was looking. This is that:
+  /// walk each lane from the front, and where a vehicle is inside the one
+  /// ahead, move it back until it is not. Worked from the front so a push
+  /// cascades down the queue rather than shunting one vehicle into the next.
+  _separateLanes() {
+    for (const [, lane] of this.lanes) {
+      const queue = [];
+      for (const v of lane.members) {
+        if (v.arc || v.manoeuvre || !City.blocksLane(v)) continue;
+        queue.push(v);
+      }
+      if (queue.length < 2) continue;
+      queue.sort((a, b) => City.progressOf(b) - City.progressOf(a));
+      for (let i = 1; i < queue.length; i++) {
+        const front = queue[i - 1];
+        const back = queue[i];
+        const need = (front.length + back.length) / 2 + NOSE_TO_TAIL;
+        const gap = City.progressOf(front) - City.progressOf(back);
+        if (gap >= need) continue;
+        // Eased apart, never snapped. An unbounded correction moves a vehicle
+        // as far as it takes in a single frame, which is a teleport — measured
+        // at up to 16 m — and a vehicle that has just come out of a turn can
+        // read as deeply overlapped for one frame while its lane and heading
+        // catch up. A few centimetres a frame separates a real overlap in well
+        // under a second and cannot produce a jump at all.
+        const push = Math.min(need - gap, SEPARATE_STEP);
+        if (back.axis === "x") back.x -= push * back.dir; else back.z -= push * back.dir;
+        // And it is not going faster than what it just ran into.
+        if (back.speed > front.speed) back.speed = front.speed;
+      }
+    }
+  }
+
   /// Which way the kerb lies from a lane's centreline.
   static kerbSide(axis, dir) {
     return Math.sign(City.laneOffset(axis, dir));
@@ -4715,6 +4778,7 @@ export class City {
         v.accelNow = step > 0 ? (v.speed - was) / step : 0;
         this._settleSuspension(v, step);
       }
+      this._separateLanes();
       this._writeCarMatrices();
     }
     this._writeSignalLamps();

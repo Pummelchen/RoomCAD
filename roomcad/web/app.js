@@ -9,6 +9,10 @@ import { roomToSVG } from "./svg.js";
 
 // A per-tab identity so a client can ignore its own live-update echo.
 const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
+// How often a live client checks it is still looking at the same drawing as
+// everyone else. Two seconds is short enough that nobody works for long on a
+// stale plan, and long enough that it costs a digest rather than a room.
+const LIVE_SYNC_MS = 2000;
 
 // MARK: - Element refs
 
@@ -794,22 +798,28 @@ async function apiDeleteRoom(name) {
   return res.json();
 }
 
-async function apiLiveDraft(json, name, clientId, version) {
+async function apiLiveDraft(json, name, clientId, version, baseSeq) {
   const res = await fetch("/api/live/" + encodeURIComponent(name), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ json, clientId, version }),
+    body: JSON.stringify({ json, clientId, version, baseSeq }),
   });
   if (!res.ok) throw apiReject(res);
   return res.json();
 }
 
 let eventSource = null;
+// What this client's copy of the shared room is based on. The server hands one
+// out with every copy it sends and refuses an edit built on an older one, which
+// is what stops a client that has fallen behind from republishing its stale
+// picture over everyone else's work.
+let liveSeq = 0;
 let pendingLiveDraft = null;
 let liveDetached = false;
 let leavingLive = false;
 
 function stopWatching({ detached = false } = {}) {
+  stopLiveSync();
   if (eventSource) eventSource.close();
   eventSource = null;
   pendingLiveDraft = null;
@@ -859,6 +869,10 @@ export function liveUpdateAction(data, state) {
 function watchRoom(name) {
   stopWatching();
   liveDetached = false;
+  // stopWatching stops the sync check; re-watching is not leaving, so a live
+  // client keeps checking. Saving re-watches, and that is exactly when a
+  // client must not quietly stop noticing it has drifted.
+  if (store.live) startLiveSync();
   try {
     eventSource = new EventSource("/api/watch/" + encodeURIComponent(name));
     eventSource.onmessage = e => {
@@ -871,6 +885,10 @@ function watchRoom(name) {
           live: store.live,
           dragTransactionActive: store.dragTransactionActive,
         });
+        // The sequence travels with every copy of the room, including our own
+        // echo: a client that ignores the message still has to know what the
+        // shared state is now, or its next edit is refused as stale.
+        if (typeof data.seq === "number" && data.seq > liveSeq) liveSeq = data.seq;
         if (action === "ignore") return;
         const room = P.parseRoom(data.json);
         if (action === "hold") {
@@ -1328,6 +1346,7 @@ function toggleLive() {
     pendingLiveDraft = null;
     store.applyRemoteRoom(draft.room, null);
   }
+  startLiveSync();
   store.status = "Live Active — changes now sync for everyone";
   store.emit();
 }
@@ -1344,6 +1363,7 @@ async function leaveLiveMode() {
     return;
   }
   store.live = false;
+  stopLiveSync();
   stopWatching({ detached: true });
   store.status = "Saved for everyone · left Live Mode · working on your own";
   store.emit();
@@ -1420,9 +1440,14 @@ async function pollStatus() {
 }
 
 let livePushTimer = null;
+let liveSyncTimer = null;
+let liveUnpublished = false;
 
 function scheduleLivePush() {
   if (livePushTimer) clearTimeout(livePushTimer);
+  // Something of ours is not out there yet, so we are not in a position to be
+  // told we are out of date.
+  liveUnpublished = true;
   livePushTimer = setTimeout(() => {
     livePushTimer = null;
     pushLiveDraft();
@@ -1431,12 +1456,93 @@ function scheduleLivePush() {
 
 function pushLiveDraft() {
   if (!store.live || !store.serverRoomName) return;
-  apiLiveDraft(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID, store.serverRoomVersion)
+  apiLiveDraft(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID,
+               store.serverRoomVersion, liveSeq)
+    .then(answer => {
+      liveUnpublished = false;
+      if (answer && answer.stale) {
+        // This edit was made against a copy that had already moved on, so it
+        // was refused rather than published — otherwise it would have replaced
+        // newer work by other people with this older picture. Take what the
+        // room actually is now.
+        if (typeof answer.seq === "number") liveSeq = answer.seq;
+        if (answer.json) {
+          store.applyRemoteRoom(P.parseRoom(answer.json),
+            answer.version != null ? answer.version : null);
+        }
+        store.status = "Live: your copy was out of date — caught up, please make that change again";
+        store.emit();
+        toast("Someone else had already changed this — you are now on their version", "error");
+        return;
+      }
+      if (answer && typeof answer.seq === "number") liveSeq = answer.seq;
+    })
     .catch(() => {
       store.status = "Live: could not reach the server";
       store.emit();
       toast("Live sync lost — reconnecting…", "error");
     });
+}
+
+/// A fingerprint of the room, computed the way the server computes it.
+async function roomDigest(json) {
+  const bytes = new TextEncoder().encode(json);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/// Are we still looking at what everyone else is looking at?
+///
+/// Publishing an edit and hoping it lands is fine until one does not: a dropped
+/// stream, a reconnect, a laptop that was asleep. Nothing corrected that, and
+/// the two sides diverged quietly for the rest of the session — which is the
+/// worst way for a shared drawing to fail, because everyone believes they are
+/// looking at the same thing.
+///
+/// So every couple of seconds each live client asks, with a digest rather than
+/// the whole room, and is handed the current state only if it has drifted. It
+/// asks only when it has nothing unpublished of its own: otherwise the answer
+/// would be "you differ" for the good reason that we are the ones who changed
+/// it, and taking that answer would undo our own work.
+async function checkLiveSync() {
+  if (!store.live || !store.serverRoomName) return;
+  if (liveUnpublished || livePushTimer) return;
+  if (store.dragTransactionActive) return;
+  try {
+    const json = P.serializeRoom(store.room);
+    const res = await fetch("/api/live-check/" + encodeURIComponent(store.serverRoomName), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId: CLIENT_ID, digest: await roomDigest(json) }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (typeof data.seq === "number" && data.seq > liveSeq) liveSeq = data.seq;
+    if (data.inSync) {
+      if (data.version != null) store.serverRoomVersion = data.version;
+      return;
+    }
+    // Drifted. Take the shared state — but not on top of an edit made while
+    // this was in flight.
+    if (liveUnpublished || livePushTimer || store.dragTransactionActive) return;
+    const room = P.parseRoom(data.json);
+    store.applyRemoteRoom(room, data.version != null ? data.version : null);
+    store.status = "Live: caught up with everyone";
+    store.emit();
+  } catch {
+    // A failed check is not worth telling anyone about: the next one is two
+    // seconds away, and the push path already reports a server it cannot reach.
+  }
+}
+
+function startLiveSync() {
+  stopLiveSync();
+  liveSyncTimer = setInterval(checkLiveSync, LIVE_SYNC_MS);
+}
+
+function stopLiveSync() {
+  if (liveSyncTimer) clearInterval(liveSyncTimer);
+  liveSyncTimer = null;
 }
 
 // MARK: - Store change subscription

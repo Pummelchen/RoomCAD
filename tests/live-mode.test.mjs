@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
@@ -125,6 +126,203 @@ check("floor area is the enclosed floor, not width times length",
     && /return \(slug \|\| store\.serverRoomName/.test(app));
   check("and saving still decides the same way",
     /const slug = P\.roomSlug\(store\.room\.name\);\s*\n\s*const target = slug \|\| store\.serverRoomName/.test(app));
+}
+
+// ── The constant sync check ──────────────────────────────────────────────
+//
+// Pushing an edit and hoping it lands is fine until one does not. A dropped
+// stream or a sleeping laptop left two people editing what they each believed
+// was the same drawing, with no way back. So a live client asks every couple of
+// seconds whether it still matches, and this runs that real code — the timer
+// and the network handed in, so the guards can be exercised rather than read.
+{
+  const start = app.indexOf("let livePushTimer = null;");
+  const end = app.indexOf("// MARK: - Store change subscription", start);
+  check("the sync code can be located", start > 0 && end > start);
+
+  // The interval is read out of the app rather than restated here: a test that
+  // repeats the number it is checking passes whatever the number becomes.
+  const declared = Number((app.match(/const LIVE_SYNC_MS = (\d+);/) || [])[1]);
+  check("the app declares how often to check", Number.isFinite(declared));
+  check("which is a couple of seconds, as asked for",
+    declared >= 1000 && declared <= 3000);
+
+  const build = () => {
+    const calls = [];
+    let scheduled = null;
+    const store = {
+      live: true, serverRoomName: "flat", serverRoomVersion: 2,
+      dragTransactionActive: false, room: { walls: [{ id: "w-1" }] },
+      status: "", emit() {}, applied: null,
+      applyRemoteRoom(room, version) { this.room = room; this.applied = version; },
+    };
+    let reply = { inSync: true, version: 2 };
+    const pushes = [];
+    let pushAnswer = { ok: true };
+    const fetchStub = async (url, opts) => {
+      calls.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => reply };
+    };
+    const api = new Function(
+      "store", "P", "CLIENT_ID", "fetch", "apiLiveDraft", "toast",
+      "setInterval", "clearInterval", "setTimeout", "clearTimeout",
+      `const LIVE_SYNC_MS = ${declared};\nlet liveSeq = 0;\n` + app.slice(start, end) +
+      "\nreturn { checkLiveSync, startLiveSync, stopLiveSync, scheduleLivePush, pushLiveDraft, seq: () => liveSeq };"
+    )(
+      store,
+      { serializeRoom: r => JSON.stringify(r), parseRoom: t => JSON.parse(t) },
+      "me", fetchStub,
+      async (json, name, clientId, version, baseSeq) => {
+        pushes.push({ json, name, clientId, version, baseSeq });
+        return pushAnswer;
+      },
+      () => {},
+      (fn, ms) => { scheduled = { fn, ms }; return 1; },
+      () => { scheduled = null; },
+      () => 1, () => {},
+    );
+    return {
+      api, store, calls, timer: () => scheduled, pushes,
+      reply: v => { reply = v; },
+      answerPushWith: v => { pushAnswer = v; },
+    };
+  };
+
+  // It asks, on a timer, with a fingerprint rather than the drawing.
+  {
+    const { api, calls, timer } = build();
+    api.startLiveSync();
+    check("joining live schedules a repeating check", timer() !== null);
+    check("and it uses that interval rather than one of its own",
+      timer() && timer().ms === declared);
+    await timer().fn();
+    check("and it asks the server", calls.length === 1);
+    check("it asks about the room it is in",
+      calls[0] && calls[0].url === "/api/live-check/flat");
+    check("it sends a fingerprint, not the whole drawing",
+      calls[0] && /^[0-9a-f]{64}$/.test(calls[0].body.digest) && calls[0].body.json === undefined);
+    check("the fingerprint is the one the server computes",
+      calls[0] && calls[0].body.digest
+        === createHash("sha256").update(JSON.stringify({ walls: [{ id: "w-1" }] })).digest("hex"));
+    api.stopLiveSync();
+    check("leaving live stops the check", timer() === null);
+  }
+
+  // Told it agrees, it changes nothing but the version it is on.
+  {
+    const { api, store, reply } = build();
+    reply({ inSync: true, version: 7 });
+    await api.checkLiveSync();
+    check("agreeing leaves the drawing alone", store.room.walls[0].id === "w-1");
+    check("and moves it onto the version everyone is on", store.serverRoomVersion === 7);
+    check("agreeing is not announced as an event", store.status === "");
+  }
+
+  // Told it has drifted, it takes the shared state.
+  {
+    const { api, store, reply } = build();
+    reply({ inSync: false, json: JSON.stringify({ walls: [{ id: "w-theirs" }] }), version: 9 });
+    await api.checkLiveSync();
+    check("drifting is corrected from the shared state",
+      store.room.walls.length === 1 && store.room.walls[0].id === "w-theirs");
+    check("and carries the version with it", store.applied === 9);
+    check("and the person is told why their drawing moved",
+      /caught up/i.test(store.status));
+  }
+
+  // The guards. Asking while holding unpublished work would answer "you
+  // differ" for the good reason that WE changed it — and taking that answer
+  // would throw away the very edit being made.
+  {
+    const { api, calls } = build();
+    api.scheduleLivePush();                 // an edit is waiting to go out
+    await api.checkLiveSync();
+    check("a client with unpublished work does not ask", calls.length === 0);
+  }
+  {
+    const { api, store, calls } = build();
+    store.dragTransactionActive = true;
+    await api.checkLiveSync();
+    check("a client mid-drag does not ask", calls.length === 0);
+  }
+  {
+    const { api, store, calls } = build();
+    store.live = false;
+    await api.checkLiveSync();
+    check("a client that has not joined live does not ask", calls.length === 0);
+  }
+  {
+    const { api, store, calls } = build();
+    store.serverRoomName = null;
+    await api.checkLiveSync();
+    check("a client with no room on the server does not ask", calls.length === 0);
+  }
+
+  // Publishing an edit built on a copy that has moved on is how a whole
+  // afternoon of somebody else's design disappeared: this client's older
+  // picture replaced it for everyone. The edit is published against the
+  // sequence the copy is based on, and a refusal is caught up from, not
+  // retried.
+  {
+    const { api, store, pushes, answerPushWith } = build();
+    answerPushWith({ ok: true, seq: 5 });
+    api.pushLiveDraft();
+    await new Promise(r => setTimeout(r, 0));
+    check("an edit is published against the copy it was made on",
+      pushes.length === 1 && pushes[0].baseSeq === 0, JSON.stringify(pushes[0]));
+    check("and the client moves on to what the server assigned", api.seq() === 5);
+
+    api.pushLiveDraft();
+    await new Promise(r => setTimeout(r, 0));
+    check("so the next edit is published against that",
+      pushes.length === 2 && pushes[1].baseSeq === 5, JSON.stringify(pushes[1]));
+    check("the room really is what gets sent",
+      JSON.parse(pushes[1].json).walls[0].id === "w-1");
+    check("and it is sent for the room this client is in",
+      pushes[1].name === "flat" && pushes[1].version === 2);
+    check("nothing was applied over the person's own work", store.room.walls[0].id === "w-1");
+  }
+  {
+    const { api, store, answerPushWith } = build();
+    answerPushWith({
+      ok: false, stale: true, seq: 9, version: 4,
+      json: JSON.stringify({ walls: [{ id: "w-theirs" }] }),
+    });
+    api.pushLiveDraft();
+    await new Promise(r => setTimeout(r, 0));
+    check("a refused edit leaves the client on the shared state, not its own",
+      store.room.walls.length === 1 && store.room.walls[0].id === "w-theirs");
+    check("carrying the version that state is on", store.applied === 4);
+    check("and the sequence to publish against next", api.seq() === 9);
+    check("the person is told their copy was out of date, in words they can act on",
+      /out of date/i.test(store.status) && /again/i.test(store.status), store.status);
+  }
+
+  // The sequence has to be taken from a message BEFORE deciding to ignore it.
+  // A client ignores the echo of its own save — and that echo is the only place
+  // it learns the sequence the save moved the room to. Read it afterwards and
+  // the person who just saved cannot publish anything else: every edit they
+  // make is refused as built on an out-of-date copy.
+  {
+    const handler = app.slice(app.indexOf("eventSource.onmessage"),
+                              app.indexOf("} catch (err) {", app.indexOf("eventSource.onmessage")));
+    const takesSeq = handler.indexOf("liveSeq = data.seq");
+    const ignores = handler.indexOf('action === "ignore"');
+    check("the stream handler reads the sequence", takesSeq > 0);
+    check("and does it before deciding to ignore the message",
+      takesSeq > 0 && ignores > 0 && takesSeq < ignores,
+      `sequence at ${takesSeq}, ignore at ${ignores}`);
+  }
+
+  // Wiring: the timer is worthless if nothing starts or stops it.
+  check("joining live starts the sync",
+    /store\.live = true;[\s\S]{0,400}startLiveSync\(\);/.test(app));
+  check("leaving live stops it",
+    /store\.live = false;[\s\S]{0,200}stopLiveSync\(\);/.test(app));
+  check("and detaching the watcher stops it too",
+    /function stopWatching\([^)]*\) \{\s*\n\s*stopLiveSync\(\);/.test(app));
+  check("but re-watching a room does not silently stop checking",
+    /if \(store\.live\) startLiveSync\(\);/.test(app));
 }
 
 console.log(`${passed} passed, ${failed} failed — live collaboration UI contracts`);

@@ -6,3 +6,4 @@ pix/
 *.xcuserstate
 *.bc
 .wiki/
+.debug/

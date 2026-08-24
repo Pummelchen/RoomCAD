@@ -78,7 +78,10 @@ const SUN_SHADOW_REACH = 70;
 const SUN_SHADOW_MAP = 4096;
 const SUN_HEIGHT = 120;
 // How many of the street lights throw a shadow, and how big a map each gets.
-const CITY_SHADOW_LIGHTS = 2;
+// One, not two. A shadow-casting point light is six renders of the scene, and
+// the city it now renders is nine blocks square of sixty storey towers — twelve
+// faces of that was 6.5 million triangles a frame. The nearest lamp still casts.
+const CITY_SHADOW_LIGHTS = 1;
 const CITY_SHADOW_MAP = 512;
 // A layer that only the room's own geometry is on.
 //
