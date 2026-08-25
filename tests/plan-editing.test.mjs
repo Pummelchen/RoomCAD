@@ -784,11 +784,20 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   const room = plate([{ id: "solo", start: P.point(0.2, 1), end: P.point(3.2, 1) }]);
   const len = P.wallLength(room.walls[0]);
 
-  const shoved = solo(P.dragWall(room, "solo", -5, 0));
+  // The wall is horizontal, so it moves in z and only in z: a wall goes across
+  // itself, never along. Pushing it sideways is not a small move, it is no move
+  // at all — sliding a wall along its own line would leave it where it already
+  // lies, and the corner of anything joined to it at a right angle would be
+  // dragged sideways and come out skew.
+  check("a wall cannot be slid along its own length",
+    P.dragWall(room, "solo", -5, 0) === null);
+  check("nor by a hair along it", P.dragWall(room, "solo", 0.4, 0) === null);
+
+  const shoved = solo(P.dragWall(room, "solo", 0, -5));
   check("a wall shoved past the edge keeps its length",
     shoved && near(P.wallLength(shoved), len, 1e-9), `${shoved && P.wallLength(shoved)} vs ${len}`);
   check("and stops at the edge",
-    shoved && near(Math.min(shoved.start.x, shoved.end.x), 0, 1e-9));
+    shoved && near(Math.min(shoved.start.z, shoved.end.z), 0, 1e-9));
 
   const far = solo(P.dragWall(room, "solo", 100, 100));
   check("the same holds at the far edge", far && near(P.wallLength(far), len, 1e-9));
@@ -796,9 +805,13 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     far && Math.max(far.start.x, far.end.x) <= 25 + 1e-9
     && Math.max(far.start.z, far.end.z) <= 25 + 1e-9);
 
+  // Only the part of the push that is across the wall counts, and that part is
+  // exact.
   const free = solo(P.dragWall(room, "solo", 0.5, 0.25));
-  check("an unobstructed move is exact",
-    free && near(free.start.x, 0.7) && near(free.start.z, 1.25) && near(free.end.x, 3.7));
+  check("an unobstructed move is exact across the wall",
+    free && near(free.start.z, 1.25) && near(free.end.z, 1.25));
+  check("and ignores the part of the push that ran along it",
+    free && near(free.start.x, 0.2) && near(free.end.x, 3.2));
 
   // A wall longer than the plate must not be flung across it.
   const huge = plate([{ id: "solo", start: P.point(0, 2), end: P.point(30, 2) }]);
@@ -886,11 +899,12 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     near(spurAcross.end.x, 6.5) && near(spurAcross.start.x, 4),
     `${spurAcross.start.x} -> ${spurAcross.end.x}`);
 
-  const alongList = P.dragWall(tee, eastT.id, 0, 0.5);
-  const spurAlong = alongList.find(w => w.id === "spur");
-  check("but stays put when the wall only slides along its own line",
-    near(spurAlong.end.x, 6) && near(spurAlong.end.z, 2),
-    `${spurAlong.end.x},${spurAlong.end.z}`);
+  // And a push that runs only along the wall is not a move at all. It used to
+  // slide the wall up its own line, which dragged the spur's end with it and
+  // left the spur at an angle — the plan stops enclosing anything and the room
+  // areas go with it.
+  check("a push along the wall's own line moves nothing",
+    P.dragWall(tee, eastT.id, 0, 0.5) === null);
 
   // It refuses to crush a wall that carries a door.
   const doored = mk();

@@ -412,10 +412,24 @@ export function dragWall(room, id, dx, dz) {
   const len = wallLength(moving) || 1;
   const ux = (B.x - A.x) / len;
   const uz = (B.z - A.z) / len;
-  // The part of the movement that is across the wall rather than along it.
+  // A wall moves ACROSS itself and no other way.
+  //
+  // Every wall in a RoomCAD plan is square, and the part of a drag that runs
+  // ALONG a wall is what breaks that: it carries the corner of the wall joined
+  // at right angles sideways while that wall's far end stays put, so the joined
+  // wall comes out at an angle. Drag a wall diagonally and two walls end up
+  // skew, the plan stops enclosing anything, and the area label disappears —
+  // which is how this was noticed.
+  //
+  // Sliding a wall along its own line is not a thing a plan needs anyway: it
+  // would leave the wall lying where it already lies. Reaching along a wall is
+  // what dragging its endpoint is for.
   const along = mx * ux + mz * uz;
   const acrossX = mx - along * ux;
   const acrossZ = mz - along * uz;
+  const stepX = acrossX;
+  const stepZ = acrossZ;
+  if (Math.abs(stepX) < 1e-9 && Math.abs(stepZ) < 1e-9) return null;
 
   const same = (p, q) => Math.abs(p.x - q.x) <= JOINT_EPS && Math.abs(p.z - q.z) <= JOINT_EPS;
   const partway = p => {
@@ -428,13 +442,13 @@ export function dragWall(room, id, dx, dz) {
     if (w.id === id) {
       return {
         ...w,
-        start: point(clean(A.x + mx), clean(A.z + mz)),
-        end: point(clean(B.x + mx), clean(B.z + mz)),
+        start: point(clean(A.x + stepX), clean(A.z + stepZ)),
+        end: point(clean(B.x + stepX), clean(B.z + stepZ)),
       };
     }
     const carry = p => {
-      if (same(p, A) || same(p, B)) return point(clean(p.x + mx), clean(p.z + mz));
-      if (partway(p)) return point(clean(p.x + acrossX), clean(p.z + acrossZ));
+      if (same(p, A) || same(p, B)) return point(clean(p.x + stepX), clean(p.z + stepZ));
+      if (partway(p)) return point(clean(p.x + stepX), clean(p.z + stepZ));
       return null;
     };
     const s = carry(w.start);

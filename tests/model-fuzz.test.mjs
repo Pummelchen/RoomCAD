@@ -47,6 +47,17 @@ const checkInvariants = (op) => {
   for (const [label, list] of [["walls",r.walls],["doors",r.doors],["windows",r.windows],["furniture",r.furniture],["publicAreas",r.publicAreas||[]],["labels",r.labels||[]]]) {
     if (new Set(list.map(x => x.id)).size !== list.length) fail(`duplicate ${label} ids`, op);
   }
+  // Every wall in a RoomCAD plan is square. This is not AutoCAD: there is no
+  // gesture that is supposed to produce a wall at an angle, so one appearing
+  // means an edit has torn a joint — and a plan with a skew wall encloses
+  // nothing, so the rooms stop being rooms and their areas disappear.
+  for (const w of r.walls) {
+    const square = Math.abs(w.start.x - w.end.x) < 1e-6 || Math.abs(w.start.z - w.end.z) < 1e-6;
+    if (!square) {
+      fail("a wall that is not square",
+        `${op}: (${w.start.x},${w.start.z})-(${w.end.x},${w.end.z})`);
+    }
+  }
   const before = P.serializeRoom(r);
   if (P.serializeRoom(P.parseRoom(before)) !== before) fail("save/load is not stable", op);
   const b = P.wallsBounds(r);

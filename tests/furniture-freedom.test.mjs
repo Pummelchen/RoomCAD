@@ -244,14 +244,20 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("an inside wall moves", store.moveWall("divider", 0.30, 0.20) === true);
   const wallAfter = store.room.walls.find(w => w.id === "divider").start;
   const doorAfter = centreOf("doors", "d1");
-  check("the wall moved by what was asked",
-    near(wallAfter.x - wallBefore.x, 0.30) && near(wallAfter.z - wallBefore.z, 0.20),
-    `${wallAfter.x - wallBefore.x}, ${wallAfter.z - wallBefore.z}`);
+  // Across itself by the full amount, and not at all along it: the divider is
+  // vertical, so the 0.20 that ran along it is ignored. A wall that slid along
+  // its own line would drag the corner of everything joined to it sideways and
+  // leave those walls skew.
+  check("the wall moved across itself by what was asked",
+    near(wallAfter.x - wallBefore.x, 0.30),
+    `${wallAfter.x - wallBefore.x}`);
+  check("and not along itself",
+    near(wallAfter.z - wallBefore.z, 0), `${wallAfter.z - wallBefore.z}`);
   check("the wall kept its length",
     near(P.wallLength(store.room.walls.find(w => w.id === "divider")), lenBefore, 1e-9));
   check("the door is still on the wall", !!store.room.doors.find(d => d.id === "d1"));
   check("the door travelled with the wall",
-    near(doorAfter.x - doorBefore.x, 0.30) && near(doorAfter.z - doorBefore.z, 0.20),
+    near(doorAfter.x - doorBefore.x, 0.30) && near(doorAfter.z - doorBefore.z, 0),
     `${doorAfter.x - doorBefore.x}, ${doorAfter.z - doorBefore.z}`);
 
   // Unlock the outer wall, then it moves and keeps its window.
