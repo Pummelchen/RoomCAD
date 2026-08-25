@@ -941,32 +941,67 @@ export function isFurniturePlacementValid(room, item, excluded = new Set()) {
   });
 }
 
+/// Lines a piece can lock onto along one axis. RoomCAD snaps things onto each
+/// other rather than asking for exact numbers, so the candidates are the parts
+/// you can actually see: the faces of the walls that run across this axis, the
+/// ends of the walls that run along it, and the edges and centres of the
+/// pieces already placed.
+///
+function furnitureSnapLines(room, item, axis) {
+  const half = WALL_THICKNESS / 2;
+  const lines = [];
+  for (const wall of room.walls) {
+    // Only a wall lying across the way the piece is travelling can be pushed
+    // against. A wall's *ends* are not worth offering: walls are drawn on the
+    // grid, so an end is already a position the grid can reach.
+    const horizontal = Math.abs(wall.end.z - wall.start.z) < 1e-6;
+    if (axis === (horizontal ? "x" : "z")) continue;
+    lines.push(wall.start[axis] - half, wall.start[axis] + half);
+  }
+  for (const other of room.furniture) {
+    if (other.id === item.id) continue;
+    const f = furnitureFootprint(other);
+    lines.push(axis === "x" ? f.minX : f.minZ);
+    lines.push(axis === "x" ? f.maxX : f.maxZ);
+    lines.push(other.center[axis]);
+  }
+  return lines;
+}
+
 export function furnitureCenter(room, raw, item) {
   const kind = FURNITURE_KINDS[item.kind];
   const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
   const w = swaps ? kind.d : kind.w;
   const d = swaps ? kind.w : kind.d;
-  const center = gridSnap(room, raw);
   const canvas = canvasOf(room);
-  center.x = clamp(center.x, w / 2, canvas.width - w / 2);
-  center.z = clamp(center.z, d / 2, canvas.length - d / 2);
-  const tolerance = Math.max(GRID_STEPS[room.grid].meters * 1.5, 0.08);
-  let bestX = null;
-  let bestZ = null;
-  for (const other of room.furniture) {
-    if (other.id === item.id) continue;
-    if (Math.abs(other.center.x - center.x) <= tolerance &&
-        (bestX === null || Math.abs(other.center.x - center.x) < Math.abs(bestX - center.x))) {
-      bestX = other.center.x;
+  const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
+
+  const place = (want, size, limit, lines) => {
+    /// Steps are counted from the near edge, not the centre. Half a chair is
+    /// 22.5 cm, so a centre on the grid puts its edge half a step off it, and
+    /// the piece can never be pushed flat against a wall — the closest grid
+    /// position is either 5 mm inside the wall (red) or 5 mm shy of it.
+    let best = clean(Math.round((want - size / 2) / step) * step + size / 2);
+    /// The lines are offered as *extra* grid positions rather than as magnets
+    /// with a reach of their own, and the nearest one wins. That is what keeps
+    /// the grid honest: the choices are a superset of the grid, so every nudge
+    /// of one step still moves the piece. The old version pulled from 8 cm
+    /// away whatever the grid said, which on a 1 cm grid meant fifteen
+    /// different drags all landing on the same spot.
+    for (const line of lines) {
+      // Either edge of the piece may meet the line, or its middle sit on it.
+      for (const candidate of [line + size / 2, line, line - size / 2]) {
+        // Ties go to the line, so a piece pushed at a wall lands flat on it.
+        if (Math.abs(candidate - want) <= Math.abs(best - want)) best = clean(candidate);
+      }
     }
-    if (Math.abs(other.center.z - center.z) <= tolerance &&
-        (bestZ === null || Math.abs(other.center.z - center.z) < Math.abs(bestZ - center.z))) {
-      bestZ = other.center.z;
-    }
-  }
-  if (bestX !== null) center.x = bestX;
-  if (bestZ !== null) center.z = bestZ;
-  return center;
+    return clamp(best, size / 2, Math.max(size / 2, limit - size / 2));
+  };
+
+  return {
+    x: place(raw.x, w, canvas.width, furnitureSnapLines(room, item, "x")),
+    z: place(raw.z, d, canvas.length, furnitureSnapLines(room, item, "z")),
+  };
 }
 
 // MARK: - Walkthrough collision

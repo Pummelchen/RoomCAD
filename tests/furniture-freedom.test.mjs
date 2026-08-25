@@ -307,5 +307,254 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("there is no way to set the size directly", typeof store.updateRoomSize === "undefined");
 }
 
+// ── Placing follows the grid the user picked ─────────────────────────────
+//
+// "if I set 1cm as our grid, I want to be able to place furniture up to 1cm
+// towards any way. currently I cannot do that, the gap to get 'green' is way
+// to big and seem to not check the 1/2/5 cm grid option."
+//
+// Two separate faults were behind that. Only a piece's *centre* was put on the
+// grid, and half a chair is 22.5 cm — never a whole number of steps — so its
+// edge always sat half a step off, and it could not be pushed flat against a
+// wall at any grid setting. And the pull that lined a piece up with its
+// neighbours had a floor of 8 cm whatever the grid said, so on a 1 cm grid
+// fifteen different drags all landed on the same spot.
+{
+  const GRIDS = { oneCentimeter: 0.01, twoCentimeters: 0.02, fiveCentimeters: 0.05 };
+
+  /// Where the floor actually is: the four walls' inner faces, and the middle.
+  const inside = room => {
+    const xs = room.walls.flatMap(w => [w.start.x, w.end.x]);
+    const zs = room.walls.flatMap(w => [w.start.z, w.end.z]);
+    const h = P.WALL_THICKNESS / 2;
+    const walls = [
+      { axis: "x", face: Math.min(...xs) + h, sign: +1 },
+      { axis: "x", face: Math.max(...xs) - h, sign: -1 },
+      { axis: "z", face: Math.min(...zs) + h, sign: +1 },
+      { axis: "z", face: Math.max(...zs) - h, sign: -1 },
+    ];
+    return { walls, middle: { x: (walls[0].face + walls[1].face) / 2,
+                              z: (walls[2].face + walls[3].face) / 2 } };
+  };
+
+  const bench = grid => {
+    const room = P.freshRoom("Grid", 6, 5, 2.6);
+    room.origin = { x: 0, z: 0 };
+    room.canvas = { width: 25, length: 25 };
+    room.grid = grid;
+    P.sanitize(room);
+    room.furniture = [];
+    return room;
+  };
+
+  for (const [grid, step] of Object.entries(GRIDS)) {
+    const cm = Math.round(step * 100);
+
+    // Flat against a wall, for every kind of thing there is to place. A piece
+    // that cannot touch the wall leaves a strip of floor nobody can use.
+    {
+      const room = bench(grid);
+      const { walls, middle } = inside(room);
+      const stuck = [];
+      // Turned a quarter round as well: a bed on its side is 2 m across, and
+      // measuring it unturned puts its edge 55 cm from where it really is.
+      for (const kind of Object.keys(P.FURNITURE_KINDS)) {
+       for (const turn of [0, 90, 180, 270]) {
+        const item = { id: "m", kind, center: P.point(middle.x, middle.z), rotationDegrees: turn };
+        const k = P.FURNITURE_KINDS[kind];
+        const swaps = turn === 90 || turn === 270;
+        for (const wall of walls) {
+          const reach = (wall.axis === "x" ? (swaps ? k.d : k.w) : (swaps ? k.w : k.d)) / 2;
+          const rest = wall.face + wall.sign * reach;
+          let flush = false;
+          // Push at the wall from a few millimetres out, as a drag arrives.
+          for (let mm = 0; mm <= 20 && !flush; mm++) {
+            const want = { ...middle };
+            want[wall.axis] = rest + wall.sign * mm / 1000;
+            const c = P.furnitureCenter(room, want, item);
+            flush = Math.abs(c[wall.axis] - rest) < 1e-6
+              && P.isFurniturePlacementValid(room, { ...item, center: c }, new Set(["m"]));
+          }
+          if (!flush) stuck.push(`${kind}@${turn} ${wall.axis}${wall.sign > 0 ? "-" : "+"}`);
+        }
+       }
+      }
+      check(`on a ${cm} cm grid every kind can sit flat against a wall`,
+        stuck.length === 0, stuck.join(", "));
+    }
+
+    // One position per step, no coarser. Measured by dragging the pointer
+    // across 40 cm a tenth of a millimetre at a time and collecting what the
+    // piece actually does — the gap between neighbouring stops is the finest
+    // move the user can make.
+    {
+      const room = bench(grid);
+      room.furniture = [{ id: "a", kind: "chair", center: P.point(3, 3), rotationDegrees: 0 }];
+      const item = { id: "b", kind: "chair", center: P.point(6, 6), rotationDegrees: 0 };
+      const stops = [];
+      for (let t = 0; t <= 4000; t++) {
+        const v = +P.furnitureCenter(room, { x: 2.8 + t / 10000, z: 6 }, item).x.toFixed(4);
+        if (!stops.length || stops[stops.length - 1] !== v) stops.push(v);
+      }
+      const jumps = stops.slice(1).map((v, i) => v - stops[i]);
+      const worst = Math.max(...jumps);
+      // Which part of the piece the steps are counted from. Putting the
+      // *centre* on the grid leaves the edge half a step off it for anything
+      // whose half-width is not a whole number of steps — a chair is 45 cm —
+      // and the edge is the part the user lines up against a wall or a
+      // neighbour. Away from both, every edge lands on a grid line.
+      {
+        // Clear floor, so nothing is on offer but the grid itself.
+        const plain = bench(grid);
+        const half = P.FURNITURE_KINDS.chair.w / 2;
+        const off = [];
+        for (let t = 0; t <= 400; t++) {
+          const x = P.furnitureCenter(plain, { x: 2.8 + t / 1000, z: 2.5 }, item).x;
+          const edge = x - half;
+          if (Math.abs(edge / step - Math.round(edge / step)) > 1e-6) off.push(+edge.toFixed(4));
+        }
+        check(`a ${cm} cm grid puts a piece's edge on a grid line`,
+          off.length === 0, `${off.length} of 401 drags landed off it, e.g. ${off[0]}`);
+      }
+
+      check(`a ${cm} cm grid moves a piece ${cm} cm at a time, never coarser`,
+        worst <= step + 1e-9, `biggest jump ${(worst * 1000).toFixed(1)} mm`);
+      // Passing that on its own would be easy by ignoring the setting and
+      // always working in millimetres, so the steps have to be the grid's.
+      check(`and a ${cm} cm grid does not offer positions finer than the grid`,
+        stops.length <= 0.40 / step + 4, `${stops.length} stops over 40 cm`);
+    }
+
+    // Alongside a neighbour: edges line up, and the piece can still be nudged.
+    {
+      const room = bench(grid);
+      // The neighbour is put against the wall first, the way a room is really
+      // furnished. That leaves its far edge off the grid for a chair — 5 cm
+      // wall face plus 22.5 cm — so reaching it needs the neighbour's own edge
+      // to be on offer, not just the grid.
+      const { walls, middle } = inside(room);
+      const chair = { id: "a", kind: "chair", center: P.point(middle.x, middle.z), rotationDegrees: 0 };
+      chair.center = P.furnitureCenter(room,
+        { x: walls[0].face + P.FURNITURE_KINDS.chair.w / 2, z: middle.z }, chair);
+      room.furniture = [chair];
+      const neighbour = P.furnitureFootprint(chair);
+      const item = { id: "b", kind: "armchair", center: P.point(6, 6), rotationDegrees: 0 };
+      const half = P.FURNITURE_KINDS.armchair.w / 2;
+      let touching = false;
+      for (let mm = 0; mm <= 20 && !touching; mm++) {
+        const c = P.furnitureCenter(room, { x: neighbour.maxX + half + mm / 1000, z: middle.z }, item);
+        touching = Math.abs(c.x - half - neighbour.maxX) < 1e-6;
+      }
+      check(`on a ${cm} cm grid a piece can be set edge to edge with another`,
+        touching, `neighbour's edge at ${neighbour.maxX.toFixed(3)}`);
+    }
+  }
+
+  // A wall that divides the room, rather than one of the four round the
+  // outside. Both its faces have to be on offer: a piece is pushed flat
+  // against whichever side of it the piece is on. On a bare rectangle this is
+  // impossible to tell apart from offering the wrong walls' coordinates —
+  // every wall of an outline starts where a wall across it stands — so the
+  // divider is what makes the distinction real.
+  {
+    for (const [grid, step] of Object.entries(GRIDS)) {
+      const room = bench(grid);
+      const { middle } = inside(room);
+      const zs = room.walls.flatMap(w => [w.start.z, w.end.z]);
+      room.walls.push({ id: "divider", start: P.point(3, Math.min(...zs)),
+                                       end: P.point(3, Math.max(...zs)) });
+      const half = P.WALL_THICKNESS / 2;
+      const stuck = [];
+      for (const side of [{ face: 3 - half, sign: -1 }, { face: 3 + half, sign: +1 }]) {
+        const item = { id: "m", kind: "shelf", center: P.point(middle.x, middle.z), rotationDegrees: 0 };
+        const rest = side.face + side.sign * P.FURNITURE_KINDS.shelf.w / 2;
+        let flush = false;
+        for (let mm = 0; mm <= 20 && !flush; mm++) {
+          const c = P.furnitureCenter(room, { x: rest + side.sign * mm / 1000, z: middle.z }, item);
+          flush = Math.abs(c.x - rest) < 1e-6
+            && P.isFurniturePlacementValid(room, { ...item, center: c }, new Set(["m"]));
+        }
+        if (!flush) stuck.push(side.sign > 0 ? "east side" : "west side");
+      }
+      check(`on a ${Math.round(step * 100)} cm grid a piece sits flat against a divider`,
+        stuck.length === 0, stuck.join(", "));
+    }
+  }
+
+  // Two pieces lined up on a shared centre line. A chair pushed against the
+  // wall has its middle at 5 cm of wall plus 22.5 cm of chair — half a
+  // centimetre off every grid there is once a table's own half-width is taken
+  // off it, so the grid alone cannot get there.
+  {
+    const room = bench("oneCentimeter");
+    const { walls, middle } = inside(room);
+    const chair = { id: "a", kind: "chair", center: P.point(middle.x, middle.z), rotationDegrees: 0 };
+    chair.center = P.furnitureCenter(room,
+      { x: walls[1].face - P.FURNITURE_KINDS.chair.w / 2, z: middle.z }, chair);
+    room.furniture = [chair];
+    const table = { id: "b", kind: "table", center: P.point(8, 8), rotationDegrees: 0 };
+    let shared = false;
+    for (let mm = -10; mm <= 10 && !shared; mm++) {
+      const c = P.furnitureCenter(room, { x: chair.center.x + mm / 1000, z: middle.z + 1 }, table);
+      shared = Math.abs(c.x - chair.center.x) < 1e-6;
+    }
+    check("two pieces can be lined up on a shared centre line",
+      shared, `the chair's middle is at ${chair.center.x.toFixed(3)}`);
+  }
+
+  // Snapping may never take a placement that was clear of the walls and put it
+  // inside one. A wall face offering itself to a piece's *centre* does exactly
+  // that: the piece lands straddling the wall, half of it in the next room,
+  // and there is no drag position from which that is what was meant.
+  {
+    for (const [grid, step] of Object.entries(GRIDS)) {
+      const room = bench(grid);
+      const item = { id: "m", kind: "chair", center: P.point(3, 3), rotationDegrees: 0 };
+      let buried = null;
+      for (let t = 0; t <= 3000 && !buried; t++) {
+        const want = { x: 0.02 + t / 5000, z: 1.5 };
+        // Only asks that were themselves clear of every wall count: a drag
+        // that genuinely aims into a wall is allowed to read red.
+        if (P.furnitureIntersectsWall(room, { ...item, center: want })) continue;
+        const c = P.furnitureCenter(room, want, item);
+        if (P.furnitureIntersectsWall(room, { ...item, center: c })) buried = { want, c };
+      }
+      check(`on a ${Math.round(step * 100)} cm grid snapping never pushes a piece into a wall`,
+        buried === null,
+        buried && `asked ${buried.want.x.toFixed(3)}, landed ${buried.c.x.toFixed(3)}`);
+    }
+  }
+
+  // The pull is the grid's, not a number of its own. A 1 cm grid that still
+  // reached 8 cm is the reported fault, so the reach is checked directly:
+  // nothing may move a piece further than half a step from where it was asked
+  // for.
+  {
+    const worst = {};
+    for (const [grid, step] of Object.entries(GRIDS)) {
+      const room = bench(grid);
+      room.furniture = [
+        { id: "a", kind: "chair", center: P.point(3, 3), rotationDegrees: 0 },
+        { id: "c", kind: "table", center: P.point(4.1, 3.3), rotationDegrees: 0 },
+      ];
+      const item = { id: "b", kind: "chair", center: P.point(6, 6), rotationDegrees: 0 };
+      let off = 0;
+      for (let t = 0; t <= 6000; t++) {
+        const want = { x: 2.5 + t / 4000, z: 3 + (t % 700) / 1000 };
+        const c = P.furnitureCenter(room, want, item);
+        off = Math.max(off, Math.abs(c.x - want.x), Math.abs(c.z - want.z));
+      }
+      worst[grid] = off;
+      check(`a ${Math.round(step * 100)} cm grid never moves a piece more than half a step`,
+        off <= step / 2 + 1e-9, `moved it ${(off * 1000).toFixed(1)} mm`);
+    }
+    // And the three settings really are three different behaviours, rather
+    // than one reach that happens to satisfy all of them.
+    check("a coarser grid pulls further than a finer one",
+      worst.fiveCentimeters > worst.twoCentimeters && worst.twoCentimeters > worst.oneCentimeter,
+      JSON.stringify(worst));
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
