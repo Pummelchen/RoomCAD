@@ -350,6 +350,8 @@ export const store = {
     // Take the joined walls along, or dragging one wall tears the building
     // open. Returns null when the step would crush a wall or leave the plate,
     // which on a drag just stops the wall at its limit.
+    const before = new Map(this.room.walls.map(w =>
+      [w.id, `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`]));
     const moved = P.dragWall(this.room, id, dx, dz);
     if (!moved) return false;
     this.beginDrag();
@@ -361,12 +363,22 @@ export const store = {
     // itself: the sidebar reports the size the room had before the drag began,
     // and an opening on a wall that got shorter is drawn past its end.
     P.fitOpeningsToWalls(this.room);
-    // A wall dragged to within a few millimetres of the one it meets closes
-    // onto it, here rather than only when the drag ends. Two reasons: the room
-    // reads as enclosed while it is being sized, which is when the area label
-    // matters, and the model stays exactly what a save and reload would give
-    // back — a drag is the one edit that does not pass through sanitize.
-    P.healWallJoints(this.room);
+    // Walls stick to each other, the way they do when you draw one against
+    // another. Drawing locks on from 35 cm; dragging used to go precisely
+    // where the pointer left it, which is how a room came to be five
+    // millimetres from closed — no label, no room in the count, nothing to see.
+    //
+    // Only the walls this drag actually moved are snapped: the wall you are
+    // dragging sticks to what it meets, and the walls it passes stay where they
+    // were drawn. And it happens per step rather than at the end, so the room
+    // reads as enclosed while you are still sizing it — which is when the area
+    // is what you are dragging towards.
+    const shifted = new Set();
+    for (const w of this.room.walls) {
+      const was = before.get(w.id);
+      if (!was || was !== `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`) shifted.add(w.id);
+    }
+    P.healWallJoints(this.room, { only: shifted, tolerance: P.WALL_DRAG_SNAP });
     P.syncExtent(this.room);
     // Say so while the wall is still moving. The canvas redraws itself from the
     // drag, but the panel does not: floor area, overall size and the room count

@@ -585,6 +585,115 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── Walls stick to each other ────────────────────────────────────────────
+//
+// "It was designed to have walls, windows and doors which snap onto each
+// other to make things easy. This is not AutoCAD."
+//
+// Drawing a wall against another locks onto it from 35 cm away — that has
+// always been true. Dragging one did not: it went precisely where the pointer
+// left it, which is how a room came to be five millimetres from closed, with
+// no label and no room in the count and nothing on screen to say why.
+{
+  const build = () => {
+    store.room = P.freshRoom("Snap", 6, 5, 2.6);
+    P.centerRoom(store.room);
+    const at = P.roomOrigin(store.room);
+    store.room.walls.push({
+      id: "stub", start: P.point(at.x + 3, at.z + 2.5), end: P.point(at.x + 6, at.z + 2.5),
+    });
+    P.sanitize(store.room);
+    store.outsideWallsFree = true;
+    return at;
+  };
+  const dragStubLeftBy = distance => {
+    const stub = store.room.walls.find(w => w.id === "stub");
+    for (let i = 0; i < 10; i++) store.moveWall(stub.id, -distance / 10, 0);
+    const now = store.room.walls.find(w => w.id === "stub");
+    return Math.min(now.start.x, now.end.x);
+  };
+
+  // Dragged up close: it takes the last few centimetres itself.
+  let o = build();
+  let left = dragStubLeftBy(3 - 0.04);
+  check("a wall dragged up against another sticks to it",
+    Math.abs(left - o.x) < 1e-6, `${((left - o.x) * 100).toFixed(1)} cm short`);
+
+  // Dragged near but plainly not to it: left exactly where it was put.
+  o = build();
+  left = dragStubLeftBy(3 - 0.10);
+  check("one left a hand's width away stays where it was put",
+    Math.abs(left - (o.x + 0.10)) < 1e-6, `${((left - o.x) * 100).toFixed(1)} cm`);
+
+  o = build();
+  left = dragStubLeftBy(3 - 0.30);
+  check("and one left well clear is not pulled in either",
+    Math.abs(left - (o.x + 0.30)) < 1e-6, `${((left - o.x) * 100).toFixed(1)} cm`);
+
+  // The wall it is dragged past must not come away from where it was drawn.
+  o = build();
+  const outerBefore = store.room.walls
+    .filter(w => w.id !== "stub")
+    .map(w => `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`).join("|");
+  dragStubLeftBy(3 - 0.04);
+  const outerAfter = store.room.walls
+    .filter(w => w.id !== "stub")
+    .map(w => `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`).join("|");
+  check("the walls it passes stay exactly where they were",
+    outerBefore === outerAfter);
+
+  // The sharper version of the same rule: a wall whose end sits a few
+  // centimetres from where the dragged wall is heading must NOT be pulled onto
+  // it. Only what the drag moved may snap — otherwise dragging one wall drags
+  // the plan around with it.
+  {
+    store.room = P.freshRoom("Bystander", 6, 5, 2.6);
+    P.centerRoom(store.room);
+    const at = P.roomOrigin(store.room);
+    store.room.walls.push({
+      id: "mover", start: P.point(at.x + 1, at.z + 1), end: P.point(at.x + 5, at.z + 1),
+    });
+    // Ends 4 cm below where "mover" will be after the drag.
+    store.room.walls.push({
+      id: "bystander", start: P.point(at.x + 3, at.z + 2.5), end: P.point(at.x + 3, at.z + 1.54),
+    });
+    P.sanitize(store.room);
+    store.outsideWallsFree = true;
+    const wasAt = store.room.walls.find(w => w.id === "bystander").end.z;
+    const mover = store.room.walls.find(w => w.id === "mover");
+    for (let i = 0; i < 5; i++) store.moveWall(mover.id, 0, 0.1);   // down to z + 1.5
+    const nowAt = store.room.walls.find(w => w.id === "bystander").end.z;
+    check("a wall the drag did not touch is not pulled onto it",
+      Math.abs(nowAt - wasAt) < 1e-6,
+      `it moved ${((nowAt - wasAt) * 100).toFixed(1)} cm on its own`);
+    store.outsideWallsFree = false;
+  }
+
+  // Which is the point of all of it: the room closes, and says how big it is.
+  //
+  // A partition drawn across the room that stopped four centimetres short of
+  // the left wall — near enough to look right, far enough to leave the room
+  // open. Nudge it and it takes those four centimetres itself.
+  store.room = P.freshRoom("Close", 6, 5, 2.6);
+  P.centerRoom(store.room);
+  const at = P.roomOrigin(store.room);
+  store.room.walls.push({
+    id: "part", start: P.point(at.x + 0.04, at.z + 2.5), end: P.point(at.x + 6, at.z + 2.5),
+  });
+  P.sanitize(store.room);
+  store.outsideWallsFree = true;
+  check("four centimetres short, the room is still one space",
+    P.detectRooms(store.room).length === 1, `${P.detectRooms(store.room).length}`);
+  const part = store.room.walls.find(w => w.id === "part");
+  for (let i = 0; i < 4; i++) store.moveWall(part.id, 0, 0.02);
+  const regions = P.detectRooms(store.room);
+  check("nudged, it closes onto the wall and the room is a room",
+    regions.length === 2, `${regions.length} regions`);
+  check("and both halves are measured",
+    P.roomCaptions(store.room, 0.2, 0.06).length === 2);
+  store.outsideWallsFree = false;
+}
+
 // ── The area label, while you are working on the wall ────────────────────
 //
 // Reported as "I still do not get realtime room m² labels when I drag a wall

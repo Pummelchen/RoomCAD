@@ -1562,6 +1562,17 @@ export function labelNear(room, p, tolerance = 0.08) {
 /// left alone.
 export const JOINT_HEAL_TOLERANCE = 0.02;
 
+/// How close a wall being DRAGGED has to come before it sticks to the wall it
+/// is heading for.
+///
+/// Drawing a wall against another one locks onto it from 35 cm away, because
+/// that is the whole idea: you draw roughly and the walls meet exactly. A wall
+/// being dragged had no such thing — it went precisely where the pointer left
+/// it, which is how a room came to be five millimetres from closed. Six
+/// centimetres is close enough to be plainly aimed at the wall and far enough
+/// that a wall deliberately set a hand's width away stays there.
+export const WALL_DRAG_SNAP = 0.06;
+
 /// Closes hairline gaps where a wall stops just short of another one.
 ///
 /// A room is enclosed or it is not, and the difference can be five millimetres
@@ -1573,7 +1584,7 @@ export const JOINT_HEAL_TOLERANCE = 0.02;
 /// Only the coordinate ACROSS the wall is moved, so a wall never goes diagonal
 /// to close a gap, and only when the end lies within the span of the wall it is
 /// reaching — a wall pointing at empty space stays where it is.
-export function healWallJoints(room) {
+export function healWallJoints(room, opts = {}) {
   // Until it settles. Closing one joint can bring another end within reach —
   // pull a wall onto the line it meets and the wall joined to ITS far end
   // moves with it — so a single pass leaves work behind, and a plan that heals
@@ -1581,17 +1592,21 @@ export function healWallJoints(room) {
   // way twice.
   let total = 0;
   for (let pass = 0; pass < 4; pass++) {
-    const moved = healPass(room);
+    const moved = healPass(room, opts);
     total += moved;
     if (!moved) break;
   }
   return total;
 }
 
-function healPass(room) {
+function healPass(room, { only = null, tolerance = JOINT_HEAL_TOLERANCE } = {}) {
   const walls = room.walls || [];
   let healed = 0;
   for (const wall of walls) {
+    // `only` is the walls a drag has just moved. Everything else stays where it
+    // is: a wall being dragged past another should stick to it, but the wall it
+    // passes must not come away from where it was drawn.
+    if (only && !only.has(wall.id)) continue;
     const vertical = Math.abs(wall.start.x - wall.end.x) < 1e-6;
     const horizontal = Math.abs(wall.start.z - wall.end.z) < 1e-6;
     if (vertical === horizontal) continue;           // diagonal: leave it alone
@@ -1609,8 +1624,8 @@ function healPass(room) {
         const lo = Math.min(other.start[along], other.end[along]);
         const hi = Math.max(other.start[along], other.end[along]);
         const gap = Math.abs(end[axis] - line);
-        if (gap < 1e-9 || gap > JOINT_HEAL_TOLERANCE) continue;
-        if (end[along] < lo - JOINT_HEAL_TOLERANCE || end[along] > hi + JOINT_HEAL_TOLERANCE) continue;
+        if (gap < 1e-9 || gap > tolerance) continue;
+        if (end[along] < lo - tolerance || end[along] > hi + tolerance) continue;
         end[axis] = clean(line);
         healed++;
         break;
