@@ -1378,8 +1378,12 @@ document.addEventListener("keydown", e => {
       break;
     case "KeyB":
     case "KeyR":
-      // R turns whichever kind of thing is selected.
-      if (!store.rotateSelectedLabel()) store.rotateSelectedFurniture();
+      // R turns whatever is in hand: the piece waiting to be placed first,
+      // then a selected label, then selected furniture. A piece being carried
+      // is the one you most want to turn and the only one that could not be.
+      if (!store.rotatePendingFurniture() && !store.rotateSelectedLabel()) {
+        store.rotateSelectedFurniture();
+      }
       break;
     case "Delete":
     case "Backspace": store.deleteSelection(); break;

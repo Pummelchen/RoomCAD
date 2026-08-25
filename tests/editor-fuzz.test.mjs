@@ -593,6 +593,72 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── Turning a piece before you put it down ───────────────────────────────
+//
+// "When I grab a furniture, like a bed and it's not released into placement
+// yet, I still want to be able to rotate it with R."
+//
+// A piece carried from the palette followed the cursor at 0° and could only be
+// turned once it had been dropped — so putting a bed along a wall meant drop,
+// turn, drag back. The ghost was drawn at 0° too, so there was nothing to see.
+{
+  store.room = P.freshRoom("Place", 6, 5, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
+  const at = P.roomOrigin(store.room);
+
+  store.pendingFurnitureRotation = 0;
+  store.beginFurniturePlacement("bed");
+  check("a bed picked up from the palette is waiting to be placed",
+    store.pendingFurnitureKind === "bed");
+  check("R turns it while it is still in hand", store.rotatePendingFurniture() === true);
+  check("and it is a quarter turn", store.pendingFurnitureRotation === 90);
+
+  // What lands is what was shown.
+  store.placeFurniture("bed", P.point(at.x + 2, at.z + 2));
+  const placed = store.room.furniture[store.room.furniture.length - 1];
+  check("the piece lands the way round it was carried",
+    placed.rotationDegrees === 90, `${placed.rotationDegrees}°`);
+  const box = P.furnitureFootprint(placed);
+  const kind = P.FURNITURE_KINDS.bed;
+  check("which really is turned, not just labelled that way",
+    Math.abs((box.maxX - box.minX) - kind.d) < 1e-6
+    && Math.abs((box.maxZ - box.minZ) - kind.w) < 1e-6,
+    `${(box.maxX - box.minX).toFixed(2)} x ${(box.maxZ - box.minZ).toFixed(2)}`);
+
+  check("with nothing in hand, R has nothing to turn and says so",
+    store.rotatePendingFurniture() === false);
+
+  // Four presses come back round.
+  store.pendingFurnitureRotation = 0;
+  store.beginFurniturePlacement("desk");
+  for (let i = 0; i < 4; i++) store.rotatePendingFurniture();
+  check("four turns is a full circle", store.pendingFurnitureRotation === 0);
+  store.cancelPlacement();
+
+  // And a piece already on the plan still turns while it is being dragged —
+  // the other half of the same complaint.
+  store.room.furniture = [{
+    id: "bed2", kind: "bed", center: P.point(at.x + 2, at.z + 2), rotationDegrees: 0,
+  }];
+  const grab = editor.screen({ x: at.x + 2, z: at.z + 2 });
+  store.chooseTool("select");
+  dom.canvas.dispatch("pointerdown",
+    { clientX: Math.round(grab.x), clientY: Math.round(grab.y), button: 0, buttons: 1, pointerId: 1 });
+  dom.canvas.dispatch("pointermove",
+    { clientX: Math.round(grab.x) + 20, clientY: Math.round(grab.y) + 10, button: 0, buttons: 1, pointerId: 1 });
+  check("the piece is held and selected", !!editor.drag && store.selectedFurnitureID === "bed2");
+  store.rotateSelectedFurniture();
+  check("R turns it mid-drag",
+    store.room.furniture.find(f => f.id === "bed2").rotationDegrees === 90);
+  dom.canvas.dispatch("pointermove",
+    { clientX: Math.round(grab.x) + 60, clientY: Math.round(grab.y) + 30, button: 0, buttons: 1, pointerId: 1 });
+  dom.canvas.dispatch("pointerup",
+    { clientX: Math.round(grab.x) + 60, clientY: Math.round(grab.y) + 30, button: 0, buttons: 0, pointerId: 1 });
+  check("and the turn survives being put down",
+    store.room.furniture.find(f => f.id === "bed2").rotationDegrees === 90);
+}
+
 // ── Turning a door round, through the app ────────────────────────────────
 {
   store.room = P.freshRoom("Door", 6, 4, 2.6);

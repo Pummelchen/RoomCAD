@@ -111,5 +111,15 @@ check("both menu actions reach the store",
   /case "unlock-wall"[\s\S]{0,200}setWallDragUnlocked\(store\.selectedWallID, true\)/.test(editor)
   && /case "lock-wall"[\s\S]{0,200}setWallDragUnlocked\(store\.selectedWallID, false\)/.test(editor));
 
+// R turns what is in hand first. Reaching for the selected item instead is how
+// a piece being carried came to be the one thing that could not be turned.
+{
+  const app = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
+  check("R offers the piece being placed before anything else",
+    /rotatePendingFurniture\(\) && !store\.rotateSelectedLabel\(\)/.test(app));
+  check("the ghost is drawn the way round it will land",
+    /rotationDegrees: store\.pendingFurnitureRotation \|\| 0/.test(editor));
+}
+
 console.log(`${passed} passed, ${failed} failed — 2D editor behaviour contracts`);
 if (failed) process.exit(1);

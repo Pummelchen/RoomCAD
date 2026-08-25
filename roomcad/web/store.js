@@ -30,6 +30,13 @@ export const store = {
   mode: "2d", // "2d" | "3d"
   tool: "select",
   pendingFurnitureKind: null,
+  /// Which way round the piece being placed is, before it is put down.
+  ///
+  /// A bed picked up from the palette followed the cursor at 0° and could only
+  /// be turned after it had been dropped — so placing one along a wall meant
+  /// drop, turn, drag back. R turns it while it is still in the air, and the
+  /// ghost shows which way it will land.
+  pendingFurnitureRotation: 0,
   lastFurnitureKind: null,
   rotation: 0, // 2D plan view rotation in degrees (0/90/180/270)
   floor: 2, // which building floor the room is on (1 = ground floor)
@@ -597,8 +604,24 @@ export const store = {
 
   // MARK: Furniture
 
+  /// Turns the piece that is being placed, before it is put down. Returns
+  /// false when nothing is waiting to be placed, so the caller can go on to
+  /// turn whatever is selected instead.
+  rotatePendingFurniture() {
+    if (!this.pendingFurnitureKind) return false;
+    this.pendingFurnitureRotation = (this.pendingFurnitureRotation + 90) % 360;
+    const kind = P.FURNITURE_KINDS[this.pendingFurnitureKind];
+    this.status = kind.title + " · " + this.pendingFurnitureRotation
+      + "° — click to place it";
+    this.emit();
+    return true;
+  },
+
   placeFurniture(kind, raw) {
-    const candidate = { id: P.uid(), kind, center: P.point(raw.x, raw.z), rotationDegrees: 0 };
+    const candidate = {
+      id: P.uid(), kind, center: P.point(raw.x, raw.z),
+      rotationDegrees: this.pendingFurnitureRotation,
+    };
     candidate.center = P.furnitureCenter(this.room, raw, candidate);
     // Placing is not blocked either: the piece lands where it was asked to go
     // and reads red until it is somewhere it fits.

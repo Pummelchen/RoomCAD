@@ -2028,7 +2028,12 @@ export class Editor2D {
 
   drawFurnitureGhost(kind, raw) {
     const ctx = this.ctx;
-    const item = { kind, center: P.point(raw.x, raw.z), rotationDegrees: 0 };
+    // Drawn the way round it will actually land, so R shows its effect before
+    // the piece is put down rather than after.
+    const item = {
+      kind, center: P.point(raw.x, raw.z),
+      rotationDegrees: store.pendingFurnitureRotation || 0,
+    };
     item.center = P.furnitureCenter(store.room, raw, item);
     const valid = P.isFurniturePlacementValid(store.room, item);
     const rect = this.rect(P.furnitureFootprint(item));
