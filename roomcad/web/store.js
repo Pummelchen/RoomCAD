@@ -54,7 +54,7 @@ export const store = {
   weather: "clear", // "clear" | "cloudy" | "rain" | "snow" — drives the 3D sky, fog and city
   layoutSeed: 1, // seed for the auto room layout; "redesign" bumps it for a new variant
   layoutCount: 3, // how many private rooms to generate
-  layoutArea: 12, // target m² per room (guide for the layout)
+  layoutArea: 12, // smallest m² a room may be — decides how many fit
   layoutWindows: false, // add one window per room (only on outside-facing walls)
   edited: false,
   status: "Ready",
@@ -1064,7 +1064,12 @@ export const store = {
       // generator had no business putting it there either.
       room.publicAreas = (room.publicAreas || []).filter(a => !a.generated);
     });
-    this.status = this.describeLayout(result);
+    // The walking space is the planner's input, not its output. Say so when
+    // there is none: without it the rooms fill the plate and open where they
+    // can, which is a plan, but not the one the tool is for.
+    const marked = (this.room.publicAreas || []).length > 0;
+    this.status = this.describeLayout(result)
+      + (marked ? "" : " · no walking space marked — draw the hall with 🟩 Public and generate again");
     this.emit();
     return true;
   },

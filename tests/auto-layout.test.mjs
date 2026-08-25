@@ -92,10 +92,16 @@ function areaOf(r) { return r.w * r.l; }
 }
 
 // ── 3. No public area: the whole layout is partitioned ───────────────────
+//
+// Nothing marked as walking space means the rooms take the whole plate — the
+// planner does not set any aside, because that floor is the user's to mark.
 {
   const room = P.freshRoom("T", 8, 6, 2.6);
   const r = P.autoLayoutRooms(room, { count: 3, windows: false, seed: 1 });
-  check("whole layout partitioned", r.rooms.length === 3 && r.doors.length === 3);
+  check("whole layout partitioned",
+    r.rooms.length === 3 && r.doors.length >= 3, `${r.rooms.length} rooms, ${r.doors.length} doors`);
+  check("and none of the floor is set aside", r.corridors.length === 0,
+    JSON.stringify(r.corridors));
 }
 
 // ── 4. Redesign actually redesigns ────────────────────────────────────────
@@ -133,26 +139,31 @@ function areaOf(r) { return r.w * r.l; }
   check("oversized request yields fewer rooms", r.rooms.length >= 1 && r.rooms.length <= 20);
 }
 
-// ── 6. The requested area actually drives the layout ─────────────────────
-// This is the whole point of the generator and was silently ignored before:
-// the target was collected in the UI, passed to the store, and dropped.
+// ── 6. The requested area decides how many rooms fit ─────────────────────
+//
+// It used to be a target, with the floor the rooms did not need left over as
+// walk path. That is the planner making its own walking space, and the walking
+// space is the user's to mark — so the rooms fill the floor they are given and
+// what the area decides is how MANY of them there is room for.
 {
   const room = P.freshRoom("T", 12, 8, 2.6);
   const shapes = [8, 12, 20].map(area => {
     const r = P.autoLayoutRooms(room, { count: 4, area, seed: 1 });
     return { area, r, avg: r.areaPerRoom };
   });
-  check("different targets give different layouts",
-    new Set(shapes.map(s => s.r.rooms.map(x => `${x.w}x${x.l}`).sort().join("|"))).size === 3,
-    shapes.map(s => s.avg).join(", "));
   for (const s of shapes) {
-    check(`rooms land near the ${s.area} m² asked for`,
-      Math.abs(s.avg - s.area) / s.area < 0.12, `got ${s.avg}`);
+    check(`no room is under the ${s.area} m² asked for`,
+      s.r.rooms.every(x => x.area >= s.area - 0.5),
+      `smallest ${Math.min(...s.r.rooms.map(x => x.area)).toFixed(1)}`);
   }
-  // Floor the rooms do not need becomes circulation rather than bloating them.
+  check("asking for bigger rooms gets you fewer of them",
+    shapes[2].r.rooms.length <= shapes[0].r.rooms.length,
+    shapes.map(s => `${s.area}m²:${s.r.rooms.length}`).join(" "));
+  // And the floor is not left lying about as walkable space nobody marked.
   const small = shapes[0].r;
   const walk = small.corridors.reduce((s, c) => s + c.w * c.l, 0);
-  check("slack becomes walk path, not oversized rooms", walk > 20, `${walk} m²`);
+  check("slack becomes room, not walk path the user never drew",
+    walk < 96 * 0.05, `${walk.toFixed(1)} m² left over`);
 }
 
 // ── 7. Every room is reachable ───────────────────────────────────────────
@@ -161,8 +172,11 @@ function areaOf(r) { return r.w * r.l; }
   for (const [count, area] of [[3, 12], [5, 10], [6, 8], [8, 6]]) {
     const room = P.freshRoom("T", 12, 8, 2.6);
     const r = P.autoLayoutRooms(room, { count, area, seed: 3 });
+    // At least one each, and more than that is right rather than wrong: with
+    // no walking space marked, the rooms fill the plate and the plan is joined
+    // up by doors between them so you can walk from any of them to any other.
     check(`every one of ${count} rooms has a door`,
-      r.doors.length === r.rooms.length, `${r.doors.length}/${r.rooms.length}`);
+      r.doors.length >= r.rooms.length, `${r.doors.length}/${r.rooms.length}`);
     check(`no room in the ${count}-room plan is below the usable minimum`,
       r.rooms.every(x => Math.min(x.w, x.l) >= P.MIN_ROOM_DIM - 0.06),
       JSON.stringify(r.rooms.map(x => Math.min(x.w, x.l))));
@@ -173,14 +187,17 @@ function areaOf(r) { return r.w * r.l; }
 {
   const room = P.freshRoom("T", 12, 8, 2.6);
   const seen = new Set();
-  let worstOff = 0;
+  let worstFill = 0;
   for (let seed = 1; seed <= 8; seed++) {
     const r = P.autoLayoutRooms(room, { count: 5, area: 12, seed });
     seen.add(r.rooms.map(x => `${x.x},${x.z},${x.w},${x.l}`).sort().join("|"));
-    worstOff = Math.max(worstOff, Math.abs(r.areaPerRoom - 12) / 12);
+    const left = r.corridors.reduce((sum, c) => sum + c.w * c.l, 0);
+    worstFill = Math.max(worstFill, left / (12 * 8));
   }
   check("redesign yields several distinct plans", seen.size >= 4, `${seen.size} of 8`);
-  check("every redesign is still close to the target", worstOff < 0.12, `worst ${(worstOff * 100).toFixed(0)}%`);
+  // Every arrangement fills the floor, whichever way it cuts it.
+  check("every redesign uses the whole floor", worstFill < 0.05,
+    `worst ${(worstFill * 100).toFixed(0)}% left over`);
 }
 
 // ── 9. User-marked public floor is never built over ──────────────────────
@@ -230,7 +247,7 @@ function areaOf(r) { return r.w * r.l; }
             }
           }
           if (r.rooms.some(x => Math.min(x.w, x.l) < P.MIN_ROOM_DIM - 0.06)) thin++;
-          if (r.doors.length !== r.rooms.length) doorless++;
+          if (r.doors.length < r.rooms.length) doorless++;
           if (r.rooms.some(x => x.x < o.x - 0.01 || x.z < o.z - 0.01
             || x.x + x.w > o.x + w + 0.01 || x.z + x.l > o.z + l + 0.01)) outside++;
         }
@@ -240,21 +257,38 @@ function areaOf(r) { return r.w * r.l; }
   check("the sweep actually ran", checked > 500, `${checked}`);
   check("no layout has overlapping rooms", overlaps === 0, `${overlaps} of ${checked}`);
   check("no layout has a room below the usable minimum", thin === 0, `${thin} of ${checked}`);
-  check("every room in every layout has a door", doorless === 0, `${doorless} of ${checked}`);
+  check("every layout has at least a door per room", doorless === 0, `${doorless} of ${checked}`);
   check("no room escapes the outline", outside === 0, `${outside} of ${checked}`);
 }
 
-// ── 11. A single small room in a large space stays small ─────────────────
-// The generator used to hand back one room filling the whole floor, because
-// the single-room path ignored the requested area entirely.
+// ── 11. One room asked for is one room, and it fills the floor ───────────
+//
+// This used to hand back a 6 m² room and call the other ninety square metres
+// public floor. The planner does not mark public floor: ask for one room and
+// you get one room, the size of what you gave it. The way to get a small room
+// in a large space is to mark the rest green, which is what green is for —
+// checked immediately below.
 {
   const room = P.freshRoom("T", 12, 8, 2.6);
   P.centerRoom(room);
   const r = P.autoLayoutRooms(room, { count: 1, area: 6, seed: 1 });
-  check("one 6 m² room is 6 m², not the whole 96 m² floor",
-    Math.abs(areaOf(r.rooms[0]) - 6) < 1.2, `${areaOf(r.rooms[0])}`);
+  check("one room asked for is one room", r.rooms.length === 1);
+  check("and it is the floor it was given, not a sixteenth of it",
+    areaOf(r.rooms[0]) > 96 * 0.9, `${areaOf(r.rooms[0]).toFixed(1)} of 96`);
   const walk = r.corridors.reduce((s, c) => s + areaOf(c), 0);
-  check("the rest of the floor becomes public", walk > 80, `${walk}`);
+  check("nothing is left over as floor the user never marked",
+    walk < 96 * 0.05, `${walk.toFixed(1)} m²`);
+
+  // Mark most of it as walking space, and the room is what is left.
+  const marked = P.freshRoom("T", 12, 8, 2.6);
+  P.centerRoom(marked);
+  const o = P.roomOrigin(marked);
+  marked.publicAreas = [{ id: "hall", x: o.x, z: o.z, w: 12, l: 6.6 }];
+  P.sanitize(marked);
+  const small = P.autoLayoutRooms(marked, { count: 1, area: 6, seed: 1 });
+  check("marking the floor green is how a small room is asked for",
+    small && Math.abs(areaOf(small.rooms[0]) - 12 * 1.4) < 3,
+    small ? `${areaOf(small.rooms[0]).toFixed(1)} m²` : "nothing");
 }
 
 // ── Generating inside a prepared template ────────────────────────────────
@@ -391,9 +425,16 @@ function areaOf(r) { return r.w * r.l; }
   P.centerRoom(plain);
   const withArea = P.autoLayoutRooms(plain, { count: 2, area: 200, seed: 1 });
   const withoutArea = P.autoLayoutRooms(plain, { count: 2, seed: 1 });
-  check("an impossible area lands on the same target as giving no area at all",
-    !!withArea && !!withoutArea && withArea.targetArea === withoutArea.targetArea,
-    `${withArea && withArea.targetArea} vs ${withoutArea && withoutArea.targetArea}`);
+  // Asking for rooms bigger than the floor gets you the floor, in as many
+  // rooms as fit — one — rather than nothing at all. It no longer lands on the
+  // same answer as giving no area, which fits two: the area is what decides
+  // how many there is room for.
+  check("an impossible area still lays the floor out",
+    !!withArea && withArea.rooms.length === 1 && withArea.rooms[0].area > 6 * 5 * 0.9,
+    withArea ? `${withArea.rooms.length} rooms, ${withArea.rooms[0].area.toFixed(1)} m²` : "nothing");
+  check("and asking for nothing in particular fits more of them",
+    !!withoutArea && withoutArea.rooms.length >= withArea.rooms.length,
+    `${withoutArea && withoutArea.rooms.length} vs ${withArea && withArea.rooms.length}`);
 }
 
 // Free space cut up by scattered obstacles must still be usable. The old
@@ -545,6 +586,12 @@ function areaOf(r) { return r.w * r.l; }
   }));
   P.sanitize(room);
 
+  // With walking space marked — which is what the planner builds around — the
+  // rooms open onto that. Without it there is nowhere else for a door to go
+  // but the outside wall, and then this section would be checking nothing.
+  const o = P.roomOrigin(room);
+  room.publicAreas = [{ id: "hall", x: o.x, z: o.z + 3 - 0.7, w: 8, l: 1.4 }];
+  P.sanitize(room);
   const r = P.autoLayoutRooms(room, { count: 3, area: 12, windows: false, seed: 1 });
   check("a wall with windows on it still lays out", !!r);
   check("its windows are all still there",

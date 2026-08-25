@@ -551,11 +551,13 @@ function roomSection() {
     `<span class="readout">rooms</span></div></div>`;
   html += `<div class="field"><label>m² per room</label><div class="value-row">` +
     `<input type="number" data-action="layout-area" value="${store.layoutArea}" min="2" max="200" step="0.5">` +
-    `<span class="readout">target</span></div></div>`;
+    `<span class="readout">at least</span></div>` +
+    `<div class="hint">decides how many rooms fit — they fill the floor you leave them</div></div>`;
   html += `<div class="field"><label>Window in each room ` +
     `<input type="checkbox" data-action="layout-windows" ${store.layoutWindows ? "checked" : ""}></label></div>`;
-  html += `<div class="inspector-note">Mark shared (public) floor space with the 🟩 Public tool, then ` +
-    `Generate partitions the rest into rooms. Each has one door; windows only go on outside walls.</div>`;
+  html += `<div class="inspector-note">Mark the walking space — hall, landing, anywhere doors swing into — ` +
+    `with the 🟩 Public tool. Generate builds the rooms around it and fills the rest; it never marks ` +
+    `public floor itself. Each room gets one door; windows only go on outside walls.</div>`;
   html += `<button class="inspector-button" data-action="layout-generate">Generate rooms</button>`;
   html += `<button class="inspector-button" data-action="layout-redesign">Redesign (new layout)</button>`;
   return html;

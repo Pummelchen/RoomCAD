@@ -18,8 +18,13 @@
 //
 // Run:  node tests/editor-fuzz.test.mjs
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { installDOM } from "./harness/dom-stub.mjs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const dom = installDOM();
 const P = await loadWebModule("plan.js");
@@ -604,6 +609,20 @@ for (const name of EXPECTED) {
     { id: "old", x: origin.x, z: origin.z + 4, w: 8, l: 1.2, generated: true },
   ];
   store.generateLayout({ count: 4, area: 12, windows: false });
+  // And the code path itself is gone, not merely quiet. With the planner no
+  // longer setting floor aside there is usually nothing for it to mark, so a
+  // behavioural check alone would pass even if the marking came back.
+  {
+    const storeSource = readFileSync(join(root, "roomcad", "web", "store.js"), "utf8");
+    // `generated: true` is the mark the planner used to stamp on the public
+    // areas it made. Nothing else in the store has ever set it, so its absence
+    // is the whole rule in one line.
+    check("nothing in the store marks floor as the planner's own",
+      !/generated:\s*true/.test(storeSource));
+    check("and the layout's leftover floor is not turned into public areas",
+      !/publicAreas[\s\S]{0,120}corridors/.test(storeSource));
+  }
+
   check("floor an earlier run marked is cleared away",
     (store.room.publicAreas || []).length === 1
     && !(store.room.publicAreas || []).some(a => a.generated),
