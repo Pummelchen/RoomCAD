@@ -1059,5 +1059,62 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   room.doors[0].hingeAtEnd = true;
 }
 
+// ── Cutting a wall at its junctions ──────────────────────────────────────
+{
+  const mk = () => {
+    const r = P.freshRoom("Cut", 9, 4, 2.6);
+    r.origin = { x: 0, z: 0 };
+    r.canvas = { width: 25, length: 25 };
+    P.sanitize(r);
+    r.walls.push({ id: "div", start: P.point(4, 0), end: P.point(4, 4) });
+    return r;
+  };
+
+  // An opening that hangs off the end of its wall — which sanitize would pull
+  // back — must still end up on exactly ONE piece. Claimed by the piece its
+  // middle lies on and then again by the last one, its offset is taken off
+  // twice and the door lands somewhere nobody put it.
+  const room = mk();
+  const top = room.walls.find(w => Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  room.doors = [{ id: "d", wallID: top.id, offset: 8.7, width: 0.9, open: true, swingInside: true }];
+  P.splitWallsAtJunctions(room);
+  const homes = room.doors.filter(d => d.id === "d");
+  check("a door hanging off the end still has exactly one home", homes.length === 1);
+  const host = room.walls.find(w => w.id === homes[0].wallID);
+  check("on a wall that exists", !!host);
+  check("at a position inside that wall",
+    host && homes[0].offset >= 0 && homes[0].offset + homes[0].width <= P.wallLength(host) + 1e-6,
+    host ? `${homes[0].offset} + ${homes[0].width} on ${P.wallLength(host)} m` : "none");
+
+  // The plain case: a cut where the divider lands, and nowhere else.
+  const plain = mk();
+  P.splitWallsAtJunctions(plain);
+  const tops = plain.walls.filter(w => Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  check("the wall is cut where the divider meets it", tops.length === 2, `${tops.length}`);
+  check("at the divider, not somewhere else",
+    tops.some(w => Math.abs(Math.max(w.start.x, w.end.x) - 4) < 1e-6));
+
+  // A cut that would leave a stub shorter than a wall may be is not made: the
+  // next load would drop the stub and the boundary would become a hole.
+  const stubby = P.freshRoom("Stub", 9, 4, 2.6);
+  stubby.origin = { x: 0, z: 0 };
+  stubby.canvas = { width: 25, length: 25 };
+  P.sanitize(stubby);
+  stubby.walls.push({ id: "near", start: P.point(0.1, 0), end: P.point(0.1, 4) });
+  P.splitWallsAtJunctions(stubby);
+  const stubTops = stubby.walls.filter(w => Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  check("a cut that would leave a stub is not made", stubTops.length === 1, `${stubTops.length}`);
+
+  // Nor one through a doorway, which would leave half a door on each piece.
+  const through = mk();
+  const topThrough = through.walls.find(w => Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  through.doors = [{ id: "d", wallID: topThrough.id, offset: 3.7, width: 0.9, open: true, swingInside: true }];
+  P.splitWallsAtJunctions(through);
+  const throughTops = through.walls.filter(w => Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  check("a cut through a doorway is not made", throughTops.length === 1, `${throughTops.length}`);
+  check("and the door is untouched",
+    through.doors[0].wallID === topThrough.id && through.doors[0].offset === 3.7);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -1269,6 +1269,18 @@ export const store = {
     if (this.undoStack.length > 100) this.undoStack.shift();
     mutation(this.room);
     P.sanitize(this.room);
+    // One wall per room, decided as the edit lands.
+    //
+    // A plan gets drawn as one long wall to set the shape and then dividers to
+    // make rooms of it, and the long wall stayed a single wall — so a door in
+    // the middle room belonged to a wall spanning all three, measured its
+    // position from the far end of the building, and slid the length of the
+    // floor. Cutting it where the dividers meet it costs nothing on screen and
+    // makes every measurement afterwards belong to the room it is in.
+    //
+    // Here rather than in sanitize because sanitize also runs on load, and a
+    // load that changes the plan means what you saved is not what you get back.
+    P.splitWallsAtJunctions(this.room);
     this.redoStack.length = 0;
     this.edited = true;
     this.status = message;
@@ -1287,6 +1299,10 @@ export const store = {
     this.dragTransactionActive = false;
     this.furnitureFeedback = null;
     P.sanitize(this.room);
+    // The same at the end of a drag: a wall dragged up to another one has just
+    // made a junction, and this is where that becomes two walls. Not during the
+    // drag — a wall would come apart in your hand as it passed things.
+    P.splitWallsAtJunctions(this.room);
     this.redoStack.length = 0;
     this.edited = true;
     this.status = message;
@@ -1332,6 +1348,11 @@ export const store = {
 
   loadRoom(room, name, fromServer = false) {
     this.room = room;
+    // A plan drawn before walls were cut at their junctions is brought up to
+    // date as it is opened. Reading a file does not change it — sanitize leaves
+    // the walls alone — but opening one to work on it is the moment to make the
+    // model match the drawing, and the undo history starts here anyway.
+    P.splitWallsAtJunctions(this.room);
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.clearSelection();

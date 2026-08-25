@@ -432,25 +432,60 @@ export function dragWall(room, id, dx, dz) {
   if (Math.abs(stepX) < 1e-9 && Math.abs(stepZ) < 1e-9) return null;
 
   const same = (p, q) => Math.abs(p.x - q.x) <= JOINT_EPS && Math.abs(p.z - q.z) <= JOINT_EPS;
-  const partway = p => {
-    const t = (p.x - A.x) * ux + (p.z - A.z) * uz;
-    if (t <= JOINT_EPS || t >= len - JOINT_EPS) return false;
-    return Math.hypot(p.x - (A.x + ux * t), p.z - (A.z + uz * t)) <= JOINT_EPS;
+
+  // A wall cut at its junctions is still one wall to the person dragging it.
+  //
+  // Splitting a long wall where the dividers meet it is what makes a door
+  // belong to its own room — but it also leaves the pieces sharing endpoints,
+  // and moving one piece by its endpoints would leave the pieces either side
+  // hinged to it and skew. So the whole run of pieces along the same line moves
+  // together, which is what the drawing shows: one wall.
+  const collinear = (a, b) => {
+    const av = Math.abs(a.start.x - a.end.x) < 1e-6;
+    const bv = Math.abs(b.start.x - b.end.x) < 1e-6;
+    if (av !== bv) return false;
+    return av
+      ? Math.abs(a.start.x - b.start.x) <= JOINT_EPS
+      : Math.abs(a.start.z - b.start.z) <= JOINT_EPS;
+  };
+  const touches = (a, b) =>
+    same(a.start, b.start) || same(a.start, b.end)
+    || same(a.end, b.start) || same(a.end, b.end);
+  const movers = new Set([moving]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const w of walls) {
+      if (movers.has(w)) continue;
+      if (![...movers].some(m => collinear(m, w) && touches(m, w))) continue;
+      movers.add(w);
+      grew = true;
+    }
+  }
+
+  /// Does this point sit on one of the walls being moved — at an end of one, or
+  /// part-way along one?
+  const onMovers = p => {
+    for (const m of movers) {
+      if (same(p, m.start) || same(p, m.end)) return true;
+      const mlen = wallLength(m) || 1;
+      const mux = (m.end.x - m.start.x) / mlen;
+      const muz = (m.end.z - m.start.z) / mlen;
+      const t = (p.x - m.start.x) * mux + (p.z - m.start.z) * muz;
+      if (t <= JOINT_EPS || t >= mlen - JOINT_EPS) continue;
+      if (Math.hypot(p.x - (m.start.x + mux * t), p.z - (m.start.z + muz * t)) <= JOINT_EPS) return true;
+    }
+    return false;
   };
 
   const shifted = walls.map(w => {
-    if (w.id === id) {
+    if (movers.has(w)) {
       return {
         ...w,
-        start: point(clean(A.x + stepX), clean(A.z + stepZ)),
-        end: point(clean(B.x + stepX), clean(B.z + stepZ)),
+        start: point(clean(w.start.x + stepX), clean(w.start.z + stepZ)),
+        end: point(clean(w.end.x + stepX), clean(w.end.z + stepZ)),
       };
     }
-    const carry = p => {
-      if (same(p, A) || same(p, B)) return point(clean(p.x + stepX), clean(p.z + stepZ));
-      if (partway(p)) return point(clean(p.x + stepX), clean(p.z + stepZ));
-      return null;
-    };
+    const carry = p => (onMovers(p) ? point(clean(p.x + stepX), clean(p.z + stepZ)) : null);
     const s = carry(w.start);
     const e = carry(w.end);
     if (!s && !e) return w;
@@ -1684,6 +1719,106 @@ function healPass(room, { only = null, tolerance = JOINT_HEAL_TOLERANCE } = {}) 
   return healed;
 }
 
+/// Cuts a wall wherever another wall meets it, so one wall is one room's wall.
+///
+/// The way a plan gets drawn: one long wall across the whole space to set the
+/// shape, then dividers to make it into rooms. The long wall stayed a single
+/// nine-metre wall, so a door in the middle room belonged to a wall spanning
+/// all three — it measured its position from the far end of the building, and
+/// dragging it ran the length of the floor. The drawing said three rooms and
+/// the model said one wall.
+///
+/// So the model is brought into line with the drawing: where a wall's end lands
+/// on another wall, that wall is cut there. Nothing moves and nothing is drawn
+/// differently — a wall and its pieces occupy exactly the same line — but every
+/// door, window and measurement afterwards belongs to the wall of ITS room.
+///
+/// Two things are left alone. A cut closer than a wall's minimum length to
+/// either end would make a stub that sanitize drops on the next load, and a cut
+/// inside a door or window would slice the opening in half, so neither is made.
+export function splitWallsAtJunctions(room) {
+  const walls = room.walls || [];
+  const openings = [...(room.doors || []), ...(room.windows || [])];
+  const out = [];
+  let split = 0;
+
+  for (const wall of walls) {
+    const vertical = Math.abs(wall.start.x - wall.end.x) < 1e-6;
+    const horizontal = Math.abs(wall.start.z - wall.end.z) < 1e-6;
+    if (vertical === horizontal) { out.push(wall); continue; }
+    const axis = vertical ? "z" : "x";
+    const fixed = vertical ? "x" : "z";
+    const from = wall.start[axis];
+    const to = wall.end[axis];
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    const line = wall.start[fixed];
+
+    // Where other walls meet this one, as distances along it from its start.
+    const cuts = [];
+    for (const other of walls) {
+      if (other === wall) continue;
+      for (const end of [other.start, other.end]) {
+        if (Math.abs(end[fixed] - line) > 1e-6) continue;
+        if (end[axis] <= lo + MIN_WALL_LENGTH || end[axis] >= hi - MIN_WALL_LENGTH) continue;
+        const at = Math.abs(end[axis] - from);
+        if (cuts.some(c => Math.abs(c - at) < 1e-6)) continue;
+        cuts.push(at);
+      }
+    }
+    if (!cuts.length) { out.push(wall); continue; }
+
+    // Not through an opening: that would leave half a door on each piece.
+    const mine = openings.filter(o => o.wallID === wall.id);
+    const usable = cuts
+      .filter(at => !mine.some(o => at > o.offset - 0.02 && at < o.offset + o.width + 0.02))
+      .sort((a, b) => a - b);
+    if (!usable.length) { out.push(wall); continue; }
+
+    const marks = [0, ...usable, wallLength(wall)];
+    const pieces = [];
+    for (let i = 0; i < marks.length - 1; i++) {
+      const a = wallPointAt(wall, marks[i]);
+      const b = wallPointAt(wall, marks[i + 1]);
+      pieces.push({
+        ...wall,
+        // The first piece keeps the wall's identity, so a selection, an undo
+        // step or an opening that is already on it still means something.
+        id: i === 0 ? wall.id : uid(),
+        start: point(clean(a.x), clean(a.z)),
+        end: point(clean(b.x), clean(b.z)),
+      });
+      if (i > 0) split++;
+    }
+    out.push(...pieces);
+
+    // Each opening goes to exactly one piece: the one its MIDDLE lies on.
+    //
+    // Chosen for it rather than offered to each piece in turn, so there is no
+    // way for two to take it or for none to. By the middle rather than by
+    // fitting entirely, because an opening left over from an earlier edit can
+    // hang past the end of its wall, and it still has to land somewhere — left
+    // behind, it keeps an offset measured from the uncut wall, and the next
+    // load quietly pulls it back. A plan that changes on its way through a save
+    // is the one thing a plan may never do.
+    for (const o of mine) {
+      const middle = o.offset + o.width / 2;
+      let at = 0;
+      while (at < pieces.length - 1 && middle > marks[at + 1] + 1e-6) at++;
+      o.wallID = pieces[at].id;
+      o.offset = o.offset - marks[at];
+    }
+  }
+
+  room.walls = out;
+  // Settle the openings with the same code a load uses, rather than clamping
+  // them here. Doing the same arithmetic a different way gave 1.155 on the way
+  // out and 1.1549999999999994 on the way back, and a plan that changes on its
+  // way through a save is a plan you cannot trust.
+  fitOpeningsToWalls(room);
+  return split;
+}
+
 export function sanitize(room) {
   room.width = clamp(room.width, 2, 20);
   room.length = clamp(room.length, 2, 20);
@@ -1732,6 +1867,10 @@ export function sanitize(room) {
   // Every path into the model comes through here — drawing, dragging, loading,
   // undo — so a room that looks closed is closed by the time it is measured.
   healWallJoints(room);
+  // Note that the walls are NOT cut at their junctions here. Cutting is what an
+  // EDIT does, not what reading a file does: sanitize runs on every load, and a
+  // load that changes the plan means the plan you saved is not the plan you get
+  // back. See splitWallsAtJunctions, which the store calls when an edit lands.
   const wallIDs = new Set(room.walls.map(w => w.id));
 
   room.doors = room.doors

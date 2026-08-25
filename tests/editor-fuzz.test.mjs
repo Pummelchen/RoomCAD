@@ -593,6 +593,78 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── One wall per room ────────────────────────────────────────────────────
+//
+// "I made a long wall which spans all 3 rooms to design the basic layout
+// first, then I added dividers. But the long wall was not split into segments,
+// and as such the door believes it's part of that very long wall."
+//
+// Exactly that, driven through the store: the long wall, then the dividers,
+// then a door in the middle room.
+{
+  store.room = P.freshRoom("Long", 9, 4, 2.6);
+  store.room.origin = { x: 0, z: 0 };
+  store.room.canvas = { width: 25, length: 25 };
+  P.sanitize(store.room);
+  const top = store.room.walls.find(w =>
+    Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  check("the long wall spans the whole space to begin with",
+    Math.abs(P.wallLength(top) - 9) < 1e-6, `${P.wallLength(top)}`);
+
+  // A door in what will become the middle room, then the dividers.
+  store.room.doors = [{
+    id: "d", wallID: top.id, offset: 4, width: 0.9, open: true, swingInside: true,
+  }];
+  store.commit("dividers", room => {
+    room.walls.push({ id: "div1", start: P.point(3, 0), end: P.point(3, 4) });
+    room.walls.push({ id: "div2", start: P.point(6, 0), end: P.point(6, 4) });
+  });
+
+  check("the dividers make three rooms", P.detectRooms(store.room).length === 3,
+    `${P.detectRooms(store.room).length}`);
+  const tops = store.room.walls.filter(w =>
+    Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6);
+  check("and the long wall is now three walls, one per room",
+    tops.length === 3, `${tops.length}`);
+  check("which together still span the same nine metres",
+    Math.abs(tops.reduce((sum, w) => sum + P.wallLength(w), 0) - 9) < 1e-6);
+  check("none of them moved", tops.every(w =>
+    Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6));
+
+  // The door belongs to its own room's wall now.
+  const door = store.room.doors[0];
+  const host = store.room.walls.find(w => w.id === door.wallID);
+  check("the door is on a wall of its own room, not one spanning three",
+    host && Math.abs(P.wallLength(host) - 3) < 1e-6,
+    host ? `${P.wallLength(host)} m` : "no wall");
+  check("and its position is measured from that wall",
+    Math.abs(door.offset - 1) < 1e-6, `${door.offset}`);
+  check("so it has not moved on the plan",
+    Math.abs(P.wallPointAt(host, door.offset).x - 4) < 1e-6,
+    `${P.wallPointAt(host, door.offset).x}`);
+
+  // Cut into pieces, it is still one wall to drag.
+  store.outsideWallsFree = true;
+  const middle = store.room.walls.find(w =>
+    Math.abs(w.start.z) < 1e-6 && Math.abs(w.end.z) < 1e-6 && Math.min(w.start.x, w.end.x) === 3);
+  for (let i = 0; i < 3; i++) store.moveWall(middle.id, 0, 0.1);
+  const moved = store.room.walls.filter(w =>
+    Math.abs(w.start.z - w.end.z) < 1e-6 && w.start.z > 0.001 && w.start.z < 1);
+  check("dragging one piece moves the whole wall", moved.length === 3,
+    `${moved.length} of 3 pieces moved`);
+  check("every wall is still square", store.room.walls.every(w =>
+    Math.abs(w.start.x - w.end.x) < 1e-6 || Math.abs(w.start.z - w.end.z) < 1e-6));
+  check("and the three rooms survive it", P.detectRooms(store.room).length === 3,
+    `${P.detectRooms(store.room).length}`);
+  store.outsideWallsFree = false;
+
+  // Cutting again finds nothing to do: the plan has settled.
+  const settled = P.serializeRoom(store.room);
+  P.splitWallsAtJunctions(store.room);
+  check("cutting a plan that is already cut changes nothing",
+    P.serializeRoom(store.room) === settled);
+}
+
 // ── Turning a piece before you put it down ───────────────────────────────
 //
 // "When I grab a furniture, like a bed and it's not released into placement
