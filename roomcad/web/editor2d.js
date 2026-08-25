@@ -467,6 +467,9 @@ export class Editor2D {
       const door = store.selectedDoor();
       title = "Door";
       if (door) items.push({ label: door.open ? "Close door" : "Open door", action: "toggle-open" });
+      // Turning it round moves the hinge to the other edge. Different from the
+      // swing, which is the room it opens into.
+      items.push({ label: "Turn door round", action: "flip-door" });
       items.push({ label: "Delete door", danger: true, action: "delete" });
     } else if (store.selectedWindowID) {
       title = "Window";
@@ -490,6 +493,9 @@ export class Editor2D {
     switch (action) {
       case "turn":
         store.rotateSelectedFurniture();
+        break;
+      case "flip-door":
+        if (store.selectedDoorID) store.flipDoorHinge(store.selectedDoorID);
         break;
       case "turn-label":
         store.rotateSelectedLabel();
@@ -1624,13 +1630,17 @@ export class Editor2D {
 
   drawDoor(wall, door) {
     const ctx = this.ctx;
-    const hinge = this.screen(P.wallPointAt(wall, door.offset));
-    const end = this.screen(P.wallPointAt(wall, door.offset + door.width));
+    // The hinge may be at either end of the opening — the plan decides, here it
+    // is only drawn. Everything below works from the hinge outwards, so a door
+    // turned round draws its arc from the other side without a second case.
+    const swingAt = P.doorHinge(wall, door);
+    const hinge = this.screen(swingAt.point);
+    const end = this.screen(swingAt.far);
     const radius = Math.hypot(end.x - hinge.x, end.y - hinge.y);
     // Screen-space angle along the wall, so the arc swings correctly even
     // when the plan is rotated.
     const angle = Math.atan2(end.y - hinge.y, end.x - hinge.x);
-    const swingSign = door.swingInside ? 1 : -1;
+    const swingSign = swingAt.swingSign;
     const swing = angle + swingSign * (Math.PI / 2);
     const color = "#8b5a2b";
 

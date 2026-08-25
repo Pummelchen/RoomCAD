@@ -593,6 +593,38 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── Turning a door round, through the app ────────────────────────────────
+{
+  store.room = P.freshRoom("Door", 6, 4, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
+  const wall = store.room.walls.find(w =>
+    Math.abs(w.start.z - w.end.z) < 1e-6 && w.start.z < P.roomOrigin(store.room).z + 0.01);
+  store.room.doors = [{
+    id: "d", wallID: wall.id, offset: 1, width: 0.9, open: true, swingInside: true,
+  }];
+  P.sanitize(store.room);
+
+  const hingeX = () => P.doorHinge(wall, store.room.doors[0]).point.x;
+  const wasAt = hingeX();
+  store.flipDoorHinge("d");
+  check("the app can turn a door round", store.room.doors[0].hingeAtEnd === true);
+  check("and the hinge really moves to the other edge",
+    Math.abs(hingeX() - wasAt - 0.9) < 1e-6, `${wasAt} -> ${hingeX()}`);
+  check("the door is still on its wall and its opening is unchanged",
+    store.room.doors[0].offset === 1 && store.room.doors[0].width === 0.9);
+
+  store.flipDoorHinge("d");
+  check("turning it round again puts it back",
+    store.room.doors[0].hingeAtEnd === false && Math.abs(hingeX() - wasAt) < 1e-6);
+
+  // It is one step of undo, not a silent change.
+  store.flipDoorHinge("d");
+  store.undo();
+  check("turning a door round can be undone",
+    store.room.doors[0].hingeAtEnd === false);
+}
+
 // ── Walls stick to each other, and stay square ───────────────────────────
 //
 // "It was designed to have walls, windows and doors which snap onto each

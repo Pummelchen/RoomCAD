@@ -490,6 +490,23 @@ export const store = {
     playDoorSound();
   },
 
+  /// Turns a door round so its hinge is on the other side of the opening.
+  ///
+  /// Not the same as changing which way it swings: the leaf still opens into
+  /// the same room, it just opens from the other edge. That is what you want
+  /// when the door as drawn would swing back against a wall, cover a light
+  /// switch, or open into the path of the one next to it.
+  flipDoorHinge(id) {
+    const door = this.room.doors.find(d => d.id === id);
+    if (!door) return;
+    this.commit("Turned the door round", room => {
+      const d = room.doors.find(x => x.id === id);
+      if (d) d.hingeAtEnd = !d.hingeAtEnd;
+    });
+    playDoorSound();
+    this.selectedDoorID = id;
+  },
+
   /// Right-click door toggle: open → close, closed → open to the opposite side.
   toggleDoorSwing(id) {
     const door = this.room.doors.find(d => d.id === id);

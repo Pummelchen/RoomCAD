@@ -383,6 +383,13 @@ function openingSection(kind) {
       `<button class="seg-btn ${opening.swingInside ? "active" : ""}" data-action="swing-inside">Inside</button>` +
       `<button class="seg-btn ${!opening.swingInside ? "active" : ""}" data-action="swing-outside">Outside</button>` +
       `</div></div>`;
+    // Which EDGE the hinge is on, which is a different question from which side
+    // the door swings to: turned round, the leaf opens into the same room from
+    // the other edge.
+    html += `<div class="field"><label>Hinge</label><div class="seg-row">` +
+      `<button class="seg-btn ${!opening.hingeAtEnd ? "active" : ""}" data-action="hinge-start">This side</button>` +
+      `<button class="seg-btn ${opening.hingeAtEnd ? "active" : ""}" data-action="hinge-end">Other side</button>` +
+      `</div><div class="hint">turn the door round without changing the room it opens into</div></div>`;
   }
   html += `<button class="inspector-button danger" data-action="delete">Delete ${title}</button>`;
   return html;
@@ -645,6 +652,11 @@ inspectorContent.addEventListener("click", e => {
   } else if (t.dataset.action === "swing-outside") {
     const id = store.selectedDoorID;
     if (id) store.setDoorSwing(id, false);
+  } else if (t.dataset.action === "hinge-start" || t.dataset.action === "hinge-end") {
+    const id = store.selectedDoorID;
+    const wantEnd = t.dataset.action === "hinge-end";
+    const door = id && store.room.doors.find(d => d.id === id);
+    if (door && !!door.hingeAtEnd !== wantEnd) store.flipDoorHinge(id);
   } else if (t.dataset.action === "floor-up") {
     store.setFloor(1);
   } else if (t.dataset.action === "floor-down") {

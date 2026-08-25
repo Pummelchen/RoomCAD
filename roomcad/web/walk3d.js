@@ -662,19 +662,24 @@ export class Walk3D {
     const thickness = closed ? P.WALL_THICKNESS + CLOSED_DOOR_SEAL * 2 : 0.04;
     const leafHeight = closed ? doorTop + CLOSED_DOOR_SEAL * 2 : doorTop;
     const width = door.width;
-    const hinge = P.wallPointAt(wall, door.offset);
+    // Hinged at whichever end of the opening the plan says, so a door turned
+    // round in 2D opens the same way here.
+    const swingAt = P.doorHinge(wall, door);
+    const hinge = swingAt.point;
     const dx = wall.end.x - wall.start.x;
     const dz = wall.end.z - wall.start.z;
     const len = Math.max(Math.hypot(dx, dz), 0.0001);
-    const ux = dx / len;
-    const uz = dz / len;
+    // Along the wall FROM THE HINGE: a closed leaf reaches across the opening
+    // that way, and an open one swings a quarter turn from it.
+    const ux = swingAt.along.x;
+    const uz = swingAt.along.z;
 
     let leafX;
     let leafZ;
     let centerX;
     let centerZ;
     if (door.open) {
-      const sign = door.swingInside ? 1 : -1;
+      const sign = swingAt.swingSign;
       leafX = sign * -uz;
       leafZ = sign * ux;
       centerX = hinge.x + leafX * (width / 2);

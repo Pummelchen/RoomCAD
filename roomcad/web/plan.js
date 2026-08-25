@@ -608,6 +608,39 @@ export function wallForPlacement(room, p, tolerance = 0.5) {
 }
 
 /// Finds the opening (door or window) whose occupied area contains `p`.
+/// Where a door is hinged and which way its leaf sweeps.
+///
+/// A door has two choices, and they are separate: which SIDE of the wall it
+/// opens into (`swingInside`), and which END of the opening the hinge is on
+/// (`hingeAtEnd`). Turning a door round so its axle is on the other side is the
+/// second one — the leaf still swings into the same room, it just opens the
+/// other way, which is what you change when the door would otherwise open onto
+/// a wall or block a light switch.
+///
+/// Returned as the hinge point plus the unit vector from the hinge towards the
+/// far edge of the opening, so everything that has to draw or hit-test a door
+/// works from the same answer: the 2D arc, the 3D leaf and the selection.
+export function doorHinge(wall, door) {
+  const dir = wallDirection(wall);
+  const atEnd = !!door.hingeAtEnd;
+  const hinge = wallPointAt(wall, atEnd ? door.offset + door.width : door.offset);
+  const towards = atEnd ? -1 : 1;
+  return {
+    point: hinge,
+    // Along the wall, from the hinge to the other edge of the opening.
+    along: { x: dir.x * towards, z: dir.z * towards },
+    // The far edge itself, which is where a closed leaf reaches to.
+    far: wallPointAt(wall, atEnd ? door.offset : door.offset + door.width),
+    // Which way the leaf sweeps, as a quarter turn from hinge-towards-far.
+    //
+    // The compensation matters: turning the door round reverses that reference
+    // direction, so a quarter turn the same way would land the leaf on the
+    // OTHER side of the wall. A door turned round opens the other way into the
+    // same room — it does not move to the room behind.
+    swingSign: (door.swingInside ? 1 : -1) * (atEnd ? -1 : 1),
+  };
+}
+
 /// A door is selectable anywhere in its gap or its swing area; a window is
 /// selectable anywhere along its gap in the wall.
 export function openingNear(room, p, tolerance = 0.25) {
@@ -625,13 +658,15 @@ export function openingNear(room, p, tolerance = 0.25) {
 
     let hit = false;
     if (kind === "door") {
-      // The gap in the wall, or the quarter-circle swept by the leaf.
+      // The gap in the wall, or the quarter-circle swept by the leaf — measured
+      // from the HINGE, which may be at either end of the opening.
       const sign = o.swingInside ? 1 : -1;
       const swing = cross * sign;
       const inGap = along >= -tolerance && along <= o.width + tolerance
         && Math.abs(cross) <= tolerance;
-      const inArc = along >= -tolerance && swing >= -tolerance
-        && along * along + swing * swing <= (o.width + tolerance) * (o.width + tolerance);
+      const fromHinge = o.hingeAtEnd ? o.width - along : along;
+      const inArc = fromHinge >= -tolerance && swing >= -tolerance
+        && fromHinge * fromHinge + swing * swing <= (o.width + tolerance) * (o.width + tolerance);
       hit = inGap || inArc;
     } else {
       hit = along >= -tolerance && along <= o.width + tolerance
@@ -1705,6 +1740,9 @@ export function sanitize(room) {
       width: clamp(d.width, 0.6, 1.4),
       open: d.open === undefined ? true : !!d.open,
       swingInside: d.swingInside === undefined ? true : !!d.swingInside,
+      // Which end of the opening the hinge is on. Absent in older files, which
+      // were all hinged at the start.
+      hingeAtEnd: !!d.hingeAtEnd,
     }))
     .filter(d => {
       if (!wallIDs.has(d.wallID)) return false;

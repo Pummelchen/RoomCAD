@@ -981,5 +981,83 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     `${healed.start.z} vs ${healed.end.z}`);
 }
 
+// ── Turning a door round ─────────────────────────────────────────────────
+//
+// A door has two separate choices: which side of the wall it opens into, and
+// which edge of the opening it is hinged on. The second one had no answer —
+// every door was hinged at the near edge — so a door that swung back against
+// a wall, covered a light switch, or fouled the one beside it could not be
+// turned round.
+{
+  const room = P.freshRoom("D", 6, 4, 2.6);
+  room.origin = { x: 0, z: 0 };
+  P.sanitize(room);
+  const wall = room.walls.find(w => Math.abs(w.start.z - w.end.z) < 1e-6 && w.start.z < 0.01);
+  room.doors = [{ id: "d", wallID: wall.id, offset: 1, width: 0.9, open: true, swingInside: true }];
+  P.sanitize(room);
+
+  // Where the tip of the open leaf lands: a quarter turn from hinge to far edge.
+  const leafTip = () => {
+    const d = room.doors[0];
+    const h = P.doorHinge(wall, d);
+    return {
+      hinge: h.point,
+      tip: {
+        x: h.point.x + -h.along.z * h.swingSign * d.width,
+        z: h.point.z + h.along.x * h.swingSign * d.width,
+      },
+    };
+  };
+
+  check("a door is hinged at the near edge unless it is turned round",
+    room.doors[0].hingeAtEnd === false);
+  const near = leafTip();
+  check("its hinge is at the start of the opening",
+    Math.abs(near.hinge.x - 1) < 1e-6, `${near.hinge.x}`);
+  check("and the leaf opens into the room", near.tip.z > near.hinge.z);
+
+  room.doors[0].hingeAtEnd = true;
+  const far = leafTip();
+  check("turned round, the hinge is at the other edge",
+    Math.abs(far.hinge.x - 1.9) < 1e-6, `${far.hinge.x}`);
+  check("and the leaf still opens into the SAME room", far.tip.z > far.hinge.z);
+  check("swinging from the other edge, not the same place",
+    Math.abs(far.tip.x - near.tip.x) > 0.5, `${near.tip.x} vs ${far.tip.x}`);
+
+  // The two choices stay independent.
+  room.doors[0].swingInside = false;
+  const other = leafTip();
+  check("the swing still decides which room it opens into",
+    other.tip.z < other.hinge.z);
+  check("with the hinge left where it was put",
+    Math.abs(other.hinge.x - 1.9) < 1e-6);
+
+  // It survives a save and reload, and an older file has no opinion.
+  room.doors[0].swingInside = true;
+  const reloaded = P.parseRoom(P.serializeRoom(room));
+  check("which way round it is survives a save and reload",
+    reloaded.doors[0].hingeAtEnd === true);
+  const old = P.parseRoom(JSON.stringify({
+    format: "com.maria.roomcad-v2.room", version: 1,
+    room: { ...room, doors: [{ id: "d", wallID: wall.id, offset: 1, width: 0.9, open: true, swingInside: true }] },
+  }));
+  check("a file written before doors could be turned round opens at the near edge",
+    old.doors[0].hingeAtEnd === false);
+
+  // And it can be picked up by its swing, which has moved with it. The point
+  // has to be one the leaf only reaches now that the door is turned round —
+  // the two quarter-circles overlap over most of their area, and a point inside
+  // both proves nothing.
+  const onlyWhenTurned = { x: 1.88, z: 0.8 };
+  const found = P.openingNear(room, onlyWhenTurned, 0.05);
+  check("a turned door is selectable where its leaf now sweeps",
+    found && found.id === "d", JSON.stringify(found));
+  room.doors[0].hingeAtEnd = false;
+  const missed = P.openingNear(room, onlyWhenTurned, 0.05);
+  check("and that spot is outside the arc when it is not turned",
+    !missed, JSON.stringify(missed));
+  room.doors[0].hingeAtEnd = true;
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
