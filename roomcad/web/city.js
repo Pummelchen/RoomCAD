@@ -344,6 +344,13 @@ const SIGNAL_CLEAR = 3.2;
 /// only a floor to stop one that has been moved out of the way of a signal
 /// ending up beside its neighbour.
 const LAMP_MIN_GAP = 9;
+/// How close two lamps may stand when there is nowhere else to put one.
+///
+/// Still far enough apart that they light different stretches of pavement —
+/// two posts a few metres apart light the same patch twice — but close enough
+/// that a lamp squeezed between a signal and a bus stop can stand somewhere
+/// rather than not at all.
+const LAMP_CROWDED_GAP = 8.5;
 const SIGNAL_HEIGHT = 3.4;
 const SIGNAL_HEAD_H = 0.86;
 const SIGNAL_POLE_COLOR = 0x33363b;
@@ -2441,21 +2448,29 @@ export class City {
           // Moving a lamp out of the way must not park it next to the lamp it
           // was moved towards: two posts a few metres apart light the same
           // patch of pavement twice and leave the street between them dark.
-          const spaced = (px, pz) => !this.lampPosts.some(p =>
-            Math.hypot(p.x - px, p.z - pz) < LAMP_MIN_GAP);
-          const usable = (px, pz) =>
-            clearOfSignals(px, pz) && !City._inLayby(laybys, px, pz, 1.0) && spaced(px, pz);
-          let placed = usable(x, z);
-          for (let step = 1; !placed && step <= 8; step++) {
-            for (const away of [step, -step]) {
-              const tx = alongX ? bx + ox + away * 1.2 : x;
-              const tz = alongX ? z : bz + oz + away * 1.2;
-              // Never past the end of its own block side.
-              if (Math.abs(alongX ? tx - bx : tz - bz) > block / 2) continue;
-              if (!usable(tx, tz)) continue;
-              x = tx; z = tz; placed = true;
-              break;
+          const spaced = (px, pz, gap) => !this.lampPosts.some(p =>
+            Math.hypot(p.x - px, p.z - pz) < gap);
+          const usable = (px, pz, gap) =>
+            clearOfSignals(px, pz) && !City._inLayby(laybys, px, pz, 1.0) && spaced(px, pz, gap);
+          // Signals and laybys are absolute; the spacing is a preference. A
+          // lamp that cannot keep its distance is better standing closer than
+          // not standing at all: dropping it left 32 m of unlit street on a
+          // 46 m block, which is the thing the spacing was there to prevent.
+          let placed = false;
+          for (const gap of [LAMP_MIN_GAP, LAMP_CROWDED_GAP]) {
+            if (usable(x, z, gap)) { placed = true; break; }
+            for (let step = 1; !placed && step <= 8; step++) {
+              for (const away of [step, -step]) {
+                const tx = alongX ? bx + ox + away * 1.2 : x;
+                const tz = alongX ? z : bz + oz + away * 1.2;
+                // Never past the end of its own block side.
+                if (Math.abs(alongX ? tx - bx : tz - bz) > block / 2) continue;
+                if (!usable(tx, tz, gap)) continue;
+                x = tx; z = tz; placed = true;
+                break;
+              }
             }
+            if (placed) break;
           }
           if (!placed) continue;
           poles.add(boxMatrix(x, PAVEMENT_Y + h / 2, z, 1, h, 1));

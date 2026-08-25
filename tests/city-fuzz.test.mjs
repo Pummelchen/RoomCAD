@@ -2610,19 +2610,47 @@ for (const [w, l, label] of [
 
   // Lamps along the streets, not four to a block at the corners. A block side
   // is BLOCK_SIZE long, so corners alone leave that much unlit between them.
-  const gaps = city.lampPosts.map(a => {
-    let best = Infinity;
-    for (const b of city.lampPosts) {
-      if (a === b) continue;
-      best = Math.min(best, Math.hypot(a.x - b.x, a.z - b.z));
+  //
+  // Over SEVERAL cities, not one. Where the lamps end up depends on where the
+  // bus stops are, which comes from the traffic seed — so one city says nothing
+  // about the next: the worst gap here is 23 m on most seeds and 32 m on one of
+  // them. Checking a single city meant this only ever failed by accident, when
+  // something unrelated changed the seed, and then took the blame for it.
+  const lampSeeds = [4242, 2718, 7, 99, 123, 555, 8080, 31337];
+  let loneliest = 0;
+  let closest = Infinity;
+  let fewestLamps = Infinity;
+  let lampSeedWorst = 0;
+  for (const seed of lampSeeds) {
+    const lit = new City();
+    lit.build(boundsFor(0, 0, 9, 7), seed, 0);
+    const spread = lit.lampPosts.map(a => {
+      let best = Infinity;
+      for (const b of lit.lampPosts) {
+        if (a === b) continue;
+        best = Math.min(best, Math.hypot(a.x - b.x, a.z - b.z));
+      }
+      return best;
+    }).sort((x, y) => x - y);
+    if (spread[spread.length - 1] > loneliest) {
+      loneliest = spread[spread.length - 1];
+      lampSeedWorst = seed;
     }
-    return best;
-  }).sort((x, y) => x - y);
-  check("the streets are lit along their length",
-    gaps[gaps.length - 1] < BLOCK_SIZE * 0.6,
-    `the loneliest lamp is ${gaps[gaps.length - 1].toFixed(0)} m from its neighbour, on a ${BLOCK_SIZE} m block`);
+    closest = Math.min(closest, spread[0]);
+    fewestLamps = Math.min(fewestLamps, lit.lampPosts.length);
+    lit.dispose();
+  }
+  check("the streets are lit along their length, whatever the traffic does",
+    loneliest < BLOCK_SIZE * 0.6,
+    `the loneliest lamp is ${loneliest.toFixed(0)} m from its neighbour on seed ${lampSeedWorst}, `
+    + `on a ${BLOCK_SIZE} m block`);
   check("and not so densely that it is a runway",
-    gaps[0] > 8, `closest pair ${gaps[0].toFixed(1)} m`);
+    closest > 8, `closest pair ${closest.toFixed(1)} m`);
+  // A lamp that cannot keep its distance from its neighbour stands closer
+  // rather than not standing at all. Dropping it left 32 m of unlit street on a
+  // 46 m block — the very thing the spacing rule is there to prevent.
+  check("almost all of them survive being moved",
+    fewestLamps >= 620, `${fewestLamps} of 648 spots on the worst seed`);
 
   // Half strength.
   const out = [];

@@ -115,8 +115,26 @@ fi
 # TLS, before saying anything reassuring.
 SITE="https://roomcad.91.99.176.243.nip.io"
 echo "Checking $SITE …"
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/" || echo 000)"
-api="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE/api/rooms" || echo 000)"
+# Given a few goes, a second apart. The master server has just been told to
+# re-read its config, and for a moment during that it answers nothing at all —
+# so a single request can miss a site that is perfectly healthy, which is what
+# reported a deploy as FAILED while the page was in fact serving.
+#
+# The fallback prints on its own line rather than after curl's own output:
+# `curl ... || echo 000` appends to whatever curl already wrote, and a failed
+# request that had printed "000" came out as "000000".
+try_code() {
+  local url="$1" want="$2" got=""
+  for attempt in 1 2 3 4 5; do
+    got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null)" || got="000"
+    [ -z "$got" ] && got="000"
+    for ok in $want; do [ "$got" = "$ok" ] && { echo "$got"; return 0; }; done
+    sleep 1
+  done
+  echo "$got"
+}
+code="$(try_code "$SITE/" "200")"
+api="$(try_code "$SITE/api/rooms" "401 200")"
 if [ "$code" != "200" ]; then
   echo "FAILED: $SITE/ answered $code (expected 200)." >&2
   exit 1

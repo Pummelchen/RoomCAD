@@ -268,5 +268,29 @@ check("the check uses the real public URL over TLS",
   /SITE="https:\/\/roomcad\.[\d.]+\.nip\.io"/.test(deploy));
 check("and the old :8443 links are checked too", /:8443\//.test(deploy));
 
+// ── The check that says whether the deploy worked ────────────────────────
+//
+// It is asked immediately after the master server is told to re-read its
+// config, and for a moment during that it answers nothing at all. One request
+// therefore says FAILED about a site that is serving perfectly — which it did,
+// on a deploy where every file had landed and the page was up.
+{
+  check("the site check is given more than one go",
+    /try_code\(\) \{[\s\S]{0,400}for attempt in 1 2 3 4 5/.test(deploy));
+  check("with a pause between them", /try_code\(\)[\s\S]{0,500}sleep 1/.test(deploy));
+  check("and both the page and the API go through it",
+    /code="\$\(try_code "\$SITE\/" "200"\)"/.test(deploy)
+    && /api="\$\(try_code "\$SITE\/api\/rooms" "401 200"\)"/.test(deploy));
+  // `curl ... || echo 000` appends to what curl already printed, so a failed
+  // request that had written "000" was reported as "000000". Checked against
+  // code only: this file explains the bug in a comment, and the comment says
+  // the very thing being checked for.
+  const deployCode = deploy.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+  check("a failed request reports one code, not two run together",
+    !/curl[^\n]*\|\| echo 000/.test(deployCode));
+  check("it still fails the deploy when the site really is down",
+    /if \[ "\$code" != "200" \]; then[\s\S]{0,120}exit 1/.test(deploy));
+}
+
 console.log(`${passed} passed, ${failed} failed — deployment config contracts`);
 if (failed) process.exit(1);
