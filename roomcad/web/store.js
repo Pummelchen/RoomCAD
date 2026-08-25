@@ -61,6 +61,9 @@ export const store = {
   undoStack: [],
   redoStack: [],
   dragTransactionActive: false,
+  /// How a public area being dragged reads: "valid", or "invalid" while it is
+  /// lying on top of another one. Cleared when it is put down.
+  publicFeedback: null,
   /// Whether the outside walls are held still.
   ///
   /// They are, by default: editing the inside of a plan should not reshape the
@@ -774,31 +777,85 @@ export const store = {
     }
   },
 
+  /// Drags one area of public floor. It follows the cursor and does not stick.
+  ///
+  /// It used to be settled against its neighbours on every step of the drag,
+  /// and any step that settling would have RESIZED was refused outright. So an
+  /// area pressed up against another one stopped dead — and could never be
+  /// taken past it, however far the cursor went: dragging seven metres across a
+  /// neighbour moved it eighty centimetres and left it there.
+  ///
+  /// It goes where it is put, reads as clashing while it is on top of somebody,
+  /// and is settled once, on release — the same rule furniture already used,
+  /// and for the same reason.
   movePublicArea(id, dx, dz) {
     this.beginDrag();
     const area = (this.room.publicAreas || []).find(a => a.id === id);
     if (!area) return;
     const canvas = P.canvasOf(this.room);
-    const clear = candidate => {
-      const settled = P.settlePublicArea(this.room, candidate, id);
-      // Moving must never resize: if settling had to trim, this position is
-      // blocked. Trying each axis on its own then lets the area slide along a
-      // neighbour it is pressed against instead of sticking.
-      const sameSize = Math.abs(settled.w - area.w) < 0.001 && Math.abs(settled.l - area.l) < 0.001;
-      return sameSize ? settled : null;
+    area.x = P.clean(P.clamp(area.x + dx, 0, Math.max(0, canvas.width - area.w)));
+    area.z = P.clean(P.clamp(area.z + dz, 0, Math.max(0, canvas.length - area.l)));
+    this.publicFeedback = {
+      id,
+      state: this.publicAreaClashes(area, id) ? "invalid" : "valid",
     };
-    const put = candidate => ({
-      x: P.clamp(candidate.x, 0, canvas.width - area.w),
-      z: P.clamp(candidate.z, 0, canvas.length - area.l),
-      w: area.w,
-      l: area.l,
-    });
-    const both = clear(put({ x: area.x + dx, z: area.z + dz }));
-    const alongX = both || clear(put({ x: area.x + dx, z: area.z }));
-    const target = both || alongX || clear(put({ x: area.x, z: area.z + dz }));
-    if (!target) return;
-    area.x = target.x;
-    area.z = target.z;
+  },
+
+  /// Is this area lying on top of another one?
+  publicAreaClashes(rect, ignoreID) {
+    return (this.room.publicAreas || []).some(a => a.id !== ignoreID
+      && rect.x < a.x + a.w - 0.0001 && a.x < rect.x + rect.w - 0.0001
+      && rect.z < a.z + a.l - 0.0001 && a.z < rect.z + rect.l - 0.0001);
+  },
+
+  /// Puts a dragged area down: snapped to the grid and to whatever it has been
+  /// laid alongside, and slid clear of anything it was dropped on top of.
+  ///
+  /// Sliding rather than trimming, because the size is the user's: an area
+  /// dropped on a neighbour moves out of it by the shortest way, and only if
+  /// there is nowhere at all for it to go does it return where it came from.
+  settleDraggedPublicArea(id) {
+    const area = (this.room.publicAreas || []).find(a => a.id === id);
+    if (!area) return;
+    this.publicFeedback = null;
+    const canvas = P.canvasOf(this.room);
+    const fits = rect => rect.x >= -0.0001 && rect.z >= -0.0001
+      && rect.x + rect.w <= canvas.width + 0.0001
+      && rect.z + rect.l <= canvas.length + 0.0001
+      && !this.publicAreaClashes(rect, id);
+
+    const snapped = P.settlePublicArea(this.room, { x: area.x, z: area.z, w: area.w, l: area.l }, id);
+    // settlePublicArea may trim to resolve a clash. A move must not resize, so
+    // its answer is taken only when it kept the size.
+    if (Math.abs(snapped.w - area.w) < 0.001 && Math.abs(snapped.l - area.l) < 0.001
+      && fits(snapped)) {
+      area.x = snapped.x;
+      area.z = snapped.z;
+      return;
+    }
+    if (!this.publicAreaClashes(area, id)) return;   // where it is, is fine
+
+    // Out of the way of whatever it landed on, by the shortest move.
+    let best = null;
+    for (const other of this.room.publicAreas || []) {
+      if (other.id === id) continue;
+      if (!this.publicAreaClashes(area, id)) break;
+      for (const candidate of [
+        { x: other.x - area.w, z: area.z },
+        { x: other.x + other.w, z: area.z },
+        { x: area.x, z: other.z - area.l },
+        { x: area.x, z: other.z + other.l },
+      ]) {
+        const rect = { x: P.clean(candidate.x), z: P.clean(candidate.z), w: area.w, l: area.l };
+        if (!fits(rect)) continue;
+        const moved = Math.abs(rect.x - area.x) + Math.abs(rect.z - area.z);
+        if (!best || moved < best.moved) best = { rect, moved };
+      }
+    }
+    if (best) {
+      area.x = best.rect.x;
+      area.z = best.rect.z;
+    }
   },
 
   // MARK: Opening ends

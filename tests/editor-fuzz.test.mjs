@@ -318,7 +318,17 @@ console.log(`  sweep left: ${r.walls.length} walls, ${r.doors.length} doors, `
 }
 
 // ── Drawing a wall actually draws one ─────────────────────────────────────
+//
+// On a plan of its own, then handed back. Run on whatever the random sweep
+// happened to leave behind, this drew its wall into a plan already full of
+// them and failed when the stroke landed on top of one — which says nothing
+// about whether the wall tool works. The checks that follow still want the
+// sweep's plan, so it is put back afterwards.
 {
+  const sweptPlan = store.room;
+  store.room = P.freshRoom("Wall test", 8, 6, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
   store.chooseTool("wall");
   const before = store.room.walls.length;
   const from = atPlan(0.25, 0.4);
@@ -336,6 +346,7 @@ console.log(`  sweep left: ${r.walls.length} walls, ${r.doors.length} doors, `
     check("the wall it drew has finite ends",
       [w.start.x, w.start.z, w.end.x, w.end.z].every(Number.isFinite));
   }
+  store.room = sweptPlan;
 }
 
 // ── A drag too short to be a wall ─────────────────────────────────────────
@@ -572,6 +583,90 @@ for (const name of EXPECTED) {
   // And back under lock.
   store.setOutsideWallsFree(false);
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
+}
+
+// ── Dragging a public area ───────────────────────────────────────────────
+//
+// It was settled against its neighbours on every step of the drag, and any
+// step that settling would have RESIZED was refused outright. So an area
+// pressed against another stopped dead and could never be taken past it:
+// dragging it seven metres across a neighbour moved it eighty centimetres and
+// left it there. It follows the cursor now and is settled once, on release.
+{
+  const setup = areas => {
+    store.room = P.freshRoom("Areas", 10, 8, 2.6);
+    store.room.origin = { x: 0, z: 0 };
+    store.room.canvas = { width: 25, length: 25 };
+    store.room.publicAreas = areas.map(a => ({ ...a }));
+    P.sanitize(store.room);
+  };
+  const at = id => store.room.publicAreas.find(a => a.id === id);
+  const clashes = id => store.publicAreaClashes(at(id), id);
+  // The whole gesture, in the steps a pointer actually delivers it.
+  const drag = (id, dx, dz, steps = 40) => {
+    for (let i = 0; i < steps; i++) store.movePublicArea(id, dx / steps, dz / steps);
+    store.settleDraggedPublicArea(id);
+  };
+
+  setup([{ id: "a", x: 2, z: 2, w: 2, l: 1.5 }]);
+  drag("a", 3, 2);
+  check("an area on its own goes exactly where it is dragged",
+    Math.abs(at("a").x - 5) < 0.01 && Math.abs(at("a").z - 4) < 0.01,
+    `${at("a").x},${at("a").z}`);
+  check("and keeps its size", at("a").w === 2 && at("a").l === 1.5);
+
+  // The one that was reported: it could not be taken past a neighbour.
+  setup([{ id: "a", x: 1, z: 2, w: 2, l: 1.5 }, { id: "b", x: 5, z: 2, w: 2, l: 1.5 }]);
+  drag("a", 7, 0);
+  check("an area can be dragged clear past another one",
+    at("a").x > 7, `stopped at ${at("a").x}`);
+  check("and does not end up lying on it", !clashes("a"));
+  check("nor does the one it passed move", at("b").x === 5 && at("b").w === 2);
+
+  // Up against one, it lands flush rather than stopping short.
+  setup([{ id: "a", x: 2, z: 2, w: 2, l: 1.5 }, { id: "b", x: 5, z: 2, w: 2, l: 1.5 }]);
+  drag("a", 2.4, 0);
+  check("dragged up against a neighbour it settles against it",
+    Math.abs(at("a").x + at("a").w - 5) < 0.01, `right edge at ${at("a").x + at("a").w}`);
+
+  // Dropped on top of one, it moves out of the way rather than being trimmed.
+  setup([{ id: "a", x: 1, z: 2, w: 2, l: 1.5 }, { id: "b", x: 5, z: 2, w: 2, l: 1.5 }]);
+  drag("a", 4, 0);
+  check("dropped on top of another it slides clear", !clashes("a"),
+    `${at("a").x},${at("a").z}`);
+  check("and is not cut down to fit", at("a").w === 2 && at("a").l === 1.5);
+
+  // While it is being carried it says it cannot stay there.
+  setup([{ id: "a", x: 1, z: 2, w: 2, l: 1.5 }, { id: "b", x: 5, z: 2, w: 2, l: 1.5 }]);
+  for (let i = 0; i < 10; i++) store.movePublicArea("a", 0.4, 0);
+  check("an area carried over another reads as clashing",
+    store.publicFeedback && store.publicFeedback.state === "invalid",
+    JSON.stringify(store.publicFeedback));
+  store.settleDraggedPublicArea("a");
+  check("and stops saying so once it is put down", store.publicFeedback === null);
+
+  // It cannot be dragged off the canvas.
+  setup([{ id: "a", x: 1, z: 1, w: 2, l: 1.5 }]);
+  drag("a", -9, -9);
+  check("an area cannot be dragged off the plate",
+    at("a").x >= -0.001 && at("a").z >= -0.001, `${at("a").x},${at("a").z}`);
+
+  // And the whole thing through the editor itself — press, move, release —
+  // because the settling happens when the pointer comes up, and a test that
+  // calls the settle by hand cannot tell you the editor calls it.
+  {
+    setup([{ id: "a", x: 1, z: 2, w: 2, l: 1.5 }, { id: "b", x: 5, z: 2, w: 2, l: 1.5 }]);
+    store.chooseTool("select");
+    const grab = editor.screen({ x: 2, z: 2.75 });          // the middle of "a"
+    const drop = editor.screen({ x: 6, z: 2.75 });          // squarely on "b"
+    const dx = Math.round((drop.x - grab.x) / 4);
+    const dy = Math.round((drop.y - grab.y) / 4);
+    gesture(Math.round(grab.x), Math.round(grab.y), [[dx, dy], [dx, dy], [dx, dy], [dx, dy]]);
+    check("dragged with the pointer, it moves", at("a").x > 1.5, `${at("a").x}`);
+    check("and the editor settles it when the pointer comes up",
+      !clashes("a") && store.publicFeedback === null,
+      `${at("a").x},${at("a").z} clash:${clashes("a")} feedback:${JSON.stringify(store.publicFeedback)}`);
+  }
 }
 
 // ── Public floor is the user's ───────────────────────────────────────────

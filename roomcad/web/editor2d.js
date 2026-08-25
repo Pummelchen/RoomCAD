@@ -895,7 +895,14 @@ export class Editor2D {
         else store.discardDrag();
         break;
       case "movePublic":
-        if (moved) store.endDrag("Moved public area");
+        // Put down where it was dropped, then settled — snapped to the grid and
+        // to its neighbours, and slid clear of anything it landed on. Only on a
+        // real drag: a click is not a move, and settling one would nudge an
+        // area the user merely tapped.
+        if (moved) {
+          store.settleDraggedPublicArea(drag.id);
+          store.endDrag("Moved public area");
+        }
         else {
           store.discardDrag();
           store.select(p);
@@ -1105,6 +1112,22 @@ export class Editor2D {
   drawPublicArea(area, preview = false, selected = false) {
     const ctx = this.ctx;
     const r = this.rect({ minX: area.x, maxX: area.x + area.w, minZ: area.z, maxZ: area.z + area.l });
+    // An area being carried over another one reads red. It still follows the
+    // cursor — the drag is never blocked — and this is how it says that where
+    // it is now is not where it can stay.
+    const clashing = store.publicFeedback
+      && store.publicFeedback.id === area.id
+      && store.publicFeedback.state === "invalid";
+    if (clashing) {
+      ctx.fillStyle = "rgba(255,72,60,0.18)";
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = "#ff483c";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      ctx.setLineDash([]);
+      return;
+    }
     ctx.fillStyle = preview ? "rgba(57,255,20,0.14)"
       : selected ? "rgba(57,255,20,0.18)" : "rgba(57,255,20,0.10)";
     ctx.fillRect(r.x, r.y, r.w, r.h);
