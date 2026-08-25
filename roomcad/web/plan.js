@@ -1552,6 +1552,74 @@ export function labelNear(room, p, tolerance = 0.08) {
 
 // MARK: - Sanitizing
 
+/// How far a wall end may be from the wall it plainly meets and still be
+/// treated as meeting it.
+///
+/// Two centimetres. Below that a gap is not a decision anybody made — it is
+/// what is left when a wall lands on a grid line half a centimetre from the
+/// wall it was drawn up to, or when the plate is resized to a size the grid
+/// does not divide. Above it, a gap is a doorway or a deliberate slot and is
+/// left alone.
+export const JOINT_HEAL_TOLERANCE = 0.02;
+
+/// Closes hairline gaps where a wall stops just short of another one.
+///
+/// A room is enclosed or it is not, and the difference can be five millimetres
+/// nobody can see: a plan that plainly shows four walls round a room reported
+/// one region of eighty square metres, because two of the walls stopped 5 mm
+/// from the wall they met. No area label, no room in the count, and nothing on
+/// screen to explain why.
+///
+/// Only the coordinate ACROSS the wall is moved, so a wall never goes diagonal
+/// to close a gap, and only when the end lies within the span of the wall it is
+/// reaching — a wall pointing at empty space stays where it is.
+export function healWallJoints(room) {
+  // Until it settles. Closing one joint can bring another end within reach —
+  // pull a wall onto the line it meets and the wall joined to ITS far end
+  // moves with it — so a single pass leaves work behind, and a plan that heals
+  // further every time it is loaded is a plan that never comes back the same
+  // way twice.
+  let total = 0;
+  for (let pass = 0; pass < 4; pass++) {
+    const moved = healPass(room);
+    total += moved;
+    if (!moved) break;
+  }
+  return total;
+}
+
+function healPass(room) {
+  const walls = room.walls || [];
+  let healed = 0;
+  for (const wall of walls) {
+    const vertical = Math.abs(wall.start.x - wall.end.x) < 1e-6;
+    const horizontal = Math.abs(wall.start.z - wall.end.z) < 1e-6;
+    if (vertical === horizontal) continue;           // diagonal: leave it alone
+    for (const end of [wall.start, wall.end]) {
+      for (const other of walls) {
+        if (other === wall) continue;
+        const otherVertical = Math.abs(other.start.x - other.end.x) < 1e-6;
+        const otherHorizontal = Math.abs(other.start.z - other.end.z) < 1e-6;
+        if (otherVertical === otherHorizontal) continue;
+        // A wall can only be closed onto one running the other way.
+        if (otherVertical === vertical) continue;
+        const axis = otherVertical ? "x" : "z";
+        const along = otherVertical ? "z" : "x";
+        const line = other.start[axis];
+        const lo = Math.min(other.start[along], other.end[along]);
+        const hi = Math.max(other.start[along], other.end[along]);
+        const gap = Math.abs(end[axis] - line);
+        if (gap < 1e-9 || gap > JOINT_HEAL_TOLERANCE) continue;
+        if (end[along] < lo - JOINT_HEAL_TOLERANCE || end[along] > hi + JOINT_HEAL_TOLERANCE) continue;
+        end[axis] = clean(line);
+        healed++;
+        break;
+      }
+    }
+  }
+  return healed;
+}
+
 export function sanitize(room) {
   room.width = clamp(room.width, 2, 20);
   room.length = clamp(room.length, 2, 20);
@@ -1596,6 +1664,10 @@ export function sanitize(room) {
       start: { x: clamp(w.start.x, 0, canvas.width), z: clamp(w.start.z, 0, canvas.length) },
       end: { x: clamp(w.end.x, 0, canvas.width), z: clamp(w.end.z, 0, canvas.length) },
     }));
+  // Close the joints before anything downstream asks what the walls enclose.
+  // Every path into the model comes through here — drawing, dragging, loading,
+  // undo — so a room that looks closed is closed by the time it is measured.
+  healWallJoints(room);
   const wallIDs = new Set(room.walls.map(w => w.id));
 
   room.doors = room.doors

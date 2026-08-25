@@ -361,6 +361,12 @@ export const store = {
     // itself: the sidebar reports the size the room had before the drag began,
     // and an opening on a wall that got shorter is drawn past its end.
     P.fitOpeningsToWalls(this.room);
+    // A wall dragged to within a few millimetres of the one it meets closes
+    // onto it, here rather than only when the drag ends. Two reasons: the room
+    // reads as enclosed while it is being sized, which is when the area label
+    // matters, and the model stays exactly what a save and reload would give
+    // back — a drag is the one edit that does not pass through sanitize.
+    P.healWallJoints(this.room);
     P.syncExtent(this.room);
     // Say so while the wall is still moving. The canvas redraws itself from the
     // drag, but the panel does not: floor area, overall size and the room count

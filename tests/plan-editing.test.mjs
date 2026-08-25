@@ -911,5 +911,61 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("dragging an id that is not there returns null", P.dragWall(edge, "nope", 1, 0) === null);
 }
 
+// ── A room that looks closed is closed ───────────────────────────────────
+//
+// From a real plan. Four walls round a room, plainly drawn, and no area label,
+// no room in the count, nothing on screen to say why: two of the walls stopped
+// 5 mm short of the wall they met. The plate is 4.875 m wide, so its walls sit
+// at x 10.065 while the 1 cm grid offers 10.06 and 10.07 — an end drawn up to
+// that wall lands next to it, not on it, and the region leaks out through a gap
+// nobody can see.
+{
+  const room = P.freshRoom("Gap", 4.875, 6, 2.6);
+  room.origin = { x: 0, z: 0 };
+  room.canvas = { width: 25, length: 25 };
+  room.grid = "oneCentimeter";
+  // A partition across the room, stopping 5 mm short of each side wall.
+  room.walls.push({ id: "part", start: P.point(0.005, 3), end: P.point(4.87, 3) });
+  P.sanitize(room);
+
+  const regions = P.detectRooms(room);
+  check("a partition drawn just short of the walls still divides the room",
+    regions.length === 2, `${regions.length} regions`);
+  check("and both halves are measured",
+    P.roomCaptions(room, 0.2, 0.06).length === 2);
+  const part = room.walls.find(w => w.id === "part");
+  check("the gap is closed, not papered over",
+    Math.abs(part.start.x - 0) < 1e-6 && Math.abs(part.end.x - 4.875) < 1e-6,
+    `${part.start.x} .. ${part.end.x}`);
+
+  // A gap wide enough to be a doorway is left alone: that is a decision.
+  const doorway = P.freshRoom("Doorway", 4.875, 6, 2.6);
+  doorway.origin = { x: 0, z: 0 };
+  doorway.canvas = { width: 25, length: 25 };
+  doorway.walls.push({ id: "part", start: P.point(0.9, 3), end: P.point(4.875, 3) });
+  P.sanitize(doorway);
+  const stub = doorway.walls.find(w => w.id === "part");
+  check("a gap wide enough to walk through is not closed",
+    Math.abs(stub.start.x - 0.9) < 1e-6, `${stub.start.x}`);
+  check("and that room is still one space", P.detectRooms(doorway).length === 1);
+
+  // Healing settles: loading a plan twice must give the same plan back.
+  const once = P.parseRoom(P.serializeRoom(room));
+  const twice = P.parseRoom(P.serializeRoom(once));
+  check("a healed plan comes back the same way every time",
+    P.serializeRoom(once) === P.serializeRoom(twice));
+
+  // Across the wall only, never along it: closing a gap must not tilt a wall.
+  const skew = P.freshRoom("Skew", 6, 6, 2.6);
+  skew.origin = { x: 0, z: 0 };
+  skew.canvas = { width: 25, length: 25 };
+  skew.walls.push({ id: "part", start: P.point(0.008, 3), end: P.point(5.99, 3) });
+  P.sanitize(skew);
+  const healed = skew.walls.find(w => w.id === "part");
+  check("a healed wall is still square",
+    Math.abs(healed.start.z - healed.end.z) < 1e-6,
+    `${healed.start.z} vs ${healed.end.z}`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
