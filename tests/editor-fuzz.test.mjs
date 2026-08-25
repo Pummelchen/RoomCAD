@@ -585,6 +585,93 @@ for (const name of EXPECTED) {
   check("locking them again holds this one still", store.wallIsLocked(wall.id));
 }
 
+// ── The area label, while you are working on the wall ────────────────────
+//
+// Reported as "I still do not get realtime room m² labels when I drag a wall
+// to resize a room". The label was being recomputed on every step of the drag
+// — that part worked — but it is placed in the emptiest part of the ROOM, and
+// when you have zoomed in on the wall you are dragging, the emptiest part of
+// the room is off the side of the screen. So the room showed no area at all,
+// at exactly the moment the number is what you are dragging towards.
+{
+  store.room = P.freshRoom("Big", 12, 9, 2.6);
+  P.centerRoom(store.room);
+  P.sanitize(store.room);
+  // Fitted first: six hundred random gestures have left the view wherever they
+  // left it, and "with the whole room in view" has to actually be true for the
+  // first of these checks to mean anything.
+  editor.fit();
+  editor.draw();
+  const first = (editor._captions || [])[0];
+  check("a closed room has an area label", !!first, `${(editor._captions || []).length}`);
+  check("and it reads the floor it encloses",
+    first && Math.abs(first.area - 12 * 9) < 0.5, first ? `${first.area}` : "none");
+
+  // Whole room in view: the label stays where the layout put it.
+  const ideal = editor.screen({ x: first.x, z: first.z });
+  const placed = editor.visibleCaptionSpot(first);
+  check("with the whole room in view the label stays in its chosen spot",
+    placed && Math.abs(placed.x - ideal.x) < 0.01 && Math.abs(placed.y - ideal.y) < 0.01);
+
+  // Zoomed in on one corner, the way you do to drag a wall to a measurement.
+  const savedScale = editor.scale;
+  const savedOrigin = { ...editor.origin };
+  const o = P.roomOrigin(store.room);
+  editor.scale = 200;
+  const corner = editor.screen({ x: o.x + 0.5, z: o.z + 0.5 });
+  editor.origin = { x: editor.origin.x - corner.x + 100, y: editor.origin.y - corner.y + 100 };
+  editor.draw();
+  const zoomed = (editor._captions || [])[0];
+  const off = editor.screen({ x: zoomed.x, z: zoomed.z });
+  const onScreen = p => p.x >= 0 && p.y >= 0
+    && p.x <= dom.canvas.width && p.y <= dom.canvas.height;
+  check("zoomed in, the chosen spot really is off the screen", !onScreen(off),
+    `${off.x.toFixed(0)},${off.y.toFixed(0)} on ${dom.canvas.width}x${dom.canvas.height}`);
+  const shown = editor.visibleCaptionSpot(zoomed);
+  check("so the label is drawn on the part of the room you can see",
+    shown && onScreen(shown), shown ? `${shown.x.toFixed(0)},${shown.y.toFixed(0)}` : "not drawn");
+
+  // And that is where it ACTUALLY lands on the canvas. Asking the method where
+  // it would go says nothing about whether the drawing asks it.
+  {
+    const ctx = dom.canvas.getContext("2d");
+    ctx.calls.length = 0;
+    editor.draw();
+    const written = ctx.calls.filter(c => c.name === "fillText" && /m²$/.test(String(c.args[0])));
+    check("the area is written on the canvas", written.length > 0, `${written.length} labels`);
+    const offCanvas = written.filter(c => !onScreen({ x: c.args[1], y: c.args[2] }));
+    check("and every one of them lands on the canvas", offCanvas.length === 0,
+      offCanvas.map(c => `${c.args[0]} at ${c.args[1].toFixed(0)},${c.args[2].toFixed(0)}`).join("; "));
+  }
+
+  // Scrolled off the room entirely: no label rather than one at the edge.
+  editor.origin = { x: editor.origin.x - 6000, y: editor.origin.y - 6000 };
+  editor.draw();
+  const away = (editor._captions || [])[0];
+  check("with none of the room in view there is no label",
+    !away || !editor.visibleCaptionSpot(away));
+
+  editor.scale = savedScale;
+  editor.origin = savedOrigin;
+
+  // And the number keeps up with the wall.
+  store.outsideWallsFree = true;
+  const wall = store.room.walls[0];
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    store.moveWall(wall.id, 0, -0.25);
+    editor.draw();
+    const c = (editor._captions || [])[0];
+    if (c) seen.push(c.area);
+  }
+  check("the label is recomputed at every step of a wall drag",
+    seen.length === 4 && new Set(seen.map(a => a.toFixed(2))).size === 4,
+    seen.map(a => a.toFixed(1)).join(" -> "));
+  check("and follows the wall in one direction",
+    seen.every((a, i) => i === 0 || a > seen[i - 1]), seen.map(a => a.toFixed(1)).join(" -> "));
+  store.outsideWallsFree = false;
+}
+
 // ── Dragging a public area ───────────────────────────────────────────────
 //
 // It was settled against its neighbours on every step of the drag, and any

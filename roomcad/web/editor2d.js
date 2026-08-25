@@ -1396,7 +1396,8 @@ export class Editor2D {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     for (const cap of this._captions) {
-      const c = this.screen({ x: cap.x, z: cap.z });
+      const c = this.visibleCaptionSpot(cap);
+      if (!c) continue;
       const text = cap.area.toFixed(1) + " m²";
       const w = ctx.measureText(text).width;
       const box = { x: c.x - w / 2 - 5, y: c.y - CAPTION_PX * 0.72, w: w + 10, h: CAPTION_PX * 1.44 };
@@ -1414,6 +1415,42 @@ export class Editor2D {
 
   /// Everything a caption's position depends on: the walls and doors that
   /// define the rooms, and the things it has to avoid.
+  /// Where to draw a room's area so it can actually be read.
+  ///
+  /// The caption belongs in the emptiest part of the room, and that is where it
+  /// goes while the room fits on screen. Zoom in on one wall to drag it to a
+  /// measurement — which is exactly when the number matters — and that spot is
+  /// somewhere off the side of the screen, so the room shows no area at all.
+  ///
+  /// So: the chosen spot if it is visible, otherwise the middle of the largest
+  /// piece of that room's floor that IS visible. Null when none of it is.
+  visibleCaptionSpot(cap) {
+    const margin = 46;
+    const ideal = this.screen({ x: cap.x, z: cap.z });
+    const onScreen = p => Number.isFinite(p.x) && Number.isFinite(p.y)
+      && p.x >= margin && p.y >= margin
+      && p.x <= this.canvas.width - margin && p.y <= this.canvas.height - margin;
+    if (onScreen(ideal)) return ideal;
+    if (!cap.rects || !cap.rects.length) return null;
+
+    // The rooms are rectilinear, so the visible part of each rectangle is a
+    // rectangle too — worked out on screen, where the viewport is, rather than
+    // in plan coordinates, which the rotation would have to be undone for.
+    let best = null;
+    for (const r of cap.rects) {
+      const a = this.screen({ x: r.x, z: r.z });
+      const b = this.screen({ x: r.x + r.w, z: r.z + r.l });
+      const x0 = Math.max(Math.min(a.x, b.x), margin);
+      const x1 = Math.min(Math.max(a.x, b.x), this.canvas.width - margin);
+      const y0 = Math.max(Math.min(a.y, b.y), margin);
+      const y1 = Math.min(Math.max(a.y, b.y), this.canvas.height - margin);
+      if (!(x1 > x0 && y1 > y0)) continue;
+      const seen = (x1 - x0) * (y1 - y0);
+      if (!best || seen > best.seen) best = { seen, x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    }
+    return best ? { x: best.x, y: best.y } : null;
+  }
+
   captionStamp(room) {
     const walls = room.walls.map(w => `${w.start.x},${w.start.z},${w.end.x},${w.end.z}`).join(";");
     const doors = room.doors.map(d => d.wallID).join(";");

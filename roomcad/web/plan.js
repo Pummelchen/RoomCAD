@@ -1274,7 +1274,11 @@ export function roomCaptions(room, boxW, boxH) {
     if (publicCoverage(room, region) > 0.6) continue;
     const spot = captionSpot(room, region, boxW, boxH);
     if (!spot) continue;
-    out.push({ area: region.area, x: spot.x, z: spot.z, clearance: spot.score });
+    // The room's own floor travels with the caption. The spot is the emptiest
+    // place in the WHOLE room, which is where the label belongs when you can
+    // see the whole room — and nowhere near you when you are zoomed in on one
+    // wall of it. The drawing needs the floor to put the label back on screen.
+    out.push({ area: region.area, x: spot.x, z: spot.z, clearance: spot.score, rects: region.rects });
   }
   return out;
 }
