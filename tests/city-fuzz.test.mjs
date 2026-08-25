@@ -611,20 +611,31 @@ for (const [w, l, label] of [
   //
   // The bound is set from measurement, not chosen, and the thing being measured
   // is random: what the traffic does is deliberately not the same twice, so the
-  // count is a draw rather than a number. Fourteen runs at the present size
-  // (480 vehicles, nine by nine) gave 19 to 58, mean 34, every contact between
-  // two MOVING vehicles — and a fifteenth, inside the full suite, gave 79. The
-  // fleet doubling did not move this: the old 240-vehicle city measured 24 to
-  // 55 over five runs.
+  // count is a draw rather than a number. Eight runs at 680 vehicles gave 54 to
+  // 96, mean 75, every contact between two MOVING vehicles — and one inside the
+  // full suite gave 123, which is the same pattern as before: the suite draws
+  // from the same distribution and lands high.
   //
-  // A tolerance inside that spread is not a contract, it is a coin toss. The
-  // previous ceiling of 75 sat just under the tail and failed on the 79. What
+  // It moves with the fleet, and faster than the fleet does. At 480 vehicles
+  // the same eight runs gave 19 to 58, mean 34. Forty per cent more traffic on
+  // the same grid roughly doubled it, which is what contacts driven by density
+  // do rather than a defect.
+  //
+  // A tolerance inside that spread is not a contract, it is a coin toss. What
   // this really guards is a change that makes contacts ROUTINE: when parking
-  // pulled vehicles diagonally across occupied bays it was 182, and when a
-  // moving leader was credited with room it had not vacated yet it was the
-  // same. So the ceiling goes above the observed tail and stays well below
-  // that. It is a ceiling, not a target — the mean is what to watch.
-  const CONTACT_CEILING = 120;
+  // pulled vehicles diagonally across occupied bays it was 182 on a city a
+  // third this size, and when a moving leader was credited with room it had not
+  // vacated yet it was the same. So the ceiling goes above the observed tail
+  // and stays well below that. It is a ceiling, not a target — the mean is what
+  // to watch.
+  const CONTACT_CEILING = 190;
+  // And the calibration says what it was calibrated ON. Change the fleet and
+  // this fails immediately with a reason, instead of the ceiling quietly
+  // becoming wrong and the next unrelated run taking the blame — which is
+  // exactly what happened when the fleet went from 480 to 680.
+  check("the contact ceiling still matches the fleet it was measured for",
+    FLEET_SIZE === 680,
+    `measured at 680 vehicles, the city now has ${FLEET_SIZE} — re-measure and reset CONTACT_CEILING`);
   check("vehicles almost never end up inside one another",
     overlapping <= CONTACT_CEILING,
     `${overlapping} contacts in 15 minutes`
