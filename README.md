@@ -1,7 +1,7 @@
 # RoomCAD
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/RoomCAD?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/RoomCAD/stargazers)
-[![Visitors (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/RoomCAD/main/.github/traffic.json)](https://github.com/Pummelchen/RoomCAD)
+[![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/RoomCAD/main/.github/traffic.json)](https://github.com/Pummelchen/RoomCAD)
 [![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/RoomCAD?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/RoomCAD/commits/main)
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
