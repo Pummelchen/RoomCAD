@@ -384,5 +384,38 @@ check("the catch-up is bounded, so a slow frame cannot spiral",
 check("the world is never handed a whole frame as one step",
   !/this\.world\.timestep = Math\.max\(0, Math\.min\(dt/.test(walk));
 
+// — The frame chain stops when the 3D view is not on screen ————————————
+// setMode() only hid the container, so after a single visit to 3D the renderer,
+// Rapier and the whole traffic model kept running at 60 fps behind the 2D
+// editor, with nothing on screen to show for it. Walker3D is uninstantiable
+// headless (WebGPU), so what is checked here is the shape of the chain: frames
+// begin only when they are wanted, ready and not already pending, and the loop
+// reschedules itself only while they are wanted.
+{
+  check("the walkthrough can be paused and resumed",
+    /^\s*pause\(\) \{/m.test(walk) && /^\s*resume\(\) \{/m.test(walk));
+  check("frames only start when they are wanted, ready and not already pending",
+    /startFrames\(\) \{[\s\S]{0,200}if \(!this\.running \|\| !this\.ready \|\| this\.raf\) return;/.test(walk));
+  check("the loop reschedules itself only while frames are wanted",
+    /if \(this\.running && !this\.raf\) this\.raf = requestAnimationFrame/.test(walk));
+  check("resuming twice does not start a second chain",
+    /resume\(\) \{[\s\S]{0,200}if \(this\.running\) return;/.test(walk));
+  check("a paused walkthrough is not left mid-frame",
+    /pause\(\) \{[\s\S]{0,200}cancelAnimationFrame\(this\.raf\)/.test(walk));
+  // Building before the image-based environment exists produced a whole room
+  // that start() then threw away and built again, without a frame drawn.
+  check("the room is not built before there is an environment to light it",
+    /build\(room, resetCamera = false\) \{[\s\S]{0,700}if \(!this\.environment\) return;/.test(walk));
+  check("the sky dome is sized from the city's reach, not a constant",
+    /cityReach\(bounds\)/.test(walk) && /Math\.min\(this\.cityReach\(building\), SKY_DOME_MAX\)/.test(walk));
+  check("and it follows the viewer, so there is no edge to walk to",
+    /followSky\(\)/.test(walk) && /skyMesh\.position\.set\([\s\S]{0,120}camera\.position\.x/.test(walk));
+  // Lights are not meshes: clearing the scene left their shadow maps, and one
+  // point light owns a 1024² cube map.
+  check("a rebuilt scene releases its lights' shadow maps",
+    /if \(node\.isLight\) this\.disposeLight\(node\)/.test(walk)
+    && /disposeLight\(light\) \{[\s\S]{0,160}shadow\.dispose\(\)/.test(walk));
+}
+
 console.log(`${passed} passed, ${failed} failed — city + 3D environment contracts`);
 if (failed) process.exit(1);
