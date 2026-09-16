@@ -897,10 +897,29 @@ for (const name of EXPECTED) {
   editor.draw();
   const zoomed = (editor._captions || [])[0];
   const off = editor.screen({ x: zoomed.x, z: zoomed.z });
-  const onScreen = p => p.x >= 0 && p.y >= 0
-    && p.x <= dom.canvas.width && p.y <= dom.canvas.height;
+
+  // A device-pixel backing store, the way a real high-DPI display has one: the
+  // canvas is physically twice the size of its CSS box. Without this the two
+  // spaces are equal and any check of "is it on screen" passes whichever one it
+  // uses — which is exactly how this file came to compare CSS-pixel coordinates
+  // against `canvas.width` and stay green. The source had the same bug; this is
+  // the test for it.
+  const cssW = dom.canvas.clientWidth;
+  const cssH = dom.canvas.clientHeight;
+  const savedBacking = { w: dom.canvas.width, h: dom.canvas.height };
+  dom.canvas.width = cssW * 2;
+  dom.canvas.height = cssH * 2;
+  check("this check runs against a high-DPI canvas, so it is not vacuous",
+    dom.canvas.width !== cssW && dom.canvas.height !== cssH,
+    `backing ${dom.canvas.width}x${dom.canvas.height}, css ${cssW}x${cssH}`);
+
+  // `screen()` answers in CSS pixels — that is the space the canvas is DRAWN in,
+  // and therefore the space anything asking "is this inside the canvas" has to
+  // use. The device-pixel backing store is twice as big and would wave through a
+  // label that lands off the side.
+  const onScreen = p => p.x >= 0 && p.y >= 0 && p.x <= cssW && p.y <= cssH;
   check("zoomed in, the chosen spot really is off the screen", !onScreen(off),
-    `${off.x.toFixed(0)},${off.y.toFixed(0)} on ${dom.canvas.width}x${dom.canvas.height}`);
+    `${off.x.toFixed(0)},${off.y.toFixed(0)} on ${cssW}x${cssH}`);
   const shown = editor.visibleCaptionSpot(zoomed);
   check("so the label is drawn on the part of the room you can see",
     shown && onScreen(shown), shown ? `${shown.x.toFixed(0)},${shown.y.toFixed(0)}` : "not drawn");
@@ -927,6 +946,8 @@ for (const name of EXPECTED) {
 
   editor.scale = savedScale;
   editor.origin = savedOrigin;
+  dom.canvas.width = savedBacking.w;
+  dom.canvas.height = savedBacking.h;
 
   // And the number keeps up with the wall.
   store.outsideWallsFree = true;

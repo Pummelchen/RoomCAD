@@ -5,7 +5,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import * as RAPIER from "./lib/rapier.mjs";
 import * as P from "./plan.js";
 import { store } from "./store.js";
-import { City, seedFromString, BLOCK_SIZE, SIDEWALK, ROAD_WIDTH, GRID_RADIUS } from "./city.js";
+import { City, seedFromString } from "./city.js";
 import { playPlop } from "./audio.js";
 
 // WebGPU post-processing (TSL nodes).
@@ -378,15 +378,14 @@ export class Walk3D {
     };
   }
 
-  /// How far the city reaches from its own centre, worked out exactly the way
-  /// city.js lays the grid out: the room's block, blown up to hold the
-  /// building, then GRID_RADIUS blocks of street in every direction plus the
-  /// outer pavement. The sky dome has to be bigger than this, or the player
-  /// walks out from under it.
+  /// How far the city reaches from its own centre.
+  ///
+  /// The sky dome has to be bigger than this, or the player walks out from
+  /// under it and sees its back faces from the wrong side. The arithmetic
+  /// belongs to city.js — it is the same grid it lays out — so it is asked for
+  /// there rather than repeated here, where it drifted out of step once already.
   cityReach(bounds) {
-    const block = Math.max(BLOCK_SIZE, bounds.width + SIDEWALK * 4, bounds.length + SIDEWALK * 4);
-    const span = block + ROAD_WIDTH;
-    return GRID_RADIUS * span + block / 2 + ROAD_WIDTH;
+    return City.reachFor(bounds);
   }
 
   /// WebGPU + Rapier are async; build the scene and start once both are ready.

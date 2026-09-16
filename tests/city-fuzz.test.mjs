@@ -32,8 +32,27 @@ const {
   FLEET_SIZE,
   REVERSE_ANGLE, REVERSE_RUN,
   UNLOAD_MIN, UNLOAD_MAX, BUS_DWELL_MIN, BUS_DWELL_MAX, BUS_STOPS_PER_BLOCK,
-  BUS_STOP_OFFSET, RESERVE_TTL,
+  BUS_STOP_OFFSET, RESERVE_TTL, setTransportRandom,
 } = await loadWebModule("city.js");
+
+// The traffic is driven by real `Math.random()` in production, on purpose — no
+// two reloads move identically. That makes it a coin toss in a GATE: this file
+// drives twenty cities for tens of thousands of frames and asserts that no
+// vehicle is ever teleported, leaves the grid, or needs the safety net, and a
+// rare event fires on one run in several. A gate that fails on a busy machine
+// for no reason is worse than no gate, because it teaches everyone to re-run it.
+//
+// Seeding the swap makes one drive repeatable, so a failure here is a fact about
+// the code rather than about the machine. This is the same fix, and the same
+// generator, as city-physics.test.mjs. Production is untouched: the app never
+// calls setTransportRandom, so the traffic stays unrepeatable where it should be.
+let driveSeed = 0x9e3779b9;
+setTransportRandom(() => {
+  driveSeed = (driveSeed + 0x6D2B79F5) | 0;
+  let t = Math.imul(driveSeed ^ (driveSeed >>> 15), 1 | driveSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+});
 
 // Derived rather than exported: the carriageway sits one kerb below the
 // pavement, and the pavement is the room's own floor datum.
@@ -1902,7 +1921,10 @@ for (const [w, l, label] of [
     v.speed = 0;
     v.turn = NEAR_SIDE_TURN;
     v.mustTurn = false;
-    v.turnDecidedAt = junction.index;
+    // The junction's identity for THIS vehicle — road index AND direction —
+    // because the model records the decision that way. The bare index is not a
+    // junction, which was the bug that let a vehicle drive off the grid.
+    v.turnDecidedAt = city._junctionId(v.axis, v.dir, junction.index);
     const blocker = { ...v, id: "blocker", arc: null, speed: 0, length: 4.4, stop: null };
     if (target.newAxis === "x") blocker.x = target.exitProgress * target.newDir;
     else blocker.z = target.exitProgress * target.newDir;

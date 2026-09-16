@@ -69,13 +69,6 @@ export class Editor2D {
 
   // MARK: Coordinate helpers
 
-  /// The plan dimensions as seen on screen under the current rotation.
-  displaySize() {
-    const { width, length } = P.canvasOf(store.room);
-    const rotated = store.rotation === 90 || store.rotation === 270;
-    return rotated ? { width: length, height: width } : { width, height: length };
-  }
-
   screen(p, rotation = store.rotation) {
     const { width: w, length: l } = P.canvasOf(store.room);
     let dx = p.x;

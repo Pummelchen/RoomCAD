@@ -2111,14 +2111,6 @@ export function syncExtent(room) {
 /// The shortest side a generated room may have.
 export const MIN_ROOM_DIM = 1.60;
 
-/// How wide a carved hallway is.
-///
-/// Wide enough for two people to pass and for furniture to be carried through,
-/// and the width a corridor is drawn at in a domestic plan. It is only carved
-/// when there is nothing else for rooms to open onto — floor the user has
-/// already marked as circulation is used as it is.
-export const CORRIDOR_WIDTH = 1.20;
-
 /// How much frontage onto the circulation a room needs before it counts as
 /// having a way in. A standard door is 90 cm; anything less than that and the
 /// door step cannot place one however much it would like to.
@@ -2611,25 +2603,6 @@ function connectedParts(grid, cells) {
     parts.push(part);
   }
   return parts;
-}
-
-/// How much wall a piece of floor has facing circulation.
-///
-/// This is what limits how many rooms can be cut from it: every room needs its
-/// own stretch of that frontage to put a door in. A piece touching the hallway
-/// only at one corner can hold exactly one room however big it is.
-function frontageLength(grid, cells, circulation) {
-  const { nx, nz, at, xs, zs } = grid;
-  let total = 0;
-  for (const [i, j] of cells) {
-    const dx = xs[i + 1] - xs[i];
-    const dz = zs[j + 1] - zs[j];
-    if (i > 0 && circulation[at(i - 1, j)] && !stepBlocked(grid, i, j, i - 1, j)) total += dz;
-    if (i + 1 < nx && circulation[at(i + 1, j)] && !stepBlocked(grid, i, j, i + 1, j)) total += dz;
-    if (j > 0 && circulation[at(i, j - 1)] && !stepBlocked(grid, i, j, i, j - 1)) total += dx;
-    if (j + 1 < nz && circulation[at(i, j + 1)] && !stepBlocked(grid, i, j, i, j + 1)) total += dx;
-  }
-  return total;
 }
 
 /// Puts doors in until you can walk from any space on the plan to any other.
@@ -3372,8 +3345,6 @@ export function autoLayoutRooms(room, opts = {}) {
 
   const doors = [];
   const winList = [];
-  const hasDoor = new Set((room.doors || []).map(d => d.wallID));
-  const hasWindow = new Set((room.windows || []).map(w => w.wallID));
 
   // Rooms with the least choice are served first, so a room whose only way in
   // is one short wall is not left out because a neighbour took it.
@@ -3395,7 +3366,7 @@ export function autoLayoutRooms(room, opts = {}) {
     for (const width of DOOR_WIDTHS) {
       for (const c of walls) {
         const d = opening(c.wall, width, c.range);
-        if (d) { doors.push(d); hasDoor.add(c.wall.id); return true; }
+        if (d) { doors.push(d); return true; }
       }
     }
     return false;
@@ -3430,7 +3401,7 @@ export function autoLayoutRooms(room, opts = {}) {
     for (let k = 0; k < kept.length; k++) {
       for (const c of [...access[k].outside].sort((a, b) => b.length - a.length)) {
         const win = opening(c.wall, 1.0, c.range);
-        if (win) { winList.push(win); hasWindow.add(c.wall.id); break; }
+        if (win) { winList.push(win); break; }
       }
     }
   }
@@ -3531,8 +3502,6 @@ export function autoLayoutRooms(room, opts = {}) {
     // report uses when no size was asked for.
     targetArea: clean(freeArea / roomCount),
     requested: { count, area: Number(opts.area) > 0 ? Number(opts.area) : null },
-    score: 0,
-    alternatives: 1,
   };
 }
 

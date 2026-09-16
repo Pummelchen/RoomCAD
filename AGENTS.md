@@ -59,7 +59,7 @@ Python with no `requirements.txt`, `pyproject.toml` or `setup.py`.
 ./tests/run.sh                # the whole suite; the real gate, exits non-zero on failure
 ./tests/run.sh --fast         # skips the four slow fuzz files, for iterating
 ./tests/run.sh plan-editing   # just the files whose name matches
-ROOMCAD_TEST_TIMEOUT=300 ./tests/run.sh   # seconds per file (default 900)
+ROOMCAD_TEST_TIMEOUT=300 ./tests/run.sh   # seconds per file (default 1800)
 
 ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
   python3 roomcad/server/server.py &        # API on 127.0.0.1:8078
@@ -73,7 +73,7 @@ the runner totals them.
 
 ## Identity
 
-`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.6";`. It is
+`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.7";`. It is
 the only release source, and it is **enforced** by `tests/version.test.mjs` — the
 footer must render it, `app.js` must import it, and `app.js`/`index.html` must not
 hard-code a `vX.Y` tag.
@@ -97,6 +97,15 @@ Several other tests make **source contracts** — assertions that grep for exact
 strings in the source. A rename can fail one without any behaviour changing, so read
 the assertion before "fixing" it.
 
+**`tests/boot.test.mjs` is a boot contract.** It walks the app's real import graph
+from the two entry modules, resolves every specifier through the import map in
+`index.html`, checks that every element id the code looks up exists in the page, and
+refuses a module nothing loads. Those are the failures that leave every other test
+green and the site a blank page. It needs no browser and no dependencies — deliberately,
+because this repository has no `package.json` and a headless browser would change that.
+It is **not** a substitute for loading the page: it proves the graph and the DOM
+contract, not that anything renders.
+
 ## Traps
 
 - **`serve.sh` downloads the Caddy binary into `roomcad/web/bin/` on first run**, so it
@@ -104,6 +113,12 @@ the assertion before "fixing" it.
   GitHub release JSON **in the shell, not through `grep … | head -1`** — `head` exits
   early, `grep` takes SIGPIPE, and `set -o pipefail` then aborts the first run before
   anything is downloaded. `install-caddy.sh` documents the same trap.
+- **Neither installer runs an unverified download.** Both fetch the `*_checksums.txt`
+  Caddy publishes for the release they resolved and check the archive's published
+  SHA-512 before extracting it. A mismatch, a missing entry, or a machine with no
+  hash tool **aborts without executing anything** — the check never degrades into a
+  skip. `install-caddy.sh` also defaults to installing for RoomCAD only: it must not
+  write into another project's directory, which is why the default is a single path.
 - Start only `serve.sh` and the app still loads, but every server-side feature
   reports "server not reachable": `web/Caddyfile` proxies `/api/*` to
   `127.0.0.1:8078`.
@@ -136,6 +151,15 @@ the assertion before "fixing" it.
 - **`password_matches()` compares UTF-8 bytes, not str.** `secrets.compare_digest`
   raises `TypeError` on a non-ASCII `str`, which used to kill the login handler
   *before* the failure was counted — so those attempts escaped the throttle entirely.
+- **State-changing requests are refused unless they are same-origin, and live streams
+  are capped.** `SameSite=Lax` already stops the cookie riding a cross-site POST, so
+  the `Origin`/`Referer` check in `_require_same_origin()` is a second line rather
+  than the only one — but a request with **no** `Origin` at all must still be allowed,
+  because curl and the test suite send none. `MAX_WATCHERS_TOTAL` and
+  `MAX_WATCHERS_PER_SESSION` bound the SSE streams: a stream pins a thread, a socket
+  and a queue, so the global cap protects the process and the per-session cap stops
+  one client starving the rest. A refused stream answers 503 with the usual JSON
+  envelope, before the SSE headers go out, and registers nothing.
 - **Bodies go through `_read_json_object()`, never `_read_json()`.** The latter
   happily returns a list or a scalar, and every caller then reached for `.get(...)`.
 - **No shadow caster may be given a negative depth bias** — not the room's point
@@ -159,6 +183,22 @@ the assertion before "fixing" it.
   square of the distinct coordinates. When it gives up it returns no rooms — which
   silently turns the floor area into a bounding box and unlocks every wall — so
   anything that shows a measurement must read that flag.
+- **A recorded junction decision names a junction, and an index is not one.**
+  `turnDecidedAt` holds `_junctionId(axis, dir, index)` — the road **and the
+  direction the vehicle is crossing it** — because with ten roads and two axes,
+  index 0 names four different junctions. Holding the bare index meant a decision
+  to carry straight on through index 0 one way still counted as "already decided"
+  when the vehicle came back to index 0 the other way, where carrying on is not a
+  road: a bus drove 13 m off the edge of the city at full cruise. Anything that
+  overrides `turn`/`mustTurn` **must clear `turnDecidedAt`** — the
+  stop-for-a-space path did not — and `_decideTurn` refuses to act on a "carry
+  on" record at a junction with no road ahead. `tests/city-turns.test.mjs` pins
+  all three, and its last section drives the real city.
+- **A gate that drives the traffic must seed its randomness.** `city.js` uses real
+  `Math.random()` for driving in production, deliberately, so a fuzz that drives
+  it unseeded is a coin toss that fails on a busy machine. `city-fuzz`,
+  `city-physics` and `city-turns` all seed it with `setTransportRandom()`; seed
+  any new drive the same way, and leave production alone — the app never calls it.
 
 ## Releasing
 

@@ -184,6 +184,26 @@ returns 401 without a valid session. The frontend `login.js` just drives the
 form and calls `/api/login`. If the env file is missing, the service starts but
 logins are disabled (fail-closed).
 
+### Two more lines behind the cookie
+
+The cookie is `HttpOnly; SameSite=Lax`, which already stops it riding a
+cross-site `POST`. On top of that, `POST` and `DELETE` must be **same-origin**:
+an `Origin` header, or a `Referer` standing in for one, must name the host the
+request was actually made to, or the API answers 403. A request carrying
+neither header is allowed — `curl`, the test suite and a plain same-origin form
+post send none, and a browser making a cross-site `POST` always sends `Origin`.
+The check covers `/api/login` deliberately: a cross-site login can force a
+session onto a visitor and spend the login throttle.
+
+Live collaboration streams over SSE (`GET /api/watch/<name>`), and each stream
+pins a thread, a socket and a queue, so the number of them is bounded:
+`MAX_WATCHERS_TOTAL` (256) protects the process, and `MAX_WATCHERS_PER_SESSION`
+(16) stops one client claiming the whole pool and starving everyone else. A
+refused stream gets a clean `503` with the usual JSON error envelope, before the
+SSE headers are written, and registers nothing. `request_queue_size` is raised
+from socketserver's default of 5, which is smaller than one browser opening a
+stream per tab can produce.
+
 ## Restoring from a lost VPS
 
 1. Provision a Linux host with Python 3 (standard library only) and the host's

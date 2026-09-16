@@ -985,6 +985,20 @@ export class City {
     ].join("|");
   }
 
+  /// How far the neighbourhood reaches from its own centre, for a building of
+  /// this size.
+  ///
+  /// A public fact rather than a local of build(), because something outside
+  /// this file needs it: the sky dome has to contain everywhere the player can
+  /// walk, and a dome sized from anything else — a fixed radius, say — leaves
+  /// the outermost streets outside it, where the sky is seen from the wrong side
+  /// of its back faces. walk3d asks for it here rather than repeating the
+  /// arithmetic, so the two cannot drift apart.
+  static reachFor(bounds) {
+    const block = Math.max(BLOCK_SIZE, bounds.width + SIDEWALK * 4, bounds.length + SIDEWALK * 4);
+    return GRID_RADIUS * (block + ROAD_WIDTH) + block / 2 + ROAD_WIDTH;
+  }
+
   /// Builds the neighbourhood around `bounds`. `floorLift` is how high the
   /// room sits, so the block it belongs to gets a tower of that height under
   /// it and the room never appears to float.
@@ -998,7 +1012,7 @@ export class City {
     const span = block + ROAD_WIDTH;
     const cx = bounds.centerX;
     const cz = bounds.centerZ;
-    const reach = GRID_RADIUS * span + block / 2 + ROAD_WIDTH;
+    const reach = City.reachFor(bounds);
     // The building's plot, kept clear of paving. The edge tucks a few
     // centimetres under the wall line so the pavement meets the building
     // without either a gap or a slab poking up inside a ground-floor room.
@@ -2571,6 +2585,25 @@ export class City {
         this._junctionKeys[ix * this.roadZ.length + iz] = `${ix}|${iz}`;
       }
     }
+    // The same treatment for the turn-control keys. `turnsAllowedAt()` asks
+    // "may this vehicle go?" for every vehicle every frame, and it used to build
+    // `${axis}|${dir}|${ix}|${iz}` to do it — one string per vehicle per frame
+    // for an answer that only changes every two seconds. There are two axes, two
+    // directions and as many junctions as there are cells, so the whole key space
+    // is small and made once. The strings are identical to the ones built by
+    // hand in the turn review, so both maps share them and a caller that builds
+    // its own still finds the same entry.
+    const junctions = this.roadX.length * this.roadZ.length;
+    this._turnKeys = new Array(4 * junctions);
+    for (let ix = 0; ix < this.roadX.length; ix++) {
+      for (let iz = 0; iz < this.roadZ.length; iz++) {
+        for (const axis of ["x", "z"]) {
+          for (const dir of [1, -1]) {
+            this._turnKeys[this._turnKeyIndex(axis, dir, ix, iz)] = `${axis}|${dir}|${ix}|${iz}`;
+          }
+        }
+      }
+    }
     this._startSignals();
     // A lane object per road per direction. Every lane exists even where no
     // vehicle starts, because a turn has to have somewhere to turn into.
@@ -2966,6 +2999,22 @@ export class City {
     return this._junctionKeys[ix * this.roadZ.length + iz];
   }
 
+  /// Where an (axis, direction, junction) turn-control key lives in the interned
+  /// table. Pure arithmetic, so the index and the string cannot disagree.
+  _turnKeyIndex(axis, dir, ix, iz) {
+    const which = (axis === "x" ? 0 : 1) * 2 + (dir < 0 ? 1 : 0);
+    return which * (this.roadX.length * this.roadZ.length) + ix * this.roadZ.length + iz;
+  }
+
+  /// The interned turn-control key. Falls back to building one for coordinates
+  /// off the grid, which the arithmetic index does not cover — a caller asking
+  /// about a junction that does not exist still gets a miss rather than a
+  /// collision with some other cell's answer.
+  _turnKey(axis, dir, ix, iz) {
+    const key = this._turnKeys[this._turnKeyIndex(axis, dir, ix, iz)];
+    return key !== undefined ? key : `${axis}|${dir}|${ix}|${iz}`;
+  }
+
   /// Who is waiting at each junction, and on which side.
   ///
   /// This is the realtime picture the controller runs on: every vehicle,
@@ -2981,7 +3030,7 @@ export class City {
     }
     for (const v of this.cars) {
       if (v.arc || v.stop) continue;
-      const junction = this._nextJunction(v);
+      const junction = this._nextJunction(v, this._junctionScratch(v));
       if (!junction || junction.distance > QUEUE_REACH) continue;
       const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
       const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
@@ -3135,9 +3184,44 @@ export class City {
     return best ? { follower: best, gap: bestGap } : null;
   }
 
+  /// A junction as a particular vehicle meets it: the road on the grid AND the
+  /// way the vehicle is crossing it.
+  ///
+  /// `turnDecidedAt` used to hold the bare road index, and an index is not a
+  /// junction. With ten roads and two axes, index 0 names four different
+  /// junctions, so a vehicle that decided to carry straight on through index 0
+  /// while heading one way still counted as "already decided" when it came back
+  /// to index 0 heading the other — where carrying on is not a road at all. It
+  /// went through the last junction and off the grid at full cruise, 13 m out,
+  /// until the safety net turned it round. Found by fuzzing; the seed that
+  /// reproduces it is recorded in the tracker.
+  ///
+  /// Direction is part of the identity, so this encodes all three parts as one
+  /// number: cheap to compare every frame, and impossible to collide with the
+  /// `-1` that means "nothing decided".
+  _junctionId(axis, dir, index) {
+    const which = (axis === "x" ? 0 : 1) * 2 + (dir < 0 ? 1 : 0);
+    return which * this.roadX.length + index;
+  }
+
+  /// A per-vehicle object for _nextJunction to fill in.
+  ///
+  /// The hot callers — the demand picture and the driver — run for every vehicle
+  /// every frame, and one returned object per vehicle per frame is some forty
+  /// thousand small allocations a second for values that are read immediately
+  /// and dropped. The callers that HOLD a result across a later call — the
+  /// two-second turn review, and the fuzz test — pass nothing and get a fresh
+  /// object, because a shared one would be overwritten under them.
+  _junctionScratch(v) {
+    return v._junction || (v._junction = { index: 0, coord: 0, distance: 0 });
+  }
+
   /// Distance from this vehicle's nose to the stop line of the next junction,
   /// plus which junction it is. Negative once it is inside the junction.
-  _nextJunction(v) {
+  ///
+  /// Pass `out` to fill a reusable object rather than allocate — see
+  /// _junctionScratch.
+  _nextJunction(v, out = null) {
     const coords = v.axis === "x" ? this.roadX : this.roadZ;
     const here = v.axis === "x" ? v.x : v.z;
     let bestIndex = -1;
@@ -3151,13 +3235,13 @@ export class City {
       }
     }
     if (bestIndex < 0) return null;
-    return {
-      index: bestIndex,
-      coord: coords[bestIndex],
-      // To the painted stop line, less the vehicle's own nose — so the
-      // queue pulls up where the paint says, leaving the crossing clear.
-      distance: bestDist - STOP_LINE_AT - v.length / 2,
-    };
+    const j = out || {};
+    j.index = bestIndex;
+    j.coord = coords[bestIndex];
+    // To the painted stop line, less the vehicle's own nose — so the queue
+    // pulls up where the paint says, leaving the crossing clear.
+    j.distance = bestDist - STOP_LINE_AT - v.length / 2;
+    return j;
   }
 
   // MARK: - Turn control
@@ -3255,7 +3339,7 @@ export class City {
               });
             }
             if (!moves.length) continue;
-            approaches.set(`${axis}|${dir}|${ix}|${iz}`, { axis, dir, ix, iz, moves });
+            approaches.set(this._turnKey(axis, dir, ix, iz), { axis, dir, ix, iz, moves });
           }
         }
       }
@@ -3276,7 +3360,7 @@ export class City {
       const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
       const approach = approaches.get(`${v.axis}|${v.dir}|${ix}|${iz}`);
       if (!approach) continue;
-      if (v.turnDecidedAt === junction.index) {
+      if (v.turnDecidedAt === this._junctionId(v.axis, v.dir, junction.index)) {
         const move = approach.moves.find(m => m.turn === v.turn);
         if (move) { move.demand++; move.seg.inbound++; }
         continue;
@@ -3349,7 +3433,7 @@ export class City {
   /// building the next one, so an undecided vehicle is credited to the turns it
   /// could actually take.
   _permits(approach, turn) {
-    const allow = this.turnControl.get(`${approach.axis}|${approach.dir}|${approach.ix}|${approach.iz}`);
+    const allow = this.turnControl.get(this._turnKey(approach.axis, approach.dir, approach.ix, approach.iz));
     if (!allow || !allow.has(turn)) return true;
     return allow.get(turn) === true;
   }
@@ -3358,7 +3442,7 @@ export class City {
   /// pole both read this, so what a driver is allowed to do and what the
   /// signal says cannot drift apart.
   turnsAllowedAt(axis, dir, ix, iz) {
-    return this.turnControl.get(`${axis}|${dir}|${ix}|${iz}`) || null;
+    return this.turnControl.get(this._turnKey(axis, dir, ix, iz)) || null;
   }
 
   _turnPermitted(v, junction, turn) {
@@ -3391,20 +3475,51 @@ export class City {
     if (v.stopTarget) {
       const last = this.roadX.length - 1;
       const onwards = junction.index + v.dir >= 0 && junction.index + v.dir <= last;
-      if (onwards) { v.turn = 0; v.mustTurn = false; return; }
+      if (onwards) {
+        // Carrying straight on, to the space it is pulling into.
+        //
+        // The junction decision it was holding is GONE, not merely overridden,
+        // which is why this clears `turnDecidedAt` as well. Leaving it recorded
+        // let a bus that had decided a compulsory turn at the edge of the grid
+        // pull in somewhere further in, keep the stale record, and then be told
+        // "already decided" when it came back to that same edge junction — where
+        // the stale decision was to carry straight on, and straight on is not a
+        // road. It went past the last junction and off the grid at full cruise
+        // until the safety net turned it round. Reproduced by fuzzing; the seed
+        // is recorded in the tracker.
+        v.turn = 0;
+        v.mustTurn = false;
+        v.turnDecidedAt = -1;
+        return;
+      }
     }
 
-    if (v.turnDecidedAt === junction.index) {
+    if (v.turnDecidedAt === this._junctionId(v.axis, v.dir, junction.index)) {
       // Already chosen — but the arrows are reviewed while it approaches, and a
       // driver whose exit has gone red picks another rather than queueing for a
       // turn they are not going to be allowed to make. Only while there is
       // still room to line up: changing your mind on the line is how a vehicle
       // ends up committed to a turn it has already driven past.
-      if (junction.distance < TURN_REVIEW_FROM) return;
-      if (this._turnPermitted(v, junction, v.turn)) return;
+      //
+      // A record is only worth keeping if it is a decision this junction can
+      // still act on, and "carry straight on" is not a decision anywhere there
+      // is no road straight on. A vehicle that arrives at the outermost
+      // junction holding one has nothing to act on, so it is treated as
+      // undecided and decides again below, where the compulsory turn is.
+      //
+      // Every writer clears the record when it overrides the decision — see the
+      // stop-for-a-space path, which is where this went wrong — but this is the
+      // reader's own guard, so the invariant holds here whatever a future
+      // writer forgets.
+      const lastRoad = this.roadX.length - 1;
+      const canCarryOn = junction.index + v.dir >= 0 && junction.index + v.dir <= lastRoad;
+      if (v.turn !== 0 || canCarryOn) {
+        if (junction.distance < TURN_REVIEW_FROM) return;
+        if (this._turnPermitted(v, junction, v.turn)) return;
+      }
       v.turnDecidedAt = -1;
     }
-    v.turnDecidedAt = junction.index;
+    v.turnDecidedAt = this._junctionId(v.axis, v.dir, junction.index);
     v.turn = 0;
     v.mustTurn = false;
 
@@ -3929,7 +4044,7 @@ export class City {
 
     // Stop at a red light, and start looking far enough ahead to do it
     // smoothly rather than by slamming on at the line.
-    const junction = this._nextJunction(v);
+    const junction = this._nextJunction(v, this._junctionScratch(v));
     if (junction) {
       this._decideTurn(v, junction);
       // A vehicle lining up for a space is already indicating for the kerb, and

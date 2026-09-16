@@ -11,6 +11,11 @@ Spawns the server on a random local port with a temp database and verifies:
   2. A newly connecting watcher receives the current draft on connect.
   3. POST /api/save clears the pending draft and bumps the version.
   4. A connected watcher receives a new draft pushed mid-stream.
+  5. Live streams are capped: past the cap the request is refused with the
+     JSON error envelope, nothing is registered, and a later stream is still
+     served once a slot frees up.
+  6. A cross-origin POST/DELETE (and login) is refused, a matching Origin is
+     accepted, and a request with no Origin at all is still accepted.
 
 Run:  python3 tests/server-live.test.py
 """
@@ -58,13 +63,15 @@ class SseReader(threading.Thread):
         self._stop.set()
 
 
-def request(port, method, path, body=None, cookie=""):
+def request(port, method, path, body=None, cookie="", extra_headers=None):
     """Returns (status, parsed_body, set_cookie)."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
     if cookie:
         headers["Cookie"] = cookie
+    if extra_headers:
+        headers.update(extra_headers)
     conn.request(method, path, data, headers)
     r = conn.getresponse()
     raw = r.read().decode()
@@ -74,6 +81,25 @@ def request(port, method, path, body=None, cookie=""):
         return r.status, json.loads(raw), set_cookie
     except json.JSONDecodeError:
         return r.status, raw, set_cookie
+
+
+def stream_status(port, name, cookie, extra_headers=None):
+    """How /api/watch answers, without waiting for the stream to finish.
+
+    An accepted stream is a 200 with no Content-Length, so reading it to EOF
+    would block until the next heartbeat — this only wants the status line and
+    any error body the refusal carried. Returns (status, body_text).
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {"Accept": "text/event-stream", "Cookie": cookie}
+    if extra_headers:
+        headers.update(extra_headers)
+    conn.request("GET", "/api/watch/" + name, headers=headers)
+    r = conn.getresponse()
+    status = r.status
+    body = r.read().decode() if r.getheader("Content-Length") else ""
+    conn.close()
+    return status, body
 
 
 def raw_request(port, method, path, body_bytes, headers):
@@ -609,6 +635,170 @@ def main():
           wait_for(lambda: "room1" not in server.WATCHERS, timeout=3.0)
           or not server.WATCHERS.get("room1"),
           f"{list(server.WATCHERS)}")
+
+    # ---- 5. Bounding live streams ------------------------------------------
+    # Every stream costs a thread, a socket and a queue, so an authenticated
+    # client must not be able to open unlimited ones. The caps are exercised
+    # with small values so the test does not have to open 256 connections; the
+    # code under test is the same either way.
+    wait_for(lambda: not server.WATCHERS, timeout=3.0)   # start from a clean pool
+    # getattr, not attribute access: a missing cap is one of the things this
+    # section is here to catch, and it has to be reported as a failed check
+    # rather than aborting the file before the counts are printed.
+    saved_per_session = getattr(server, "MAX_WATCHERS_PER_SESSION", 0)
+    saved_total = getattr(server, "MAX_WATCHERS_TOTAL", 0)
+    check("there are named caps on live streams",
+          saved_per_session > 0 and saved_total > 0,
+          f"per-session={saved_per_session} total={saved_total}")
+    check("one session's share cannot exceed the whole pool",
+          0 < saved_per_session <= saved_total,
+          f"per-session={saved_per_session} total={saved_total}")
+    cap_cookie = login(port)
+    try:
+        server.MAX_WATCHERS_PER_SESSION = 2
+        r1 = SseReader(port, "caproom", cap_cookie)
+        r1.start()
+        check("a stream within the per-session cap is served",
+              wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 1),
+              f"{list(server.WATCHERS)}")
+        r2 = SseReader(port, "caproom", cap_cookie)
+        r2.start()
+        check("a second stream within the per-session cap is served",
+              wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 2),
+              f"{list(server.WATCHERS)}")
+
+        status, body = stream_status(port, "caproom", cap_cookie)
+        try:
+            envelope = json.loads(body)
+        except ValueError:
+            envelope = {}
+        check("a stream past the per-session cap gets an error status, not a 200",
+              status == 503, f"{status} {body[:120]}")
+        check("the refused stream is answered with the JSON error envelope",
+              isinstance(envelope, dict) and envelope.get("error"), body[:120])
+        check("the refused stream registered no queue",
+              len(server.WATCHERS.get("caproom", ())) == 2,
+              f"{len(server.WATCHERS.get('caproom', ()))}")
+
+        r1.stop()
+        r2.stop()
+        check("streams deregister so their slots are freed",
+              wait_for(lambda: not server.WATCHERS.get("caproom"), timeout=3.0),
+              f"{list(server.WATCHERS)}")
+        r3 = SseReader(port, "caproom", cap_cookie)
+        r3.start()
+        check("a later legitimate stream is served after a refusal",
+              wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 1),
+              f"{list(server.WATCHERS)}")
+        r3.stop()
+        wait_for(lambda: not server.WATCHERS, timeout=3.0)
+
+        # The global cap is the one that protects the process, so it is
+        # exercised on its own with the per-session cap out of the way: the
+        # same session opens both streams and is refused by the total, not by
+        # its own share.
+        server.MAX_WATCHERS_PER_SESSION = 100
+        server.MAX_WATCHERS_TOTAL = 2
+        g1 = SseReader(port, "caproom2", cap_cookie)
+        g1.start()
+        check("a stream within the global cap is served",
+              wait_for(lambda: len(server.WATCHERS.get("caproom2", ())) == 1),
+              f"{list(server.WATCHERS)}")
+        g2 = SseReader(port, "caproom2", cap_cookie)
+        g2.start()
+        check("streams up to the global cap are served",
+              wait_for(lambda: len(server.WATCHERS.get("caproom2", ())) == 2),
+              f"{list(server.WATCHERS)}")
+        status, body = stream_status(port, "caproom2", cap_cookie)
+        try:
+            envelope = json.loads(body)
+        except ValueError:
+            envelope = {}
+        check("a stream past the global cap is refused with the JSON envelope",
+              status == 503 and isinstance(envelope, dict) and envelope.get("error"),
+              f"{status} {body[:120]}")
+        check("the globally refused stream registered no queue",
+              len(server.WATCHERS.get("caproom2", ())) == 2,
+              f"{len(server.WATCHERS.get('caproom2', ()))}")
+        g1.stop()
+        g2.stop()
+        wait_for(lambda: not server.WATCHERS, timeout=3.0)
+    finally:
+        server.MAX_WATCHERS_PER_SESSION = saved_per_session
+        server.MAX_WATCHERS_TOTAL = saved_total
+
+    # The per-session bookkeeping has to empty out with the streams themselves,
+    # or a long-lived process slowly refuses sessions that have no stream left.
+    # getattr so the old code reports this as a failure instead of an abort.
+    sessions_left = getattr(server, "WATCHER_SESSIONS", None)
+    check("no watcher bookkeeping is left behind once every stream has gone",
+          sessions_left == {} and not server.WATCHERS,
+          f"sessions={sessions_left} watchers={list(server.WATCHERS)}")
+
+    # The listen backlog bounds the connections the kernel holds unaccepted;
+    # socketserver's default of 5 is small enough that a page opening a stream
+    # per tab can overflow it before the process is even involved.
+    backlog = getattr(server.RoomCADServer, "request_queue_size", 5)
+    check("the listen backlog is raised above the socketserver default of 5",
+          backlog > 5, f"{backlog}")
+    check("the listen backlog is a deliberate value, and still a bound",
+          64 <= backlog <= 1024, f"{backlog}")
+
+    # ---- 6. Cross-site state-changing requests -----------------------------
+    # SameSite=Lax withholds the cookie from a cross-site POST, but that is the
+    # only defence and /api/logout is deliberately unauthenticated, so the
+    # origin itself is checked as a second line. A browser sends Origin on a
+    # cross-site POST; the host it is compared against is this request's own.
+    origin = f"http://127.0.0.1:{port}"
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "csrfroom", "json": "{}", "clientId": "csrf"},
+                              cookie, {"Origin": "http://evil.example"})
+    check("a cross-origin POST is refused", status == 403, f"{status} {resp}")
+    check("and the refusal uses the JSON error envelope",
+          isinstance(resp, dict) and "error" in resp, f"{resp}")
+    _, listing, _ = request(port, "GET", "/api/rooms", None, cookie)
+    check("the refused cross-origin POST changed nothing",
+          all(r.get("name") != "csrfroom" for r in (listing or [])),
+          str(listing)[:160])
+
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "sameorigin", "json": "{}", "clientId": "same"},
+                              cookie, {"Origin": origin})
+    check("a matching Origin is accepted", status == 200, f"{status} {resp}")
+
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "noorigin", "json": "{}", "clientId": "none"},
+                              cookie)
+    check("a request with no Origin at all is still accepted", status == 200,
+          f"{status} {resp}")
+
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "refererroom", "json": "{}", "clientId": "ref"},
+                              cookie, {"Referer": "http://evil.example/page"})
+    check("a cross-origin Referer with no Origin is refused", status == 403,
+          f"{status} {resp}")
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"name": "refererroom", "json": "{}", "clientId": "ref"},
+                              cookie, {"Referer": origin + "/index.html"})
+    check("a matching Referer with no Origin is accepted", status == 200,
+          f"{status} {resp}")
+
+    status, resp, _ = request(port, "DELETE", "/api/rooms/sameorigin", None,
+                              cookie, {"Origin": "http://evil.example"})
+    check("a cross-origin DELETE is refused", status == 403, f"{status} {resp}")
+    _, listing, _ = request(port, "GET", "/api/rooms", None, cookie)
+    check("the refused cross-origin DELETE left the room alone",
+          any(r.get("name") == "sameorigin" for r in (listing or [])),
+          str(listing)[:160])
+
+    # Login is the one endpoint that works before a session exists, which is
+    # exactly why it is covered too: a cross-site login is a real attack.
+    status, resp, _ = request(port, "POST", "/api/login", {"password": "testpass"},
+                              extra_headers={"Origin": "http://evil.example"})
+    check("a cross-origin login attempt is refused", status == 403, f"{status} {resp}")
+    status, _, _ = request(port, "POST", "/api/login", {"password": "testpass"},
+                           extra_headers={"Origin": origin})
+    check("a same-origin login still works", status == 200, f"{status}")
 
     httpd.shutdown()
     tmp.cleanup()

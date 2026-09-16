@@ -13,7 +13,7 @@
 #   ./tests/run.sh plan-editing # only files whose name matches
 #
 # Environment:
-#   ROOMCAD_TEST_TIMEOUT  seconds per file (default 900)
+#   ROOMCAD_TEST_TIMEOUT  seconds per file (default 1800)
 #
 # Exits non-zero if any file fails, times out, or reports failures.
 #
@@ -24,7 +24,13 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-TIMEOUT="${ROOMCAD_TEST_TIMEOUT:-900}"
+# Per-file timeout. The default is deliberately generous rather than tight: the
+# slowest file is city-fuzz, which has been measured at 705 s on a busy laptop and
+# runs over six minutes even when the machine is idle. A cap of 900 s left that
+# almost no headroom, so an honest run on a shared or slower runner — a CI box, a
+# machine with something else on it — could be killed and reported as a failure.
+# A timeout is here to catch a HANG, and half an hour still does that.
+TIMEOUT="${ROOMCAD_TEST_TIMEOUT:-1800}"
 
 # The slow, fuzz-heavy files. --fast skips these; everything else is seconds.
 SLOW_FILES="city-fuzz editor-fuzz layout-fuzz model-fuzz"

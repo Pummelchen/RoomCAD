@@ -64,6 +64,29 @@ WATCH_QUEUE_LIMIT = 16
 # what lets the server notice a client that vanished: the write fails and the
 # thread exits instead of parking on an empty queue forever.
 SSE_HEARTBEAT_SECONDS = 20
+# Every live stream pins a server thread, a socket and a queue holding up to
+# WATCH_QUEUE_LIMIT whole-room snapshots, and ThreadingHTTPServer opens one for
+# every connection a client cares to make — so with no ceiling at all, one
+# authenticated client looping on /api/watch can pin threads until the process
+# dies and take everybody else with it. Two caps, because they stop two
+# different failures.
+#
+# MAX_WATCHERS_TOTAL bounds the process, and that is the one that has to hold:
+# 256 streams at the worst-case queue is a known, survivable figure instead of
+# an unbounded one, and it is far above the handful of people who share one
+# password.
+#
+# MAX_WATCHERS_PER_SESSION stops one client from being the client that reaches
+# that total. A global cap on its own is a race the noisiest client wins —
+# everyone else is refused while it holds the pool — and a per-session cap on
+# its own still lets many clients add up past what the process can hold, which
+# is why both exist. One stream is one open tab, so 16 covers someone with a
+# room-per-tab plus the overlap of a stream that is reconnecting before the
+# dead socket is noticed, while keeping one session's share small enough that
+# it cannot starve the others. Lower would mistake a heavy multi-tab user for
+# an attack; higher would not stop one client claiming a large slice.
+MAX_WATCHERS_TOTAL = 256
+MAX_WATCHERS_PER_SESSION = 16
 # An unsaved draft nobody has touched for this long is forgotten.
 LIVE_DRAFT_TTL_SECONDS = 3600
 # Active browser sessions: session token -> last-seen time. Any authenticated
@@ -72,6 +95,12 @@ PRESENCE = {}
 PRESENCE_LOCK = threading.Lock()
 
 WATCHERS = {}
+# Which session opened each registered queue, so the per-session cap can be
+# counted and a stream that ends can free exactly its own slot. Keyed by the
+# queue rather than by a counter per session on purpose: `pop` in the finally
+# block is idempotent, so a stream that somehow ends twice cannot drive a
+# counter negative or hand a slot to the wrong session.
+WATCHER_SESSIONS = {}
 WATCH_LOCK = threading.Lock()
 # Latest unsaved "live" draft per room (in-memory only; lost on restart, which
 # is fine — they are drafts). A new watcher receives this on connect so it
@@ -496,6 +525,62 @@ def expire_live_drafts():
             del LIVE[key]
 
 
+def _split_authority(authority):
+    """(host, port) from a `host[:port]` authority; port is None when elided.
+
+    An IPv6 literal is bracketed (`[::1]:8078`), so its port is only ever after
+    the closing bracket — splitting on the last colon unconditionally would cut
+    the address itself in half. Lowercased because hostnames are
+    case-insensitive and a browser may normalise its Origin differently from
+    the Host a proxy forwards.
+    """
+    authority = authority.strip()
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end < 0:
+            return authority.lower(), None
+        host = authority[:end + 1].lower()
+        rest = authority[end + 1:]
+        if rest.startswith(":") and rest[1:].isdigit():
+            return host, int(rest[1:])
+        return host, None
+    if authority.count(":") == 1:
+        host, port = authority.rsplit(":", 1)
+        if port.isdigit():
+            return host.lower(), int(port)
+    return authority.lower(), None
+
+
+def _authority_matches(scheme, claimed_netloc, host_header):
+    """Whether an Origin/Referer authority names the host we were asked for.
+
+    The comparison is against the request's own `Host` header and nothing else.
+    That is the client-facing authority, because the proxy chain forwards it
+    unchanged (roomcad.caddy sets `header_up Host {host}`), so it is the
+    hostname the user actually used on localhost and in production alike; a
+    hard-coded hostname would only work on one of them. `_is_https()` and
+    PROXY_HOPS are deliberately not consulted — they say which scheme reached
+    our hop and where the real client sits, neither of which is this authority.
+
+    A browser leaves the default port off both Origin and Host, but a proxy or
+    an older client may spell out :443/:80, so a port present on only one side
+    still matches when it is the default for the claimed scheme. Anything else
+    is a mismatch.
+    """
+    default_port = {"http": 80, "https": 443}.get(scheme.lower())
+    claimed_host, claimed_port = _split_authority(claimed_netloc)
+    host, host_port = _split_authority(host_header)
+    if claimed_host != host:
+        return False
+    if claimed_port == host_port:
+        return True
+    if claimed_port is None:
+        return host_port is None or host_port == default_port
+    if host_port is None:
+        return claimed_port == default_port
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -636,6 +721,48 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
         return host not in ("localhost", "127.0.0.1", "::1", "")
 
+    def _require_same_origin(self):
+        """Refuses a cross-site state-changing request, or returns True.
+
+        This is the second line behind the session cookie's `SameSite=Lax`.
+        Lax does stop the browser attaching the cookie to a cross-site
+        POST/DELETE, but that is one attribute on one cookie and it is the only
+        defence there is — and POST /api/logout is deliberately unauthenticated
+        so that a cross-site request can still clear somebody's cookie. Origin
+        is the header the browser writes itself and cannot be forged by the
+        page, and a browser always sends it on a cross-site POST, so a request
+        that positively names a different origin is refused.
+
+        A request carrying neither Origin nor Referer is allowed. That is curl,
+        the test suite and a same-origin form post: absent is not the signal an
+        attack leaves, refusing it would break scripted use of the API, and the
+        browser-driven attack always carries Origin. A Referer is only a
+        fallback for clients that send one but not the other, and it is
+        consulted second because a referrer policy can suppress it while Origin
+        is the deliberate statement of where the request came from. GET is not
+        covered: it changes nothing.
+        """
+        claimed = self.headers.get("Origin")
+        if claimed is None:
+            claimed = self.headers.get("Referer")
+            if claimed is None:
+                return True
+        try:
+            parts = urllib.parse.urlsplit(claimed.strip())
+        except ValueError:
+            return False
+        if not parts.scheme or not parts.netloc:
+            # "null" (a sandboxed or opaque origin) and anything else that is
+            # not a real URL names no origin we can match, so it does not get
+            # the benefit of the doubt.
+            return False
+        host = self.headers.get("Host")
+        if not host:
+            # HTTP/1.1 requires Host; with none there is nothing to compare the
+            # claim against, and an unverifiable claim is not a match.
+            return False
+        return _authority_matches(parts.scheme, parts.netloc, host)
+
     def _read_json(self):
         """Reads a bounded JSON body. Sends the error response and returns None
         if the body is missing, oversized or malformed."""
@@ -691,16 +818,39 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _sse(self, name):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
+        # The cap has to be enforced before the first byte of the response.
+        # Once send_response has put out the 200 and the event-stream headers
+        # the status line is written and there is nowhere left to put an error,
+        # so the count and the registration happen together under WATCH_LOCK —
+        # two threads must not both see room for the last slot — before any
+        # header is sent. A refusal answers with the ordinary JSON envelope
+        # rather than dropping the connection, so the client is told what
+        # happened and can retry; and because a refused request never touches
+        # WATCHERS, there is no queue left behind to leak.
+        token = self._cookie(SESSION_COOKIE) or ""
         q = queue.Queue(maxsize=WATCH_QUEUE_LIMIT)
         with WATCH_LOCK:
-            WATCHERS.setdefault(name, set()).add(q)
+            # The total is checked first: it is the process that has to
+            # survive, so when the whole pool is gone the honest answer is
+            # "the server is full" rather than blaming this client's tab.
+            if len(WATCHER_SESSIONS) >= MAX_WATCHERS_TOTAL:
+                refusal = "too many watchers"
+            elif sum(1 for t in WATCHER_SESSIONS.values() if t == token) >= MAX_WATCHERS_PER_SESSION:
+                refusal = "too many streams"
+            else:
+                refusal = None
+                WATCHERS.setdefault(name, set()).add(q)
+                WATCHER_SESSIONS[q] = token
+        if refusal:
+            self._send({"error": refusal}, 503)
+            return
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
             with LIVE_LOCK:
                 seq = LIVE_SEQ.get(name, 0)
             cur = load_room(name)
@@ -739,6 +889,14 @@ class Handler(BaseHTTPRequestHandler):
                     break
         finally:
             with WATCH_LOCK:
+                # One queue is registered once, just above and before a single
+                # byte of the response, and this is the only place it is taken
+                # back out — so a disconnect deregisters exactly once and frees
+                # exactly this session's slot. The header write is inside the
+                # try for the same reason: a client that vanished before the
+                # first byte still comes through here instead of leaking a
+                # queue that no later reader would ever remove.
+                WATCHER_SESSIONS.pop(q, None)
                 watchers = WATCHERS.get(name)
                 if watchers is not None:
                     watchers.discard(q)
@@ -783,6 +941,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found"}, 404)
 
     def do_POST(self):
+        # State-changing, so the same-origin check comes first — and it covers
+        # /api/login, deliberately. Login is the one endpoint that works before
+        # a session exists, which is exactly why a forced cross-site login is a
+        # real attack: it can sign the victim into a session the attacker chose
+        # or spend the login budget of the victim's address. The app is served
+        # from the same origin as the API, so a legitimate login always passes,
+        # and a scripted client that sends no Origin at all is untouched.
+        if not self._require_same_origin():
+            self._send({"error": "cross-origin request refused"}, 403)
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/login":
             if not PASSWORD:
@@ -972,6 +1140,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send({"name": name, "version": version})
 
     def do_DELETE(self):
+        # DELETE is the most destructive verb on the API, so it gets the origin
+        # check as well as the auth check. Checked before auth on purpose: a
+        # request that is not same-origin is refused whatever its cookie says,
+        # and the 403 tells an honest client more than a 401 would.
+        if not self._require_same_origin():
+            self._send({"error": "cross-origin request refused"}, 403)
+            return
         if not self._require_auth():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -994,6 +1169,17 @@ class RoomCADServer(ThreadingHTTPServer):
     """
 
     daemon_threads = True
+
+    # listen()'s backlog: how many connections the kernel finishes the TCP
+    # handshake for and holds until this process accept()s them. socketserver's
+    # default is 5, which is not a number anyone here chose and is far too
+    # small for a page that opens an event stream per tab on top of ordinary
+    # API traffic: once five are waiting, the kernel refuses or drops further
+    # connections, so a burst reaches the user as a hung or failed request that
+    # this process never even saw and cannot explain. 128 is above any realistic
+    # burst for a shared room planner and is still a bound, so a flood cannot
+    # grow the queue into memory nobody accounted for.
+    request_queue_size = 128
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]

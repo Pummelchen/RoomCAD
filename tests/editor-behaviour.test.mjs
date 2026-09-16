@@ -59,7 +59,9 @@ check("nothing about the overlap blocks the edit",
 check("fit measures what was drawn, not the base plate",
   editor.includes("contentBounds()") && /fit\(\)[\s\S]{0,600}this\.contentBounds\(\)/.test(editor));
 check("fit no longer sizes itself from the canvas plate",
-  !/fit\(\)\s*\{[\s\S]{0,400}this\.displaySize\(\)/.test(editor));
+  !/fit\(\)\s*\{[\s\S]{0,700}P\.canvasOf\(/.test(editor));
+check("and the helper that measured the plate is gone, not merely unused",
+  !/displaySize\(\)\s*\{/.test(editor));
 check("content bounds cover the walls the user drew",
   /contentBounds\(\)[\s\S]{0,400}P\.wallsBounds\(room\)/.test(editor));
 check("content bounds also cover public floor, labels and furniture",
