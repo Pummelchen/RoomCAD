@@ -528,9 +528,10 @@ body.resizing-sidebars * {
   color: var(--text);
 }
 
-/* ── Open Room modal ─────────────────────────────────── */
+/* ── Open Room / version modals ──────────────────────── */
 
-#open-modal {
+#open-modal,
+#version-modal {
   position: fixed;
   inset: 0;
   z-index: 9000;

@@ -256,8 +256,15 @@ window.addEventListener("resize", () => applySidebarWidths({ persist: true }));
 
 // MARK: - Mode switching
 
+/// The mode the DOM is actually showing. `store.mode` is the source of truth,
+/// but two paths below it — store.newRoom() and store.loadRoom() — set it
+/// directly, because they run in the model and know nothing about the view.
+/// This is what lets the change handler notice and follow them.
+let shownMode = "2d";
+
 function setMode(mode) {
   store.mode = mode;
+  shownMode = mode;
   const is3d = mode === "3d";
   planCanvas.hidden = is3d;
   walkHost.hidden = !is3d;
@@ -268,9 +275,37 @@ function setMode(mode) {
     if (!walk3d) walk3d = new Walk3D(walkHost);
     else walk3d.update(store.room);
   }
+  // The 3D loop renders, steps physics and drives the whole traffic simulation
+  // at 60 fps. None of it can be seen while the user is editing in 2D, so stop
+  // it on the way out and start it again on the way back. `walk3d` is built
+  // lazily on the first 3D entry, and pause()/resume() are optional methods, so
+  // both the instance and each call are guarded.
+  if (walk3d) {
+    if (is3d) {
+      if (typeof walk3d.resume === "function") walk3d.resume();
+    } else if (typeof walk3d.pause === "function") {
+      walk3d.pause();
+    }
+  }
   renderToolbar();
   renderStatus();
   store.emit();
+}
+
+/// Follows `store.mode` when something below the UI changed it.
+///
+/// store.newRoom() and store.loadRoom() put the app back on the 2D plan
+/// themselves, because they run in the model and know nothing about the view.
+/// Left alone, New Room or Open… pressed while standing in the walkthrough
+/// switched the model to 2D but left the 3D view on screen — and kept its
+/// render loop, physics and traffic simulation running behind a plan the user
+/// could not see. Returns true when it had to switch.
+///
+/// setMode() re-emits, but by then the two agree, so this settles in one pass.
+function syncMode() {
+  if (store.mode === shownMode) return false;
+  setMode(store.mode);
+  return true;
 }
 
 // MARK: - Rendering
@@ -902,13 +937,23 @@ let liveSeq = 0;
 let pendingLiveDraft = null;
 let liveDetached = false;
 let leavingLive = false;
+// Which room `liveSeq` belongs to. The server numbers live edits PER ROOM, so a
+// sequence learned in one room says nothing about another — and carrying it over
+// makes the first edit in a newly-opened room look like it was built on a copy
+// from the future.
+let watchedRoomName = null;
 
 function stopWatching({ detached = false } = {}) {
   stopLiveSync();
   if (eventSource) eventSource.close();
   eventSource = null;
   pendingLiveDraft = null;
-  if (detached) liveDetached = true;
+  if (detached) {
+    liveDetached = true;
+    // We have stopped watching, so we are no longer learning this room's
+    // sequence; re-learn it from the stream when we next watch anything.
+    resetLiveSequence();
+  }
 }
 
 /// Subscribes to live updates for a server room (Google-Docs style sharing).
@@ -954,6 +999,15 @@ export function liveUpdateAction(data, state) {
 function watchRoom(name) {
   stopWatching();
   liveDetached = false;
+  // The sequence is per room on the server. Watching a different room with the
+  // previous room's sequence still in hand publishes the first edit here with a
+  // baseSeq this room has never reached, so the server refuses it as stale and
+  // the person's first edit in every newly-opened room is silently replaced by
+  // the server's copy. Forgetting it makes the stream's first message — which
+  // carries this room's real sequence — the baseline. re-watching the same room
+  // (saving does that) keeps the sequence, which the save itself has moved on.
+  if (name !== watchedRoomName) resetLiveSequence();
+  watchedRoomName = name;
   // stopWatching stops the sync check; re-watching is not leaving, so a live
   // client keeps checking. Saving re-watches, and that is exactly when a
   // client must not quietly stop noticing it has drifted.
@@ -1304,8 +1358,26 @@ async function resumeLastRoom() {
 
 document.addEventListener("keydown", e => {
   const mod = e.metaKey || e.ctrlKey;
+  const typing = isTyping();
+
+  // A text field owns its editing keys. ⌘Z, ⇧⌘Z and ⌘Y have to undo and redo
+  // the text being typed rather than the drawing underneath it, so while the
+  // focus is in one they are left to the browser. Saving and opening are
+  // explicit app actions rather than text editing, so they keep working from
+  // inside a field — as does every non-modified key below.
   if (mod) {
     const key = e.key.toLowerCase();
+    if (key === "s") {
+      e.preventDefault();
+      saveRoom();
+      return;
+    }
+    if (key === "o") {
+      e.preventDefault();
+      openFileDialog();
+      return;
+    }
+    if (typing) return;
     if (key === "z") {
       e.preventDefault();
       if (e.shiftKey) store.redo();
@@ -1315,16 +1387,6 @@ document.addEventListener("keydown", e => {
     if (key === "y") {
       e.preventDefault();
       store.redo();
-      return;
-    }
-    if (key === "s") {
-      e.preventDefault();
-      saveRoom();
-      return;
-    }
-    if (key === "o") {
-      e.preventDefault();
-      openFileDialog();
       return;
     }
     if (key === "1") {
@@ -1357,7 +1419,16 @@ document.addEventListener("keydown", e => {
     return;
   }
 
-  if (isTyping()) return;
+  if (typing) return;
+
+  // Everything below belongs to the 2D editor: choosing a tool, carrying and
+  // turning furniture, deleting a selection, nudging it with the arrows. In 3D
+  // those keys belong to the walkthrough — WASD and the arrows drive it — and
+  // taking them also left the wrong tool armed when the user came back to 2D.
+  // The app-wide shortcuts handled above (save, open, undo/redo, the mode
+  // switch, the plan rotation and the panel toggles) deliberately still work in
+  // either mode.
+  if (store.mode !== "2d") return;
 
   switch (e.code) {
     case "KeyV": store.chooseTool("select"); break;
@@ -1394,8 +1465,8 @@ document.addEventListener("keydown", e => {
     case "ArrowRight":
     case "ArrowUp":
     case "ArrowDown":
-      // In 3D the arrows belong to the walkthrough.
-      if (store.mode !== "2d") return;
+      // The arrows are the walkthrough's in 3D, which the mode gate above
+      // already takes care of.
       {
         const step = P.GRID_STEPS[store.room.grid].meters;
         const dx = e.code === "ArrowLeft" ? -step : e.code === "ArrowRight" ? step : 0;
@@ -1539,6 +1610,18 @@ let livePushTimer = null;
 let liveSyncTimer = null;
 let liveUnpublished = false;
 
+/// Forgets this client's position in the watched room's live sequence. The
+/// server numbers edits per room, so everything derived from that number — the
+/// sequence itself, whether one of our edits is still waiting to go out, and
+/// any timer that would publish it against the old baseline — belongs to the
+/// room it was learned in and is dropped when the watched room changes.
+function resetLiveSequence() {
+  liveSeq = 0;
+  liveUnpublished = false;
+  if (livePushTimer) clearTimeout(livePushTimer);
+  livePushTimer = null;
+}
+
 function scheduleLivePush() {
   if (livePushTimer) clearTimeout(livePushTimer);
   // Something of ours is not out there yet, so we are not in a position to be
@@ -1574,6 +1657,12 @@ function pushLiveDraft() {
       if (answer && typeof answer.seq === "number") liveSeq = answer.seq;
     })
     .catch(() => {
+      // The edit did not go out, but the flag that says so must not stay set:
+      // checkLiveSync refuses to run while it is, so one dropped request would
+      // silently switch off the drift check — the exact divergence it exists to
+      // catch — until the next edit happened to succeed. Clearing it lets the
+      // next check notice and recover, and a later edit re-schedules a push.
+      liveUnpublished = false;
       store.status = "Live: could not reach the server";
       store.emit();
       toast("Live sync lost — reconnecting…", "error");
@@ -1644,6 +1733,9 @@ function stopLiveSync() {
 // MARK: - Store change subscription
 
 store.onChange(() => {
+  // store.newRoom() and store.loadRoom() put the app back on the 2D plan
+  // themselves, without going through setMode() — follow them here.
+  syncMode();
   if (store.mode === "3d" && walk3d) {
     walk3d.update(store.room);
     walk3d.applyTimeOfDay();

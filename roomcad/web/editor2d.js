@@ -358,7 +358,7 @@ export class Editor2D {
     window.addEventListener("blur", () => {
       this.spaceDown = false;
       this.canvas.classList.remove("selecting");
-      this.drag = null;
+      this.abortDrag();
       this.pointers.clear();
       this.draw();
     });
@@ -518,6 +518,17 @@ export class Editor2D {
     this.hideContextMenu();
   }
 
+  /// Ends a drag that is not going to be committed, and tells the store.
+  ///
+  /// A drag the store still believes is active silences teammates' live edits
+  /// and swallows the undo snapshot of the next drag, so every teardown path —
+  /// losing the window, a second finger starting a pinch, a right-click — has
+  /// to come through here. Harmless when no drag is in progress.
+  abortDrag() {
+    this.drag = null;
+    store.discardDrag();
+  }
+
   onPointerDown(e) {
     if (this.isTyping()) return;
     // Stop the browser's native behaviors — middle-click auto-scroll, text
@@ -538,7 +549,7 @@ export class Editor2D {
         mid: { x: (pts[0].c.x + pts[1].c.x) / 2, y: (pts[0].c.y + pts[1].c.y) / 2 },
         scale: this.scale,
       };
-      this.drag = null;
+      this.abortDrag();
       return;
     }
 
@@ -554,7 +565,7 @@ export class Editor2D {
     // with a drawing tool active also started (and immediately committed) a
     // zero-sized drag.
     if (e.button !== 0) {
-      this.drag = null;
+      this.abortDrag();
       return;
     }
 
@@ -926,9 +937,13 @@ export class Editor2D {
         else store.discardDrag();
         break;
       case "measure":
-        this.measureResult = this.measureDrag
-          ? { start: this.measureDrag.start, end: this.measureDrag.end }
-          : null;
+        // A plain click is not a measurement: committing one painted a dotted
+        // zero-length line with a persistent "0 cm" chip. Require a real drag,
+        // using the same click-vs-drag threshold as the rest of the editor.
+        if (moved && this.measureDrag
+          && P.distance(this.measureDrag.start, this.measureDrag.end) > 0) {
+          this.measureResult = { start: this.measureDrag.start, end: this.measureDrag.end };
+        }
         this.measureDrag = null;
         break;
     }
@@ -989,6 +1004,13 @@ export class Editor2D {
     ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
 
     this.drawGrid(room);
+
+    // Readouts claim screen space in draw order, so the set resets here — at
+    // the start of this frame's annotation work, before the public-area side
+    // lengths below push into it. Resetting after that pass (as it used to)
+    // culled this frame's readouts against the previous frame's boxes and then
+    // threw away the boxes they had just claimed.
+    this.dimensionBoxes = [];
 
     // Public-space rectangles (excluded from auto-layout), drawn under walls.
     for (const a of room.publicAreas || []) {
@@ -1079,8 +1101,8 @@ export class Editor2D {
 
     this.drawRoomSelection(room);
 
-    // Readouts claim screen space in draw order; the list resets each frame.
-    this.dimensionBoxes = [];
+    // Readouts already drawn this frame claim their space; the set was cleared
+    // at the top of the frame.
     this.drawWallClashes(room);
     this.drawRoomCaptions(room);
 
@@ -1432,10 +1454,14 @@ export class Editor2D {
   /// piece of that room's floor that IS visible. Null when none of it is.
   visibleCaptionSpot(cap) {
     const margin = 46;
+    // screen() works in CSS pixels, so the on-screen test has to as well:
+    // canvas.width/height are device pixels and would make the test up to 2×
+    // too generous on a high-DPR display, painting a caption off the canvas.
+    const rect = this.canvas.getBoundingClientRect();
     const ideal = this.screen({ x: cap.x, z: cap.z });
     const onScreen = p => Number.isFinite(p.x) && Number.isFinite(p.y)
       && p.x >= margin && p.y >= margin
-      && p.x <= this.canvas.width - margin && p.y <= this.canvas.height - margin;
+      && p.x <= rect.width - margin && p.y <= rect.height - margin;
     if (onScreen(ideal)) return ideal;
     if (!cap.rects || !cap.rects.length) return null;
 
@@ -1447,9 +1473,9 @@ export class Editor2D {
       const a = this.screen({ x: r.x, z: r.z });
       const b = this.screen({ x: r.x + r.w, z: r.z + r.l });
       const x0 = Math.max(Math.min(a.x, b.x), margin);
-      const x1 = Math.min(Math.max(a.x, b.x), this.canvas.width - margin);
+      const x1 = Math.min(Math.max(a.x, b.x), rect.width - margin);
       const y0 = Math.max(Math.min(a.y, b.y), margin);
-      const y1 = Math.min(Math.max(a.y, b.y), this.canvas.height - margin);
+      const y1 = Math.min(Math.max(a.y, b.y), rect.height - margin);
       if (!(x1 > x0 && y1 > y0)) continue;
       const seen = (x1 - x0) * (y1 - y0);
       if (!best || seen > best.seen) best = { seen, x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
@@ -1971,7 +1997,8 @@ export class Editor2D {
     const ctx = this.ctx;
     const cx = rect.x + rect.w / 2;
     const cy = rect.y + rect.h / 2;
-    const base = `rgb(${kind.color.map(c => Math.round(c * 255)).join(",")})`;
+    const rgb = kind.color.map(c => Math.round(c * 255)).join(",");
+    const base = `rgb(${rgb})`;
     const c = this.furnitureColors(state);
     const glow = state === "invalid" ? "rgba(255,59,48,0.22)"
       : state === "valid" ? "rgba(57,255,20,0.22)"
@@ -1980,7 +2007,7 @@ export class Editor2D {
     const body = state === "invalid" ? "rgba(255,59,48,0.4)"
       : state === "valid" ? "rgba(57,255,20,0.4)"
       : state === "selected" ? "rgba(47,125,225,0.4)"
-      : base + "30";
+      : `rgba(${rgb},0.19)`;   // 0x30 alpha over the fixture's own colour
 
     if (kind === P.FURNITURE_KINDS.lightPanel) {
       // Square 60×60 cm office panel.
