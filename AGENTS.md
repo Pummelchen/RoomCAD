@@ -153,6 +153,15 @@ contract, not that anything renders.
   needs it most. `systemd-analyze security` scores it 5.3 MEDIUM; the previous
   root-and-unsandboxed unit scored 9.4 UNSAFE. Verify a unit change with
   `systemd-analyze verify` before shipping it.
+- **The service user must own `/var/roomcad` ITSELF, not just `rooms.db`.** SQLite in
+  WAL mode creates `rooms.db-wal` and `rooms.db-shm` *beside* the database, so a
+  root-owned directory that merely holds a writable file still fails at boot with
+  `sqlite3.OperationalError: unable to open database file` — and it fails on the
+  `PRAGMA journal_mode=WAL` line, before serving anything. `deploy.sh` does this with
+  `install -d -o roomcadapp -g roomcadapp /var/roomcad`; do not replace it with a
+  `chown` of the three files. Rehearsed: the unit started under the full sandbox as an
+  unprivileged user against a copy of the live database and answered 401 → login →
+  room list → save, which is also what proves `ReadWritePaths` lets it write.
 - **`password_matches()` compares UTF-8 bytes, not str.** `secrets.compare_digest`
   raises `TypeError` on a non-ASCII `str`, which used to kill the login handler
   *before* the failure was counted — so those attempts escaped the throttle entirely.
