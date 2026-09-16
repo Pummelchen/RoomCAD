@@ -21,28 +21,32 @@ in production: the deployed entry point is
 `https://roomcad.91.99.176.243.nip.io/`, and `roomcad/server/` mirrors the VPS so it
 can be rebuilt from git. There are no releases and no tags.
 
-**The GitHub description ("Shophouse room planner for macOS") is stale** — there is
-no Swift, Xcode or native code anywhere in the tree. The only macOS-specific
-artefacts left are `.build/` and `.swiftpm/` entries in `.gitignore`, from a removed
-native edition.
+**There is no Swift, Xcode or native code anywhere in the tree.** An earlier native
+edition was removed; the only traces left are a few comments in `plan.js`/`store.js`
+that predate the web port. The GitHub description and the repository's own docs are
+kept in step with the code — if you change a fact here, change it there too.
 
 ## Layout
 
 - `roomcad/web/` — the app: `plan.js` (room model, grid, snapping, wall geometry and
-  joins, auto-layout, the `.rcad` format), `store.js` (editing state, tools,
-  undo/redo, save/open, remote-apply), `editor2d.js` (2D canvas), `walk3d.js`
-  (Three.js walkthrough, Rapier physics, sun, bloom), `city.js` (the stylised
-  surrounding city), `app.js` (UI glue), plus `svg.js`, `audio.js`, `login.js`,
-  `version.js`, `index.html`, `serve.sh`, `Caddyfile`, and `lib/` (vendored Three.js
-  WebGPU + Rapier, so the page works offline).
-- `roomcad/server/` — the API and the production mirror: `server.py`, `schema.sql`,
-  `rooms.db.sql`, `Caddyfile`, the two systemd units, `roomcad.caddy`,
-  `install-caddy.sh`, `deploy.sh`.
-- `tests/` — the suite, and `tests/harness/` with the loaders
-  (`load-web-module.mjs` rewrites only the bare `three` specifier and loads
+  joins, auto-layout, the `.rcad` format; pure, no DOM, no network), `store.js`
+  (editing state, tools, undo/redo, remote-apply — **it does no I/O**),
+  `editor2d.js` (2D canvas), `walk3d.js` (Three.js walkthrough, Rapier physics, sun,
+  bloom), `city.js` (the stylised surrounding city), `app.js` (UI glue — **the only
+  module besides `login.js` that touches the network**), plus `svg.js`, `audio.js`,
+  `login.js`, `version.js`, `index.html`, `serve.sh`, `Caddyfile`, and `lib/`
+  (vendored Three.js WebGPU + Rapier, so the page works offline).
+- `roomcad/server/` — the API and the production mirror: `server.py`, `schema.sql`
+  (documentation; `server.py` builds the schema itself at boot), `rooms.db.sql`
+  (**structure only** — it carries no room content), `Caddyfile`, the two systemd
+  units, `roomcad.caddy`, `install-caddy.sh`, `deploy.sh`.
+- `tests/` — the suite, plus `tests/run.sh` (the runner) and `tests/harness/` with the
+  loaders (`load-web-module.mjs` rewrites only the bare `three` specifier and loads
   everything else from its real path, plus `dom-stub.mjs`, `coplanar.mjs`,
   `overlap.mjs`).
-- `.github/` contains only `traffic.json` (badge data) — **there is no CI workflow.**
+- `.github/workflows/tests.yml` — CI. `.github/traffic.json` is badge data.
+- `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`.
+  Required by `RELEASE.md` §1.6; update it in the same commit as a vendored upgrade.
 
 ## Build, test, run
 
@@ -51,29 +55,36 @@ No build step. The app is loaded through the inline import map in
 Python with no `requirements.txt`, `pyproject.toml` or `setup.py`.
 
 ```bash
-for t in tests/*.mjs; do node "$t"; done    # no runner, no aggregator, no npm test
-python3 tests/server-live.test.py           # 82 passed, 0 failed
+./tests/run.sh                # the whole suite; the real gate, exits non-zero on failure
+./tests/run.sh --fast         # skips the four slow fuzz files, for iterating
+./tests/run.sh plan-editing   # just the files whose name matches
+ROOMCAD_TEST_TIMEOUT=300 ./tests/run.sh   # seconds per file (default 900)
 
 ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
   python3 roomcad/server/server.py &        # API on 127.0.0.1:8078
 cd roomcad/web && ./serve.sh                # app on http://localhost:8080
 ```
 
-**The `.mjs` suites are slow, not instant** — the full sweep took roughly 12 minutes
-here, dominated by `city-fuzz` at over 6 minutes alone. Run individual files while
-iterating.
+**The suite is slow, not instant.** `city-fuzz` alone runs for over six minutes; the
+full sweep is roughly 12–15 minutes. Use `--fast` (about 30 s) while iterating and run
+the whole thing before you commit. Each file prints its own `N passed, M failed` and
+the runner totals them.
 
 ## Identity
 
-`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.4";`. It is
+`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.5";`. It is
 the only release source, and it is **enforced** by `tests/version.test.mjs` — the
 footer must render it, `app.js` must import it, and `app.js`/`index.html` must not
 hard-code a `vX.Y` tag.
 
 ## Gates
 
-No CI beyond GitHub's dynamic CodeQL code scanning; the test suite is the local
-gate. **Two of those tests are deployment contracts, not feature tests:**
+CI runs the full suite on every push and pull request
+(`.github/workflows/tests.yml`), on top of GitHub's dynamic CodeQL code scanning.
+Locally, `./tests/run.sh` is the gate — and it is a real one: it has been seen to
+fail on both an injected assertion and a timeout.
+
+**Two of the tests are deployment contracts, not feature tests:**
 
 - `tests/deploy-config.test.mjs` recomputes the CSP `sha256-…` hash of the inline
   import map from `index.html` and compares it against both Caddyfiles, and refuses a
@@ -81,13 +92,17 @@ gate. **Two of those tests are deployment contracts, not feature tests:**
 - `roomcad/server/deploy.sh` validates the candidate Caddyfile with the VPS's own
   Caddy binary and aborts before installing anything if it is invalid.
 
+Several other tests make **source contracts** — assertions that grep for exact
+strings in the source. A rename can fail one without any behaviour changing, so read
+the assertion before "fixing" it.
+
 ## Traps
 
-- **`serve.sh` downloads the Caddy binary into `roomcad/web/bin/` on first run**
-  (picking the asset from `uname -m`), so it needs network. `roomcad/README.md` calls
-  `web/bin/` "git-ignored" — **it is not**: the root `.gitignore` has no `bin` entry
-  and `git check-ignore roomcad/web/bin/caddy` exits 1, so a downloaded Caddy is
-  stageable.
+- **`serve.sh` downloads the Caddy binary into `roomcad/web/bin/` on first run**, so it
+  needs network. That path is now genuinely git-ignored. The script matches the
+  GitHub release JSON **in the shell, not through `grep … | head -1`** — `head` exits
+  early, `grep` takes SIGPIPE, and `set -o pipefail` then aborts the first run before
+  anything is downloaded. `install-caddy.sh` documents the same trap.
 - Start only `serve.sh` and the app still loads, but every server-side feature
   reports "server not reachable": `web/Caddyfile` proxies `/api/*` to
   `127.0.0.1:8078`.
@@ -101,13 +116,27 @@ gate. **Two of those tests are deployment contracts, not feature tests:**
 - Both Caddyfiles send `Cache-Control "no-cache"` deliberately — without it the
   browser applies heuristic freshness and keeps serving the previous build of an
   edited module.
+- **`encode gzip` belongs on the static `handle`, not the site block.** At site level
+  it also wraps the `/api/*` proxy, and that is the unbuffered SSE stream.
 - **Editing the inline import map in `index.html` breaks the CSP hash**, and with it
   both the deploy-config test and the deployed page. The hash must be recomputed.
 - **`deploy.sh` defaults to `root@91.99.176.243`** and rsyncs `web/` with `--delete`
   plus `server.py`, then reloads systemd units. It is a production deploy and needs
-  SSH key access. It deliberately never touches the live `rooms.db`.
-- `.gitignore` still lists Swift/SwiftPM artefacts (`.build/`, `.swiftpm/`) from the
-  removed native edition; nothing in the tree produces them.
+  SSH key access. It never rewrites `rooms.db` **contents** — but it does create the
+  `roomcadapp` service account and `chown` the database, its WAL sidecars and the
+  legacy `.rcad` directory, because the API no longer runs as root. A root-owned
+  legacy directory would make the one-shot migration fail at boot.
+- **The API runs as an unprivileged user in a sandbox** (`roomcad.service`:
+  `User=roomcadapp`, `ProtectSystem=strict`, `ReadWritePaths=/var/roomcad`). It is the
+  process that parses untrusted bodies and holds the database, so it is the one that
+  needs it most. `systemd-analyze security` scores it 5.3 MEDIUM; the previous
+  root-and-unsandboxed unit scored 9.4 UNSAFE. Verify a unit change with
+  `systemd-analyze verify` before shipping it.
+- **`password_matches()` compares UTF-8 bytes, not str.** `secrets.compare_digest`
+  raises `TypeError` on a non-ASCII `str`, which used to kill the login handler
+  *before* the failure was counted — so those attempts escaped the throttle entirely.
+- **Bodies go through `_read_json_object()`, never `_read_json()`.** The latter
+  happily returns a list or a scalar, and every caller then reached for `.get(...)`.
 
 ## Releasing
 
@@ -119,7 +148,7 @@ The non-negotiables:
 
 - **Apple Silicon only** — build native `arm64` (M1–M6). Never `--arch x86_64`,
   never `ARCHS=arm64 x86_64`, and never `lipo -create`, which is how a universal
-  binary gets made.
+  binary gets made. (Nothing here compiles today; this binds the moment anything does.)
 - **Assert it** — `lipo -archs <binary>` must report exactly `arm64`. A build that
   silently produced a fat binary is a release defect, not a build option.
 - **Every release carries the artifacts.** A tag alone is not a release.

@@ -24,6 +24,9 @@ The first `serve.sh` run downloads Caddy into `web/bin/` (git-ignored).
 Three.js and Rapier are vendored in `web/lib/`, so the page works offline.
 The 3D view needs a **WebGPU**-capable browser.
 
+Run the suite from the repository root with `./tests/run.sh` — everything, or
+`--fast` to skip the four long fuzz files while iterating.
+
 ## Layout
 
 | Path | Contains |
@@ -39,7 +42,7 @@ The 3D view needs a **WebGPU**-capable browser.
 | `web/login.js` | password gate + cookie |
 | `web/version.js` | the single visible release number |
 | `web/lib/` | vendored Three.js, Rapier and post-processing modules |
-| `server/` | the Python API, systemd unit, Caddy/nginx configs, DB dump, `deploy.sh` |
+| `server/` | the Python API, its systemd unit and service account, Caddy configs, the database structure, `deploy.sh` |
 
 `server/` mirrors the production VPS so it can be rebuilt from git — see
 [Hosting and Deployment](https://github.com/Pummelchen/RoomCAD/wiki/Hosting-and-Deployment).

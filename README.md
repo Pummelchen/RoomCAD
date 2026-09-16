@@ -83,14 +83,18 @@ cd roomcad/web && ./serve.sh           # app on http://localhost:8080
 | Erase / Measure / Furniture | `E` / `M` / `F` |
 | Label / Rooms | `T` / `Y` |
 | Turn furniture or label / delete | `R` / `⌫` |
+| Rotate a piece you are still carrying | `B` or `R` |
 | Nudge selection | arrow keys |
 | 2D plan / 3D walk | `⌘1` / `⌘2` |
 | Turn the plan | `⌘[` / `⌘]` |
-| Undo / Redo | `⌘Z` / `⇧⌘Z` |
+| Undo / Redo | `⌘Z` / `⇧⌘Z`, or `⌘Y` |
 | Save / Open | `⌘S` / `⌘O` |
+| Show–hide the left / right panel | `⌘\` / `⇧⌘\` |
 | Walk / look | `WASD` / mouse |
 | Jump (×2) / crouch | `Space` / `C` |
 | Lights on–off (3D) | `L` |
+| Swing a door the other way (3D) | right-click it |
+| Paintball (3D) | `P` |
 
 Drag either divider beside the plan to resize the tool panel or the inspector;
 RoomCAD remembers the widths for your next visit. The shared password
@@ -105,15 +109,16 @@ both vendored under `roomcad/web/lib/`. There is no build step — the app is
 plain ES modules loaded through an import map.
 
 ```bash
-for t in tests/*.mjs; do node "$t"; done   # geometry, layout, UI contracts
-python3 tests/server-live.test.py          # API integration (spawns a server)
+./tests/run.sh          # the whole suite — geometry, layout, UI and API contracts
+./tests/run.sh --fast   # skip the four long fuzz files while iterating
 ```
 
-The visible release is defined once in
+The same suite runs in CI on every push and pull request. The visible release is
+defined once in
 [`roomcad/web/version.js`](roomcad/web/version.js) — increment it for every
 deployed user-facing fix. Deploy with
-[`roomcad/server/deploy.sh`](roomcad/server/deploy.sh); it never touches the
-live database or the password file.
+[`roomcad/server/deploy.sh`](roomcad/server/deploy.sh); it never rewrites the
+contents of the live database or the password file.
 
 ## Documentation
 
