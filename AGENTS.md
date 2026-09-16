@@ -73,7 +73,7 @@ the runner totals them.
 
 ## Identity
 
-`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.5";`. It is
+`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.6";`. It is
 the only release source, and it is **enforced** by `tests/version.test.mjs` — the
 footer must render it, `app.js` must import it, and `app.js`/`index.html` must not
 hard-code a `vX.Y` tag.
@@ -138,6 +138,27 @@ the assertion before "fixing" it.
   *before* the failure was counted — so those attempts escaped the throttle entirely.
 - **Bodies go through `_read_json_object()`, never `_read_json()`.** The latter
   happily returns a list or a scalar, and every caller then reached for `.get(...)`.
+- **No shadow caster may be given a negative depth bias** — not the room's point
+  lights, not the sun, not the street lamp. Three.js renders shadow maps from back
+  faces, so a closed caster already supplies the margin a bias would buy, and a
+  negative one does not tighten anything: it lets light through. A 512 map over a
+  wide reach needs a *normal* bias derived from its texel size instead.
+  `tests/plan-seal.test.mjs` resolves every `shadow.bias` in `walk3d.js`, literal or
+  named, and refuses a negative one.
+- **There are two wall-length floors and they are different rules.**
+  `MIN_WALL_LENGTH` (30 cm) is what the editor lets a user make — drawing and
+  dragging both use it; `MIN_WALL_LENGTH_KEPT` (15 cm) is what a file may keep, so
+  an older document with a 20 cm wall still opens. Using the file's threshold for
+  the editor's is how 20 cm became legal to hold and impossible to make.
+- **The room's light budget is spent on what the viewer can see.** More ceiling
+  fixtures than `MAX_ROOM_LIGHTS` is legal; the pool goes to the nearest and
+  follows the camera, and `roomLightReport()` is surfaced in the inspector rather
+  than leaving a lamp that lights nothing unexplained.
+- **`detectRooms()` has a memory cap and a `roomDetectionSkipped()` flag.** It
+  decomposes the plan on a grid built from wall endpoints, so cost grows with the
+  square of the distinct coordinates. When it gives up it returns no rooms — which
+  silently turns the floor area into a bounding box and unlocks every wall — so
+  anything that shows a measurement must read that flag.
 
 ## Releasing
 

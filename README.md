@@ -39,6 +39,9 @@ architectural or building-code tool.
   bookshelf, nightstand, dresser, armchair — plus two ceiling lights
   (60 W bulb, 200 W office panel). Drag a piece anywhere, including through a
   wall; it turns red where it does not fit and clears itself once it does.
+  Place as many lights as you like: the 3D view lights the ones nearest you
+  (16 at a time, because each casts a real shadow) and says so when a room goes
+  over.
 - **Auto-lay-out a floor**: choose how many rooms and the target m² each, and
   RoomCAD searches hundreds of arrangements for the one that lands closest,
   carving the corridors the rooms need to be reachable. Floor the rooms don't
