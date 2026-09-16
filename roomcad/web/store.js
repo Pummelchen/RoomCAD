@@ -337,7 +337,19 @@ export const store = {
     const p = P.snapWallEndpoint(this.room, raw, fixed, id);
     if (part === "start") wall.start = p;
     else wall.end = p;
-    if (P.wallLength(wall) >= 0.15) {
+    // The same floor the editor draws to. This used to accept 0.15 — the
+    // threshold sanitize() uses to repair a FILE — so a wall could be dragged
+    // down to half the length it was allowed to be drawn at: 20 cm was legal to
+    // hold, and impossible to make.
+    //
+    // A wall that is ALREADY shorter than the minimum, from an older document,
+    // is the one exception: it may keep its length, grow, or turn, but a drag
+    // may not make it shorter still. Without that it could never be reoriented,
+    // because every drag that did not lengthen it would be refused and the wall
+    // would simply look stuck.
+    const before = P.wallLength(this.room.walls[index]);
+    const after = P.wallLength(wall);
+    if (after >= P.MIN_WALL_LENGTH || (before < P.MIN_WALL_LENGTH && after >= before)) {
       this.room.walls[index] = wall;
     }
   },

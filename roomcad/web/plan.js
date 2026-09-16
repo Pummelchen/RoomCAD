@@ -32,7 +32,18 @@ export const WALL_JOIN_SEAL = 0.055; // WALL_THICKNESS / 2 + 5 mm overlap
 export const SILL_HEIGHT = 0.90;
 export const GLASS_HEIGHT = 1.00;
 export const DOOR_HEIGHT = 2.10;
+/// The shortest wall the editor will let you make: draw one this short and it
+/// is refused, with the message the user sees. Every path that CREATES or
+/// RESIZES a wall goes through this.
 export const MIN_WALL_LENGTH = 0.30;
+/// The shortest wall a loaded document may keep.
+///
+/// Lower than MIN_WALL_LENGTH on purpose, and it is not the same rule: this is
+/// the stub threshold for repairing a file, not a constraint the editor
+/// enforces. An older export, or a plan the generator once made, can hold a
+/// 20 cm wall and it still opens; refusing to load it would throw away work to
+/// enforce a drawing rule that did not exist when it was written.
+export const MIN_WALL_LENGTH_KEPT = 0.15;
 export const MIN_OPENING_WIDTH = { door: 0.6, window: 0.4 };
 export const MAX_OPENING_WIDTH = { door: 1.4, window: 2.0 };
 /// How close a wall end has to come to another wall before it locks onto it.
@@ -1136,8 +1147,28 @@ export function resizePublicArea(a, corner, raw, room) {
 
 // MARK: - Enclosed rooms
 
-const MAX_ROOM_CELLS = 60000;   // decomposition guard for pathological plans
+/// How many grid cells the room decomposition may allocate.
+///
+/// A memory guard, not a policy: the owner map is one Int32 per cell, so this
+/// bounds the largest array at about 4 MB. It used to be 60 000 — roughly
+/// 240 kB — which a plan of a couple of hundred walls at 1 cm resolution could
+/// exceed. When it did, the detector returned NO rooms, and everything that
+/// reads rooms went quietly wrong: every m² caption vanished, floorArea fell
+/// back to the bounding box, and because no region was recognisable as the
+/// outside, no wall was an outside wall and every wall became draggable. Nothing
+/// said a word. The cap is now generous enough not to be reached by real plans,
+/// and `roomDetectionSkipped()` reports it if it ever is.
+const MAX_ROOM_CELLS = 1000000;
 let _roomCache = { key: null, rooms: null, outsideWalls: null };
+/// True when the last detectRooms() gave up on the cell cap rather than
+/// returning a real answer. Callers that show a measurement read this so a
+/// degraded plan says so instead of displaying a guess as a fact.
+let _detectionSkipped = false;
+
+/// Whether the last room decomposition was skipped. See MAX_ROOM_CELLS.
+export function roomDetectionSkipped() {
+  return _detectionSkipped;
+}
 
 function roomSignature(room) {
   // Exported and callable on a half-built room (an import mid-parse, a caller
@@ -1161,10 +1192,13 @@ function roomSignature(room) {
 export function detectRooms(room) {
   const key = roomSignature(room);
   if (_roomCache.key === key) return _roomCache.rooms;
+  _detectionSkipped = false;
 
   const walls = (room.walls || []).filter(w => wallLength(w) >= 0.01);
   const result = [];
   if (walls.length < 3) {
+    // Not a skip: three walls cannot enclose anything, and that is a real
+    // answer rather than a refusal to work it out.
     _roomCache = { key, rooms: result, outsideWalls: new Set() };
     return result;
   }
@@ -1189,6 +1223,9 @@ export function detectRooms(room) {
   const nx = xs.length - 1;
   const nz = zs.length - 1;
   if (nx < 1 || nz < 1 || nx * nz > MAX_ROOM_CELLS) {
+    // Too detailed to decompose within the memory budget. Report it rather than
+    // returning an empty answer that looks like "this plan has no rooms".
+    _detectionSkipped = nx >= 1 && nz >= 1;
     _roomCache = { key, rooms: result, outsideWalls: new Set() };
     return result;
   }
@@ -1928,7 +1965,7 @@ export function sanitize(room) {
   room.furniture = room.furniture.map(f => (f.id ? f : { ...f, id: uid() }));
 
   room.walls = room.walls
-    .filter(w => wallLength(w) >= 0.15)
+    .filter(w => wallLength(w) >= MIN_WALL_LENGTH_KEPT)
     .map(w => ({
       ...w,
       start: { x: clamp(w.start.x, 0, canvas.width), z: clamp(w.start.z, 0, canvas.length) },

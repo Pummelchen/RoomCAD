@@ -526,6 +526,10 @@ function roomSection() {
   // the notch of an L-shaped plan as if it were inside.
   const area = P.floorArea(room).toFixed(2);
   const rooms = P.detectRooms(room).length;
+  // detectRooms() may have refused the plan as too detailed. Say so, and say
+  // what it means for the number above, rather than showing a bounding-box
+  // measurement as if it were the enclosed floor.
+  const detectionSkipped = P.roomDetectionSkipped();
   let html = `<h4>Room</h4>`;
   html += `<div class="field"><label>Room Name</label>` +
     `<input type="text" data-action="rename" value="${esc(room.name)}"></div>`;
@@ -551,6 +555,32 @@ function roomSection() {
   html += `<div class="stat-row"><span>Floor area</span><span>${area} m²</span></div>`;
   if (rooms > 0) {
     html += `<div class="stat-row"><span>Enclosed rooms</span><span>${rooms}</span></div>`;
+  }
+  if (detectionSkipped) {
+    // Not a cosmetic warning: with no rooms detected, floor area above is the
+    // bounding box rather than the enclosed floor, the room captions are gone,
+    // and no wall can be told apart as an outside wall — so every wall is
+    // draggable. The user needs to know why before they trust the number.
+    html += `<div class="inspector-note warn">This plan has too many walls for ` +
+      `RoomCAD to work out the enclosed rooms, so the floor area above is the ` +
+      `whole outline and the outer walls are not held in place. Move some walls ` +
+      `onto common grid lines, or use the 5 cm grid, to bring it back.</div>`;
+  }
+  // Ceiling lights past what the walkthrough will light. Each one costs six
+  // shadow renders, so the pool is capped and follows the viewer; the rest are
+  // still drawn and still glow. Reported here rather than left to be discovered
+  // as a lamp that does nothing. The walkthrough is built lazily on the first
+  // 3D entry, so this says nothing until it has been opened once.
+  const lightReport = walk3d && typeof walk3d.roomLightReport === "function"
+    ? walk3d.roomLightReport()
+    : null;
+  if (lightReport && lightReport.fixtures > lightReport.lit) {
+    html += `<div class="stat-row"><span>Ceiling lights</span>` +
+      `<span>${lightReport.lit} of ${lightReport.fixtures} lit</span></div>`;
+    html += `<div class="inspector-note warn">RoomCAD lights the ` +
+      `${lightReport.lit} ceiling lights nearest you at a time, because each one ` +
+      `costs six shadow renders. The others are drawn and glow, but light ` +
+      `nothing — remove a few if the room is too dim.</div>`;
   }
   html += `<div class="inspector-note">Tap a wall, door, window, or furniture to edit it. ` +
     `The grey area is just extra drawing space for more rooms.</div>`;

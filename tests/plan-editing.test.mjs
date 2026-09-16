@@ -663,6 +663,72 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
   check("detectRooms survives a room with no walls or no doors", threw === null, threw || "");
 }
 
+// ── A plan too detailed to decompose says so, and is not refused early ────
+//
+// The decomposition is a flood fill over a grid built from wall ENDPOINTS, so
+// its cost grows with the number of distinct coordinates squared. It has a
+// memory cap. It used to be 60 000 cells — about 240 kB — which a plan of a
+// couple of hundred walls could exceed; when it did the detector returned NO
+// rooms, silently, and everything downstream went quietly wrong: every m²
+// caption vanished, floorArea fell back to the bounding box, and since no
+// region was recognisable as the outside, no wall was an outside wall and every
+// wall became draggable. The cap is now generous, and exceeding it is reported.
+{
+  // A room of known size, plus many short stubs that add unique coordinates
+  // without enclosing anything — so the cell count climbs while the number of
+  // real rooms stays at one.
+  const busyPlan = (stubs) => {
+    const room = P.freshRoom("busy", 10, 10, 2.6);
+    room.walls = [
+      { id: "a", start: { x: 0, z: 0 }, end: { x: 10, z: 0 } },
+      { id: "b", start: { x: 10, z: 0 }, end: { x: 10, z: 10 } },
+      { id: "c", start: { x: 10, z: 10 }, end: { x: 0, z: 10 } },
+      { id: "d", start: { x: 0, z: 10 }, end: { x: 0, z: 0 } },
+    ];
+    for (let i = 0; i < stubs; i++) {
+      const off = 20 + i * 0.01;
+      room.walls.push({ id: `v${i}`, start: { x: off, z: 0 }, end: { x: off, z: 0.05 } });
+      room.walls.push({ id: `h${i}`, start: { x: 0, z: off }, end: { x: 0.05, z: off } });
+    }
+    return room;
+  };
+
+  // 300 stubs a side is about 90 000 cells: over the old cap, far under the new
+  // one. This is the case that used to lose the room measurement entirely.
+  const middling = busyPlan(300);
+  const regions = P.detectRooms(middling);
+  check("a plan too big for the old cap still measures its rooms",
+    regions.length === 1, `${regions.length} regions`);
+  check("and it is not reported as skipped", P.roomDetectionSkipped() === false);
+
+  // A normal plan never reports a skip.
+  P.detectRooms(P.freshRoom("plain", 6, 4, 2.6));
+  check("an ordinary plan is not reported as skipped", P.roomDetectionSkipped() === false);
+
+  // Now a genuinely pathological one: 1200 distinct coordinates a side is
+  // 1.44 million cells, past the new cap as well. It must still return an
+  // answer rather than throwing — and it must SAY it gave up.
+  const huge = busyPlan(1200);
+  let threw = null;
+  let hugeRegions = null;
+  try { hugeRegions = P.detectRooms(huge); } catch (e) { threw = e.message; }
+  check("a plan past the cap does not throw", threw === null, threw || "");
+  check("it returns no regions rather than a wrong answer",
+    Array.isArray(hugeRegions) && hugeRegions.length === 0);
+  check("and it reports that the decomposition was skipped",
+    P.roomDetectionSkipped() === true,
+    "silently returning nothing is what made every wall draggable");
+
+  // floorArea still answers, because a caller that ignores the flag must not get
+  // NaN — but the flag is what tells the UI the number is only an outline.
+  check("floorArea still answers for a skipped plan",
+    Number.isFinite(P.floorArea(huge)) && P.floorArea(huge) > 0);
+
+  // The flag must clear again, or one big plan would mark every later one.
+  P.detectRooms(P.freshRoom("after", 6, 4, 2.6));
+  check("the skip flag clears for the next plan", P.roomDetectionSkipped() === false);
+}
+
 // ── A malformed document must come back usable, not full of NaN ───────────
 //
 // sanitize() is built on clamp(), and Math.min(Math.max(NaN, lo), hi) is NaN.

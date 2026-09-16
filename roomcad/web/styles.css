@@ -861,6 +861,13 @@ body.resizing-sidebars * {
   line-height: 1.5;
 }
 
+/* A note that changes how the numbers above it should be read — here, that the
+   plan was too detailed to decompose, so the floor area is only an outline and
+   no wall is being held. Coloured so it is not mistaken for the usual hint. */
+.inspector-note.warn {
+  color: var(--danger);
+}
+
 .inspector-sep {
   height: 1px;
   background: var(--line);
