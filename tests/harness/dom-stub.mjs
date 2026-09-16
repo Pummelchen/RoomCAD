@@ -173,8 +173,15 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
   const byId = new Map();
   const frames = [];
 
+  // Document-level listeners are RECORDED, not dropped. app.js wires its whole
+  // keyboard interface on document, and a document whose addEventListener is a
+  // no-op accepts those handlers and then never fires one — so every keyboard
+  // behaviour looked wired and could not be tested, and a test could not tell
+  // "the app ignored it" from "nothing was listening".
+  const docListeners = new Map();
   const doc = {
     activeElement: null,
+    hidden: false,
     getElementById: id => {
       if (!byId.has(id)) byId.set(id, Object.assign(makeElement("div", doc), { id }));
       return byId.get(id);
@@ -183,7 +190,29 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
     createElementNS: (_ns, tag) => makeElement(tag, doc),
     querySelector: () => null,
     querySelectorAll: () => [],
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const list = docListeners.get(type) || [];
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
+    },
+    /// Deliver an event to document-level handlers, the way `dispatch` on an
+    /// element works. Returns how many ran.
+    dispatch(type, event = {}) {
+      const list = (docListeners.get(type) || []).slice();
+      const ev = makeEvent(type, event, doc);
+      for (const fn of list) fn(ev);
+      return list.length;
+    },
+    dispatchEvent(event) {
+      const type = event && event.type;
+      if (!type) return true;
+      for (const fn of (docListeners.get(type) || []).slice()) fn(event);
+      return true;
+    },
   };
   doc.body = makeElement("body", doc);
   doc.documentElement = makeElement("html", doc);
@@ -257,22 +286,65 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
     disconnect() {}
   }
 
+  // The live-collaboration channel. app.js opens one per watched room and reads
+  // events off it, and without the global it threw inside watchRoom — caught and
+  // logged, so the app carried on with the live feature quietly dead. Recording
+  // the connections makes that path inspectable instead of invisible.
+  class EventSourceStub {
+    constructor(url) {
+      this.url = String(url);
+      this.readyState = 0;
+      this.closed = false;
+      this.listeners = new Map();
+      EventSourceStub.opened.push(this);
+    }
+    addEventListener(type, fn) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(fn);
+    }
+    removeEventListener(type, fn) {
+      const list = this.listeners.get(type) || [];
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
+    }
+    /// Deliver a server event, the way a real stream would. Both ways of
+    /// listening count: app.js assigns `eventSource.onmessage`, and
+    /// addEventListener is the other form the platform offers.
+    emit(type, data) {
+      const direct = this["on" + type];
+      const list = (this.listeners.get(type) || []).slice();
+      if (typeof direct === "function") direct({ type, data });
+      for (const fn of list) fn({ type, data });
+      return list.length + (typeof direct === "function" ? 1 : 0);
+    }
+    close() { this.closed = true; this.readyState = 2; }
+  }
+  EventSourceStub.opened = [];
+  EventSourceStub.last = () => EventSourceStub.opened[EventSourceStub.opened.length - 1] || null;
+
   for (const [k, v] of Object.entries({
-    document: doc, window: win, ResizeObserver: ResizeObserverStub,
+    document: doc, window: win, ResizeObserver: ResizeObserverStub, EventSource: EventSourceStub,
     requestAnimationFrame: win.requestAnimationFrame,
     cancelAnimationFrame: win.cancelAnimationFrame,
     devicePixelRatio: dpr, getComputedStyle: win.getComputedStyle,
     alert: win.alert, confirm: win.confirm, prompt: win.prompt,
-    localStorage,
   })) {
     saved[k] = globalThis[k];
     globalThis[k] = v;
   }
+  // localStorage is set WITHOUT reading whatever is already there. Node defines
+  // one as a lazy accessor that prints an ExperimentalWarning the moment it is
+  // touched, and the bookkeeping above touches every global it saves — so the
+  // warning appeared on every install. Treated as absent, so restore() deletes
+  // it; a test that needs the real thing can put it back itself.
+  saved.localStorage = undefined;
+  globalThis.localStorage = localStorage;
 
   return {
     document: doc,
     window: win,
     canvas,
+    EventSource: EventSourceStub,
     /// Runs whatever the editor scheduled for the next frame. The editor
     /// batches redraws, so a test that wants to see a draw has to let one run.
     flushFrames(limit = 20) {

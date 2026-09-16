@@ -42,9 +42,11 @@ too.
   (**structure only** — it carries no room content), `Caddyfile`, the two systemd
   units, `roomcad.caddy`, `install-caddy.sh`, `deploy.sh`.
 - `tests/` — the suite, plus `tests/run.sh` (the runner) and `tests/harness/` with the
-  loaders (`load-web-module.mjs` rewrites only the bare `three` specifier and loads
-  everything else from its real path, plus `dom-stub.mjs`, `coplanar.mjs`,
-  `overlap.mjs`).
+  loaders: `load-web-module.mjs` (copies a module only when it has a BARE specifier
+  the page's import map resolves, and loads everything else from its real path),
+  `three-resolver.mjs` (a `registerHooks` resolver that applies that same map to the
+  whole graph, which is what makes `app.js` and `walk3d.js` importable at all),
+  `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`.
 - `.github/workflows/tests.yml` — CI. `.github/traffic.json` is badge data.
 - `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`.
   Required by `RELEASE.md` §1.6; update it in the same commit as a vendored upgrade.
@@ -194,11 +196,21 @@ contract, not that anything renders.
   stop-for-a-space path did not — and `_decideTurn` refuses to act on a "carry
   on" record at a junction with no road ahead. `tests/city-turns.test.mjs` pins
   all three, and its last section drives the real city.
-- **A gate that drives the traffic must seed its randomness.** `city.js` uses real
-  `Math.random()` for driving in production, deliberately, so a fuzz that drives
-  it unseeded is a coin toss that fails on a busy machine. `city-fuzz`,
-  `city-physics` and `city-turns` all seed it with `setTransportRandom()`; seed
-  any new drive the same way, and leave production alone — the app never calls it.
+- **A rewritten module is a different module instance, and that is load-bearing.**
+  `load-web-module.mjs` copies a module ONLY when it has a bare specifier the import
+  map resolves; a module whose imports are all relative is imported from its REAL
+  path. Copying one that did not need it gave editor-fuzz a `store` the editor had
+  never heard of — 133 checks became 118 passed and 13 failed with every gesture
+  doing nothing. And the yes/no decision must not be a `.test()` on a global regex:
+  a `g` regex carries `lastIndex` between calls, so the answer depends on how much
+  of the previous module was scanned.
+- **`app.js` and `walk3d.js` ARE importable now** — `tests/harness/three-resolver.mjs`
+  resolves the page's import map for the whole graph, which rewriting import lines
+  cannot do (`walk3d` imports `three/addons/…`, and those vendored addons import the
+  bare `three` themselves, so the chain dies a file deeper than any rewrite reaches).
+  A test opts in with `registerHooks({ resolve })` before it imports the app. The
+  older tests that lift app.js functions with `new Function` still work; new ones
+  should drive the real module.
 
 ## Releasing
 
