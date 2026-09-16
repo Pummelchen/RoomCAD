@@ -46,7 +46,10 @@ too.
   the page's import map resolves, and loads everything else from its real path),
   `three-resolver.mjs` (a `registerHooks` resolver that applies that same map to the
   whole graph, which is what makes `app.js` and `walk3d.js` importable at all),
-  `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`.
+  `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
+  the real `roomcad/web/index.html` into the stub, which is what makes the app's
+  BUTTONS testable: they are static markup, and `app.js` binds their clicks by
+  querying for them as it loads.
 - `.github/workflows/tests.yml` — CI. `.github/traffic.json` is badge data.
 - `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`.
   Required by `RELEASE.md` §1.6; update it in the same commit as a vendored upgrade.

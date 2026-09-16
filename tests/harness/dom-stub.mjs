@@ -10,6 +10,18 @@
 // 2D context records the calls made to it instead of rasterising. That is
 // enough for the editor, which reads only the canvas size and the pointer
 // position, and writes only through the store.
+//
+// `installDOM({ page: true })` additionally parses the real roomcad/web/index.html
+// into the document. That is off by default, because most tests want a blank
+// page with lazily-created elements; it is on for the tests that click the app's
+// own buttons, which only exist in that markup.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const webDir = join(here, "..", "..", "roomcad", "web");
 
 /// A canvas 2D context that draws nothing and remembers everything.
 function makeContext() {
@@ -66,6 +78,93 @@ function makeStyle() {
   });
 }
 
+// ── A small HTML parser, and the selector matching that goes with it ───────
+//
+// Enough for this repository's own markup: tags, quoted attributes, comments
+// and the void elements. index.html is hand-written and well formed, and the
+// app's innerHTML comes from template literals in the same style, so this does
+// not have to survive the open web. What it does have to do is put the REAL page
+// in the stub, because the toolbar buttons are static markup in index.html and
+// app.js binds their clicks by querying for them while it loads: a stub without
+// the page leaves every one of those bindings unmade, so a click on a tool
+// button did nothing and no test could tell.
+//
+// Selector support is deliberately the subset the app uses — a tag, #id,
+// .class, [attr] and [attr="value"], and descendant chains of those, which is
+// all index.html and app.js contain between them.
+
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr"]);
+
+function matchSimple(el, part) {
+  const m = /^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]+\])*)$/.exec(part);
+  if (!m) return false;
+  if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
+  for (const piece of (m[2] || "").match(/[.#][\w-]+|\[[^\]]+\]/g) || []) {
+    if (piece[0] === ".") {
+      if (!el.classList.contains(piece.slice(1))) return false;
+    } else if (piece[0] === "#") {
+      if (el.id !== piece.slice(1)) return false;
+    } else {
+      const inner = piece.slice(1, -1);
+      const eq = inner.indexOf("=");
+      if (eq < 0) {
+        if (!(inner in el.attributes)) return false;
+      } else {
+        const name = inner.slice(0, eq);
+        const want = inner.slice(eq + 1).replace(/^["']|["']$/g, "");
+        if (el.attributes[name] !== want) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function matchesSelector(el, selector) {
+  const parts = String(selector).trim().split(/\s+/).filter(Boolean);
+  if (!parts.length || !matchSimple(el, parts[parts.length - 1])) return false;
+  // Walk up, satisfying the earlier parts in order — a descendant combinator.
+  let i = parts.length - 2;
+  let node = el.parentNode;
+  while (i >= 0 && node) {
+    if (matchSimple(node, parts[i])) i--;
+    node = node.parentNode;
+  }
+  return i < 0;
+}
+
+function parseHTML(html, doc) {
+  const roots = [];
+  const stack = [];
+  const TOKEN_RE = /<!--[\s\S]*?-->|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
+  let m;
+  while ((m = TOKEN_RE.exec(html))) {
+    if (m[0].startsWith("<!--")) continue;
+    if (m[1]) {                                    // </tag>
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].tagName === m[1].toUpperCase()) { stack.length = i; break; }
+      }
+      continue;
+    }
+    if (m[2]) {                                    // <tag …>
+      const el = makeElement(m[2], doc);
+      const ATTR_RE = /([\w:.-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+      let a;
+      while ((a = ATTR_RE.exec(m[3] || ""))) {
+        el.setAttribute(a[1], a[2] ?? a[3] ?? a[4] ?? "");
+      }
+      const parent = stack[stack.length - 1];
+      if (parent) parent.appendChild(el); else roots.push(el);
+      if (m[4] !== "/" && !VOID_TAGS.has(m[2].toLowerCase())) stack.push(el);
+      continue;
+    }
+    if (m[5] && stack.length) {                    // text
+      stack[stack.length - 1].textContent += m[5];
+    }
+  }
+  return roots;
+}
+
 function makeElement(tag, doc) {
   const listeners = new Map();
   const el = {
@@ -106,11 +205,22 @@ function makeElement(tag, doc) {
     },
     /// Deliver an event to this element's handlers. Returns how many ran, so a
     /// test can tell "the editor ignored this" from "nothing was listening".
+    /// Deliver an event to this element's handlers, then to its ancestors' —
+    /// real DOM events bubble, and the app relies on it: the inspector attaches
+    /// ONE click listener to its container and finds the button with
+    /// `e.target.closest("button[data-action]")`, so without bubbling the
+    /// listener fires and `e.target` is never a button. Returns how many ran.
     dispatch(type, event = {}) {
-      const list = (listeners.get(type) || []).slice();
       const ev = makeEvent(type, event, el);
-      for (const fn of list) fn(ev);
-      return list.length;
+      let node = el;
+      let ran = 0;
+      while (node) {
+        ev.currentTarget = node;
+        for (const fn of (node.listeners.get(type) || []).slice()) { fn(ev); ran++; }
+        if (ev._stopped) break;
+        node = node.parentNode;
+      }
+      return ran;
     },
     getBoundingClientRect() {
       return {
@@ -134,15 +244,71 @@ function makeElement(tag, doc) {
     },
     remove() { if (el.parentNode) el.parentNode.removeChild(el); },
     replaceChildren(...cs) { el.children = []; cs.forEach(c => el.appendChild(c)); },
-    querySelector: () => null,
-    querySelectorAll: () => [],
-    setAttribute(k, v) { el.dataset[k] = v; if (k === "id") el.id = v; },
-    getAttribute: k => (k in el.dataset ? el.dataset[k] : null),
-    removeAttribute(k) { delete el.dataset[k]; },
-    contains: () => false,
-    closest: () => null,
+    matches: sel => matchesSelector(el, sel),
+    closest(sel) {
+      let node = el;
+      while (node) { if (matchesSelector(node, sel)) return node; node = node.parentNode; }
+      return null;
+    },
+    contains(other) {
+      let node = other;
+      while (node) { if (node === el) return true; node = node.parentNode; }
+      return false;
+    },
+    querySelectorAll(sel) {
+      const out = [];
+      const walk = node => {
+        for (const child of node.children) {
+          if (matchesSelector(child, sel)) out.push(child);
+          walk(child);
+        }
+      };
+      walk(el);
+      return out;
+    },
+    querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+    setAttribute(name, value) {
+      const v = String(value);
+      el.attributes[name] = v;
+      if (name === "id") el.id = v;
+      else if (name === "class") el.className = v;
+      else if (name === "value") el.value = v;
+      else if (name === "type") el.type = v;
+      else if (name === "hidden") el.hidden = true;
+      else if (name === "disabled") el.disabled = true;
+      else if (name.startsWith("data-")) {
+        // data-foo-bar is dataset.fooBar, which is how the app reads the tool
+        // and mode a button stands for.
+        el.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v;
+      }
+      return v;
+    },
+    getAttribute(name) { return name in el.attributes ? el.attributes[name] : null; },
+    hasAttribute: name => name in el.attributes,
+    removeAttribute(name) { delete el.attributes[name]; },
+    attributes: {},
     scrollIntoView() {},
   };
+  // `class` and `innerHTML` are accessors rather than plain fields, so that
+  // writing one keeps the other two views of the same thing in step: className
+  // and classList are the same set, and innerHTML builds real children (which is
+  // what makes the app's rendered buttons queryable and clickable at all).
+  Object.defineProperty(el, "className", {
+    get: () => [...el.classList._set].join(" "),
+    set: value => { el.classList._set = new Set(String(value).split(/\s+/).filter(Boolean)); },
+    enumerable: true,
+  });
+  let html = "";
+  Object.defineProperty(el, "innerHTML", {
+    get: () => html,
+    set: value => {
+      html = String(value);
+      el.children = [];
+      for (const child of parseHTML(html, doc)) el.appendChild(child);
+    },
+    enumerable: true,
+  });
+  if (doc._all) doc._all.push(el);
   return el;
 }
 
@@ -160,18 +326,23 @@ function makeEvent(type, fields, target) {
     isPrimary: true,
     defaultPrevented: false,
     preventDefault() { this.defaultPrevented = true; },
-    stopPropagation() {},
-    stopImmediatePropagation() {},
+    stopPropagation() { this._stopped = true; },
+    stopImmediatePropagation() { this._stopped = true; },
     ...fields,
   };
 }
 
 /// Installs the globals editor2d.js reaches for, and hands back the handles a
 /// test needs to drive it. Call `restore()` when done.
-export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
+export function installDOM({ width = 1200, height = 800, dpr = 1, page = false } = {}) {
   const saved = {};
   const byId = new Map();
   const frames = [];
+  // Every element this install ever creates, in creation order. The document
+  // queries search THIS rather than the tree: the app's buttons are built by
+  // assigning innerHTML and never attached to the document, so a tree-only
+  // search would find none of them.
+  const all = [];
 
   // Document-level listeners are RECORDED, not dropped. app.js wires its whole
   // keyboard interface on document, and a document whose addEventListener is a
@@ -182,14 +353,15 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
   const doc = {
     activeElement: null,
     hidden: false,
+    _all: all,
     getElementById: id => {
       if (!byId.has(id)) byId.set(id, Object.assign(makeElement("div", doc), { id }));
       return byId.get(id);
     },
     createElement: tag => makeElement(tag, doc),
     createElementNS: (_ns, tag) => makeElement(tag, doc),
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: sel => all.find(el => matchesSelector(el, sel)) || null,
+    querySelectorAll: sel => all.filter(el => matchesSelector(el, sel)),
     addEventListener(type, fn) {
       if (!docListeners.has(type)) docListeners.set(type, []);
       docListeners.get(type).push(fn);
@@ -218,11 +390,33 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
   doc.documentElement = makeElement("html", doc);
   doc.activeElement = doc.body;
 
-  const canvas = makeElement("canvas", doc);
+  let canvas = makeElement("canvas", doc);
   canvas.id = "plan-canvas";
   canvas.clientWidth = width;
   canvas.clientHeight = height;
   byId.set("plan-canvas", canvas);
+
+  // The real page, when a test asks for it. Parsed AFTER the canvas so that the
+  // page's own <canvas id="plan-canvas"> takes over its sizing — the element the
+  // app will actually look up has to be the one with a size on it.
+  if (page) {
+    const html = readFileSync(join(webDir, "index.html"), "utf8");
+    const roots = parseHTML(html, doc);
+    const root = roots.find(el => el.tagName === "HTML") || roots[0];
+    if (root) doc.documentElement = root;
+    const body = root ? root.querySelector("body") : null;
+    if (body) doc.body = body;
+    for (const el of all) if (el.id) byId.set(el.id, el);
+
+    const pageCanvas = byId.get("plan-canvas");
+    if (pageCanvas && pageCanvas !== canvas) {
+      pageCanvas.clientWidth = width;
+      pageCanvas.clientHeight = height;
+      pageCanvas.width = Math.round(width * dpr);
+      pageCanvas.height = Math.round(height * dpr);
+      canvas = pageCanvas;
+    }
+  }
 
   // In-memory localStorage, fresh per install so no test can read another's.
   // app.js persists the sidebar layout through it, and node only provides a
