@@ -292,5 +292,92 @@ check("and the old :8443 links are checked too", /:8443\//.test(deploy));
     /if \[ "\$code" != "200" \]; then[\s\S]{0,120}exit 1/.test(deploy));
 }
 
+// ── The API's own unit, and the data it is allowed to touch ──────────────
+//
+// The API parses untrusted request bodies and holds the database, and it used
+// to do that as root with no sandboxing at all — while the Caddy unit beside
+// it, which only serves static files, was fully hardened. systemd-analyze
+// security scored the old unit 9.4 UNSAFE. These checks keep it from drifting
+// back, because nothing else in the suite would notice.
+{
+  const unit = readFileSync(join(root, "roomcad", "server", "roomcad.service"), "utf8");
+  const unitCode = unit.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+
+  check("the API does not run as root",
+    /^User=(?!root\b)\S+/m.test(unitCode) && !/^User=root$/m.test(unitCode));
+  check("it runs as a fixed, named account rather than a dynamic one",
+    /^User=roomcadapp$/m.test(unitCode));
+
+  for (const directive of [
+    "NoNewPrivileges=true",
+    "PrivateTmp=true",
+    "ProtectSystem=strict",
+    "ProtectHome=true",
+    "ProtectKernelTunables=true",
+    "ProtectKernelModules=true",
+    "ProtectControlGroups=true",
+    "RestrictNamespaces=true",
+    "RestrictSUIDSGID=true",
+    "LockPersonality=true",
+  ]) {
+    check(`the unit keeps ${directive}`, unitCode.includes(directive));
+  }
+
+  // ProtectSystem=strict makes everything read-only, so the one tree the API
+  // may write has to be granted explicitly — and it must be the tree the
+  // database actually lives in, or the service cannot start.
+  check("the one writable path is declared", /^ReadWritePaths=\/var\/roomcad$/m.test(unitCode));
+  check("the password file stays an optional EnvironmentFile",
+    /^EnvironmentFile=-\/var\/roomcad\/roomcad\.env$/m.test(unitCode));
+
+  // deploy.sh has to create that account and hand it the files it needs —
+  // including the legacy .rcad directory, which the one-shot migration deletes
+  // from and which would otherwise be a PermissionError at boot.
+  check("deploy creates the service account",
+    /useradd[^\n]*roomcadapp/.test(deploy));
+  // It hands them over in a loop rather than naming each file on its own line.
+  check("deploy hands it the database",
+    /for f in rooms\.db rooms\.db-wal rooms\.db-shm/.test(deploy)
+    && /chown roomcadapp:roomcadapp/.test(deploy));
+  check("deploy covers the WAL sidecars SQLite keeps beside it",
+    /rooms\.db-wal/.test(deploy) && /rooms\.db-shm/.test(deploy));
+  check("deploy hands it the legacy .rcad directory the migration deletes from",
+    /chown -R roomcadapp:roomcadapp[^\n]*\/var\/roomcad\/rooms/.test(deploy));
+}
+
+// ── The database dump must not publish anyone's room ─────────────────────
+//
+// rooms.db.sql used to carry a full dump of real saved rooms — real designs,
+// real ids, real timestamps — in a public repository, while the live site sat
+// behind a password. It stays a usable restore, but structure only.
+{
+  const dump = readFileSync(join(root, "roomcad", "server", "rooms.db.sql"), "utf8");
+  // Checked against code only: the file explains in a comment that there is no
+  // DROP TABLE, and the comment says the very thing being checked for.
+  const dumpCode = dump.split("\n").filter(l => !/^\s*--/.test(l)).join("\n");
+
+  check("the dump carries no saved room content",
+    !/INSERT\s+INTO\s+rooms\b/i.test(dumpCode));
+  check("but it still restores the schema",
+    /CREATE TABLE rooms\b/i.test(dumpCode) && /CREATE TABLE browser_sessions\b/i.test(dumpCode));
+  check("and the indexes the queries rely on",
+    /idx_rooms_name/.test(dumpCode) && /idx_browser_sessions_expiry/.test(dumpCode));
+  // No DROP TABLE: run against a live database it must stop rather than
+  // overwrite it.
+  check("it cannot overwrite a live database", !/DROP\s+TABLE/i.test(dumpCode));
+}
+
+// ── Compression must stay off the event stream ───────────────────────────
+//
+// At site level `encode gzip` also wrapped the /api/* proxy, and that is the
+// live-collaboration SSE response — held open and flushed in pieces.
+{
+  const apiBlock = prod.slice(prod.indexOf("handle /api/*"), prod.indexOf("\n\thandle {"));
+  check("compression is enabled somewhere for the static files",
+    /encode\s+gzip/.test(prod));
+  check("but not inside the API proxy block",
+    !/encode\s+gzip/.test(apiBlock), apiBlock.slice(0, 80));
+}
+
 console.log(`${passed} passed, ${failed} failed — deployment config contracts`);
 if (failed) process.exit(1);
