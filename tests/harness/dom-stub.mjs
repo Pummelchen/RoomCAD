@@ -39,6 +39,33 @@ function makeContext() {
   return ctx;
 }
 
+/// A `style` object that is both things the app needs it to be: arbitrary
+/// properties, the way it sets them (`el.style.display = "none"`), AND the
+/// methods it calls on the document element
+/// (`style.setProperty("--sidebar-width", …)`). The bare `{}` this used to be
+/// has no `setProperty`, and that — not anything about WebGPU — is what stopped
+/// app.js being imported at all.
+function makeStyle() {
+  const props = new Map();
+  const api = {
+    setProperty(name, value) { props.set(name, String(value)); },
+    getPropertyValue(name) { return props.has(name) ? props.get(name) : ""; },
+    removeProperty(name) { const had = props.get(name) ?? ""; props.delete(name); return had; },
+  };
+  return new Proxy(api, {
+    get(target, key) {
+      if (key in target) return target[key];
+      if (key === "cssText") return [...props].map(([k, v]) => `${k}: ${v}`).join("; ");
+      return props.has(key) ? props.get(key) : undefined;
+    },
+    set(target, key, value) {
+      if (key in target) { target[key] = value; return true; }
+      props.set(key, value);
+      return true;
+    },
+  });
+}
+
 function makeElement(tag, doc) {
   const listeners = new Map();
   const el = {
@@ -50,7 +77,7 @@ function makeElement(tag, doc) {
     innerHTML: "",
     disabled: false,
     hidden: false,
-    style: {},
+    style: makeStyle(),
     dataset: {},
     children: [],
     parentNode: null,
@@ -168,6 +195,21 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
   canvas.clientHeight = height;
   byId.set("plan-canvas", canvas);
 
+  // In-memory localStorage, fresh per install so no test can read another's.
+  // app.js persists the sidebar layout through it, and node only provides a
+  // localStorage of its own when started with --localstorage-file — without
+  // this, importing app.js throws before a single test can run. Declared before
+  // `win`, which exposes it as a property.
+  const localStore = new Map();
+  const localStorage = {
+    getItem: k => (localStore.has(String(k)) ? localStore.get(String(k)) : null),
+    setItem: (k, v) => { localStore.set(String(k), String(v)); },
+    removeItem: k => { localStore.delete(String(k)); },
+    clear: () => localStore.clear(),
+    key: i => [...localStore.keys()][i] ?? null,
+    get length() { return localStore.size; },
+  };
+
   const winListeners = new Map();
   const win = {
     innerWidth: width,
@@ -189,6 +231,18 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
       for (const fn of list) fn(ev);
       return list.length;
     },
+    /// The DOM's own name for it. `dispatch` above is this file's helper, which
+    /// synthesises the event from a plain object; app.js calls the real API with
+    /// an Event it built itself, and that has to reach the same listeners.
+    dispatchEvent(event) {
+      const type = event && event.type;
+      if (!type) return true;
+      for (const fn of (winListeners.get(type) || []).slice()) fn(event);
+      return true;
+    },
+    localStorage,
+    getSelection: () => ({ rangeCount: 0, removeAllRanges() {}, addRange() {}, toString: () => "" }),
+    scrollTo() {}, scrollBy() {},
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
     cancelAnimationFrame() {},
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
@@ -209,6 +263,7 @@ export function installDOM({ width = 1200, height = 800, dpr = 1 } = {}) {
     cancelAnimationFrame: win.cancelAnimationFrame,
     devicePixelRatio: dpr, getComputedStyle: win.getComputedStyle,
     alert: win.alert, confirm: win.confirm, prompt: win.prompt,
+    localStorage,
   })) {
     saved[k] = globalThis[k];
     globalThis[k] = v;
