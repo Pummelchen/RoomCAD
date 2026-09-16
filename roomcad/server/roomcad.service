@@ -1,16 +1,49 @@
+# RoomCAD's save + live-collaboration API.
+#
+# It used to run as root with no sandboxing at all, while the Caddy instance
+# beside it — which only serves static files — was fully hardened. This is the
+# process that parses untrusted request bodies and holds the database, so it is
+# the one that needed it more.
 [Unit]
 Description=RoomCAD V2 save API
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /var/roomcad/server.py
+# A dedicated unprivileged account. It needs to read server.py and the password
+# file, and to read+write the database — nothing else on the host.
+User=roomcadapp
+Group=roomcadapp
 WorkingDirectory=/var/roomcad
+ExecStart=/usr/bin/python3 /var/roomcad/server.py
 # Holds ROOMCAD_PASSWORD (git-ignored, created manually on the host). The "-"
-# means "start anyway if missing" (logins are then disabled).
+# means "start anyway if missing" (logins are then disabled). systemd reads this
+# as root before dropping privileges, so mode 600 root:root still works.
 EnvironmentFile=-/var/roomcad/roomcad.env
 Restart=always
 RestartSec=2
+
+# ---- Sandboxing ----------------------------------------------------------
+# The API answers on loopback HTTP and speaks to SQLite. That is the whole of
+# its legitimate reach, so everything else is denied.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# ProtectSystem=strict makes the whole filesystem read-only; this is the one
+# tree it may write. The directory itself has to be writable, not just the
+# file: SQLite keeps rooms.db-wal and rooms.db-shm beside the database.
+ReadWritePaths=/var/roomcad
 
 [Install]
 WantedBy=multi-user.target

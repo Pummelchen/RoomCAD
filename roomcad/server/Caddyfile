@@ -18,7 +18,7 @@
 # link dangled and deploys began failing.
 #
 # RoomCAD's route into the master is the single file roomcad.caddy, installed
-# into /var/caddy/sites/. No project edits another's routes.
+# into /var/caddy/projects/. No project edits another's routes.
 
 {
 	# Nothing here is reached from outside, so there is no TLS and no automatic
@@ -39,7 +39,6 @@
 # 200 — a success with no body, and no error logged anywhere.
 :8081 {
 	bind 127.0.0.1
-	encode gzip
 
 	header {
 		# In Caddy a leading "-" DELETES a header. These lines used to carry one,
@@ -78,6 +77,12 @@
 	handle {
 		root * /var/roomcad/web
 		file_server
+		# Compression belongs here, on the static files only. At site level it
+		# also wrapped the /api/* proxy — that is the live-collaboration SSE
+		# stream, and a response that is deliberately held open and flushed in
+		# pieces is the last thing to hand to a compressor. web/Caddyfile has
+		# always scoped it this way; this config now matches.
+		encode gzip
 		# Revalidate every time, so a browser never keeps serving the previous
 		# build of a module after a deploy.
 		header Cache-Control "no-cache"

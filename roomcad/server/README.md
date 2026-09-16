@@ -9,13 +9,13 @@ from scratch if the VPS is ever lost. The web app itself lives in
 | File | Purpose |
 | --- | --- |
 | `server.py` | Python (stdlib) save + live-collaboration API, SQLite-backed |
-| `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078` |
-| `Caddyfile` | RoomCAD's **own** Caddy config — terminates TLS, serves the web app, proxies `/api/*` to the API |
+| `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078`, as the unprivileged `roomcadapp` user in a systemd sandbox |
+| `Caddyfile` | RoomCAD's **own** Caddy config — serves the web app and proxies `/api/*` to the API. It does **not** terminate TLS: it listens on plain HTTP on loopback, and the host's master Caddy owns 80/443 |
 | `roomcad-caddy.service` | systemd unit for RoomCAD's own Caddy instance, under its own user |
 | `roomcad.caddy` | RoomCAD's route in the host's master server — the one file it installs outside `/var/roomcad` |
 | `install-caddy.sh` | installs the latest **official** Caddy release as a project's own binary |
-| `schema.sql` | SQLite schema (versioned rooms plus hashed browser session records) |
-| `rooms.db.sql` | full SQL dump of the rooms database (structure + content), restorable |
+| `schema.sql` | SQLite schema (versioned rooms plus hashed browser session records); documentation — `server.py` creates the schema itself at boot |
+| `rooms.db.sql` | the database **structure**, restorable into an empty file. Structure only: it carries no room content |
 | `deploy.sh` | one-command deploy of the web app + API to the VPS |
 
 ## Server layout on the VPS
@@ -106,8 +106,13 @@ unbuffered.
 
 ### HTTP/3 (QUIC)
 
-Enabled explicitly with `protocols h1 h2 h3`, so Caddy listens on **UDP 8443**
-as well as TCP and advertises `Alt-Svc: h3=":8443"`.
+TLS and QUIC belong to the **master** Caddy. It terminates TLS, advertises
+`Alt-Svc` and answers on port 8443 as well as 443. RoomCAD's own instance is
+plain HTTP on loopback with `auto_https off` — it has no TLS listener at all, so
+nothing in this directory enables or disables HTTP/3.
+
+The rest of this section is about judging whether QUIC actually works, which is
+worth keeping because it is very easy to measure wrongly.
 
 QUIC is UDP, and **a firewall rule that opens a TCP port does not open the UDP
 one** — they are separate rules. Both the host firewall and the provider's
@@ -181,9 +186,10 @@ logins are disabled (fail-closed).
 
 ## Restoring from a lost VPS
 
-1. Provision a Linux host and install Caddy, certbot and Python 3
-   (RoomCAD then keeps its own copy of the Caddy binary; see `split-caddy-instances.sh`)
-   (stdlib only).
+1. Provision a Linux host with Python 3 (standard library only) and the host's
+   **master Caddy** (`/var/caddy`), which owns ports 80 and 443, terminates TLS
+   and routes hostnames. RoomCAD then installs its **own** copy of the Caddy
+   binary with `install-caddy.sh`.
 2. Restore this directory:
 
    ```bash
@@ -192,13 +198,18 @@ logins are disabled (fail-closed).
    chmod 755 /var/roomcad/server.py
    ```
 
-3. Restore the database from the dump:
+3. Restore the database **structure** from the dump:
 
    ```bash
    sqlite3 /var/roomcad/rooms.db < rooms.db.sql
    ```
 
-4. Install the service, Caddy config and the password env file:
+   `rooms.db.sql` is structure only — it deliberately carries no room content,
+   because a public repository is the wrong place for real designs. Restore the
+   rooms themselves from a server-side backup of `rooms.db` if you have one; a
+   fresh install simply starts empty.
+
+4. Install the service, its account, the Caddy config and the password env file:
 
    ```bash
    cp roomcad.service /etc/systemd/system/roomcad.service
@@ -206,6 +217,16 @@ logins are disabled (fail-closed).
    cp Caddyfile /var/roomcad/caddy/Caddyfile
    chown root:roomcadweb /var/roomcad/caddy/Caddyfile
    chmod 640 /var/roomcad/caddy/Caddyfile
+
+   # The API runs as an unprivileged user with a read-only filesystem apart
+   # from /var/roomcad. It must own the database, the WAL sidecars SQLite
+   # keeps beside it, and the directory they live in; the legacy .rcad
+   # directory too, because the one-shot migration deletes what it imports.
+   useradd --system --no-create-home --shell /usr/sbin/nologin roomcadapp
+   install -d -o roomcadapp -g roomcadapp -m 755 /var/roomcad
+   chown roomcadapp:roomcadapp /var/roomcad/rooms.db
+   [ -d /var/roomcad/rooms ] && chown -R roomcadapp:roomcadapp /var/roomcad/rooms
+
    printf 'ROOMCAD_PASSWORD=your-password\n' > /var/roomcad/roomcad.env
    chmod 600 /var/roomcad/roomcad.env
    systemctl daemon-reload
@@ -213,34 +234,22 @@ logins are disabled (fail-closed).
    systemctl reload caddy
    ```
 
-5. Obtain the certificate, then give Caddy a copy it can read.
+5. Nothing else. The **master** Caddy owns port 80, so it answers the ACME
+   challenge itself and obtains and renews the certificate for this hostname:
+   there is no certbot, no certificate for RoomCAD to keep, and no copy to
+   refresh. Install RoomCAD's route into the master (`roomcad.caddy`, one file
+   in `/var/caddy/projects/`) and validate the master's whole config before
+   reloading it — `deploy.sh` does both. RoomCAD is then at
+   **https://roomcad.91.99.176.243.nip.io/**.
 
-   Caddy serves RoomCAD end to end, TLS included — nginx is not involved. It
-   listens on **8443** rather than 443 because an unrelated service already
-   holds 80 and 443 on this host; that also rules out Caddy running ACME for
-   itself, since HTTP-01 needs port 80 and TLS-ALPN-01 needs port 443. So
-   certbot obtains the certificate over another site's webroot, and a deploy
-   hook copies it into `/var/roomcad/tls/`, which the `caddy` user can read
-   (certbot's own store is `0700 root:root`).
-
-   ```bash
-   certbot certonly --webroot -w /var/minecraftai/web/site/public \
-     -d roomcad.91.99.176.243.nip.io --key-type ecdsa --agree-tos --non-interactive
-   ```
-
-   `deploy.sh` installs the hook and runs it once, so there is nothing else to
-   do here. RoomCAD is then at **https://roomcad.91.99.176.243.nip.io:8443/**.
+   Port **8443** is also answered by the master, because links were handed out
+   while RoomCAD terminated TLS there itself.
 
 ## Deploying
 
 Run `./deploy.sh` from this directory (uses your SSH key). It synchronizes the
-web app with deletion enabled, uploads the API, installs the
-service and Caddy config, and restarts the services. It never touches
-`rooms.db` or `roomcad.env`, so live data and the password are preserved.
-
-## HTTP/3 (QUIC)
-
-Caddy 2.6+ serves HTTP/3 automatically for every TLS site (no extra directive
-needed), so the production `:8443` site already accepts HTTP/3 over **UDP 8443**
-(and standard UDP 443 where available) in addition to HTTP/1.1 + HTTP/2 over
-TCP. Just make sure the firewall allows UDP on the TLS port.
+web app with deletion enabled, uploads the API, installs the service units, the
+Caddy config and RoomCAD's route in the master, ensures the `roomcadapp` account
+and its file ownership, and restarts the services. It never rewrites
+`rooms.db` **contents** or `roomcad.env`, so live data and the password are
+preserved.

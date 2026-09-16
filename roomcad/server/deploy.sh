@@ -70,6 +70,28 @@ ssh "$HOST" "touch /var/roomcad/roomcad.env && chmod 600 /var/roomcad/roomcad.en
   if grep -q '^ROOMCAD_PROXY_HOPS=' /var/roomcad/roomcad.env; then \
     sed -i 's/^ROOMCAD_PROXY_HOPS=.*/ROOMCAD_PROXY_HOPS=1/' /var/roomcad/roomcad.env; \
   else echo 'ROOMCAD_PROXY_HOPS=1' >> /var/roomcad/roomcad.env; fi"
+
+# The API runs as its own unprivileged account (see roomcad.service). Create it
+# once, then hand it the data it has to write: the database, the WAL sidecars
+# SQLite creates beside it, and the directory they live in. The legacy .rcad
+# directory is included because the one-shot migration READS each file and then
+# removes it — a root-owned directory would make that an unhandled
+# PermissionError at boot, so the service would not start at all.
+#
+# chown, never chmod -R: the web root, the Caddy tree and the password file keep
+# their own owners. This moves ownership of rooms.db rather than deleting or
+# rewriting it, so the live data is preserved — the deploy still never touches
+# its contents.
+echo "Ensuring the API service account and data ownership …"
+ssh "$HOST" "id -u roomcadapp >/dev/null 2>&1 || \
+    useradd --system --no-create-home --shell /usr/sbin/nologin roomcadapp; \
+  install -d -o roomcadapp -g roomcadapp -m 755 /var/roomcad; \
+  for f in rooms.db rooms.db-wal rooms.db-shm; do \
+    if [ -e \"/var/roomcad/\$f\" ]; then chown roomcadapp:roomcadapp \"/var/roomcad/\$f\"; fi; \
+  done; \
+  if [ -d /var/roomcad/rooms ]; then chown -R roomcadapp:roomcadapp /var/roomcad/rooms; fi; \
+  true"
+
 ssh "$HOST" "systemctl restart roomcad"
 
 # Reload, then check it is actually still running. Caddy can panic while
