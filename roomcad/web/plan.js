@@ -1,6 +1,7 @@
 // plan.js — room model and geometry for RoomCAD web.
-// Mirrors the native Swift app 1:1, including the .room JSON format, so rooms
-// can be exchanged between the web version and the native app.
+// The room it builds is the .rcad document (ROOM_FILE_FORMAT below) and that is
+// the only format there is: the 2D editor, the 3D walkthrough and the SVG
+// export all read and write a room through the functions here.
 
 export const GRID_STEPS = {
   oneCentimeter:   { label: "1 cm", meters: 0.01 },
@@ -925,16 +926,26 @@ export function furnitureIntersectsWall(room, item) {
 }
 
 export function isFurniturePlacementValid(room, item, excluded = new Set()) {
+  // A kind with no palette entry has no footprint to test, and a document that
+  // names one cannot be loaded at all: sanitize() drops those items, and this is
+  // the same rule one step earlier, so a caller holding an un-repaired item gets
+  // "that cannot go here" instead of a TypeError.
+  const itemKind = FURNITURE_KINDS[item.kind];
+  if (!itemKind) return false;
   const f = furnitureFootprint(item);
   const canvas = canvasOf(room);
   if (f.minX < 0 || f.maxX > canvas.width || f.minZ < 0 || f.maxZ > canvas.length) return false;
   if (furnitureIntersectsWall(room, item)) return false;
-  const itemIsFixture = FURNITURE_KINDS[item.kind].category === "fixture";
+  const itemIsFixture = itemKind.category === "fixture";
   return !room.furniture.some(other => {
     if (excluded.has(other.id)) return false;
+    const otherKind = FURNITURE_KINDS[other.kind];
+    // An item this build cannot measure is not something a placement can be
+    // said to collide with; sanitize() would have dropped it on load anyway.
+    if (!otherKind) return false;
     // Ceiling fixtures may hover above furniture, but not above other
     // fixtures (and floor furniture still can't overlap floor furniture).
-    const otherIsFixture = FURNITURE_KINDS[other.kind].category === "fixture";
+    const otherIsFixture = otherKind.category === "fixture";
     if (itemIsFixture !== otherIsFixture) return false;
     const g = furnitureFootprint(other);
     return f.minX < g.maxX && f.maxX > g.minX && f.minZ < g.maxZ && f.maxZ > g.minZ;
@@ -1810,7 +1821,22 @@ export function splitWallsAtJunctions(room) {
       .sort((a, b) => a - b);
     if (!usable.length) { out.push(wall); continue; }
 
-    const marks = [0, ...usable, wallLength(wall)];
+    // Two cuts can crowd each other even when each is far from the wall's own
+    // ends: two junctions 4 cm apart left a 4 cm piece between them, and
+    // sanitize drops anything under 15 cm on the next load, so that boundary
+    // became a hole and two rooms merged. A cut is therefore only made when it
+    // leaves a whole wall between it and the last one accepted. The junction it
+    // skips is not lost — the wall still meets this one part-way along, which is
+    // exactly a T-junction. MIN_WALL_LENGTH rather than sanitize's 15 cm, to
+    // match the end guard above: a cut piece should be a wall you could draw.
+    const spaced = [];
+    for (const at of usable) {
+      if (at - (spaced.length ? spaced[spaced.length - 1] : 0) < MIN_WALL_LENGTH) continue;
+      spaced.push(at);
+    }
+    if (!spaced.length) { out.push(wall); continue; }
+
+    const marks = [0, ...spaced, wallLength(wall)];
     const pieces = [];
     for (let i = 0; i < marks.length - 1; i++) {
       const a = wallPointAt(wall, marks[i]);
@@ -1855,8 +1881,18 @@ export function splitWallsAtJunctions(room) {
 }
 
 export function sanitize(room) {
-  room.width = clamp(room.width, 2, 20);
-  room.length = clamp(room.length, 2, 20);
+  // `width` and `length` are measured, not stored settings: syncExtent() at the
+  // end overwrites both with the bounds of the walls that are actually drawn.
+  // So there is no room-size range to enforce here, and the 2..20 clamp that
+  // used to sit here was undone by syncExtent on the very next step — it never
+  // described the room the engine went on to use. What these fields must obey
+  // before the walls are read is the PLATE's own range, not a room range: they
+  // seed the canvas for a document that has none and the canvas may never be
+  // smaller than the room, so a corrupt 1e9 here would grow the plate without
+  // limit. 60 m is the canvas's own maximum. A plan that draws no walls keeps
+  // the size it stored, since there is nothing to measure.
+  room.width = clamp(room.width, 2, 60);
+  room.length = clamp(room.length, 2, 60);
   room.height = clamp(room.height, 2.2, 5);
 
   // Canvas: the buildable base plate. Always at least as large as the main
@@ -1897,7 +1933,22 @@ export function sanitize(room) {
       ...w,
       start: { x: clamp(w.start.x, 0, canvas.width), z: clamp(w.start.z, 0, canvas.length) },
       end: { x: clamp(w.end.x, 0, canvas.width), z: clamp(w.end.z, 0, canvas.length) },
-    }));
+    }))
+    // This model has no diagonal walls. detectRooms() reads the plan off a grid
+    // built from wall ENDPOINTS, which only works when every wall lies on one
+    // of its two lines, and the 3D collider builds an axis-aligned box per wall.
+    // A wall with both dx and dz is therefore a shape nothing downstream can
+    // represent — left in, it silently corrupts the room count and the physics
+    // rather than failing. It cannot be repaired without inventing geometry the
+    // file did not draw: snapping one end to the other's line means choosing an
+    // end, and either choice can tear a join apart. So it is dropped, exactly
+    // as a stub wall or a label with no centre is, and the plan around it still
+    // opens. `1e-6` is the tolerance healWallJoints and splitWallsAtJunctions
+    // already use for "this wall is axis-aligned"; the paths the UI draws and
+    // drags through (axisAligned, dragWall) only ever produce exactly-equal
+    // coordinates, so a rectilinear plan passes through here untouched and
+    // running sanitize twice drops nothing more.
+    .filter(w => Math.abs(w.end.x - w.start.x) < 1e-6 || Math.abs(w.end.z - w.start.z) < 1e-6);
   // Close the joints before anything downstream asks what the walls enclose.
   // Every path into the model comes through here — drawing, dragging, loading,
   // undo — so a room that looks closed is closed by the time it is measured.
@@ -1911,7 +1962,7 @@ export function sanitize(room) {
   room.doors = room.doors
     .map(d => ({
       ...d,
-      width: clamp(d.width, 0.6, 1.4),
+      width: clamp(d.width, MIN_OPENING_WIDTH.door, MAX_OPENING_WIDTH.door),
       open: d.open === undefined ? true : !!d.open,
       swingInside: d.swingInside === undefined ? true : !!d.swingInside,
       // Which end of the opening the hinge is on. Absent in older files, which
@@ -1929,7 +1980,7 @@ export function sanitize(room) {
   });
 
   room.windows = room.windows
-    .map(w => ({ ...w, width: clamp(w.width, 0.4, 2.0) }))
+    .map(w => ({ ...w, width: clamp(w.width, MIN_OPENING_WIDTH.window, MAX_OPENING_WIDTH.window) }))
     .filter(w => {
       if (!wallIDs.has(w.wallID)) return false;
       const wall = room.walls.find(x => x.id === w.wallID);
@@ -1940,18 +1991,27 @@ export function sanitize(room) {
     if (wall) w.offset = clamp(w.offset, 0.10, wallLength(wall) - w.width - 0.10);
   });
 
-  room.furniture = room.furniture.map(item => {
-    item.rotationDegrees = quarterTurn(item.rotationDegrees);
-    const kind = FURNITURE_KINDS[item.kind];
-    const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
-    const w = swaps ? kind.d : kind.w;
-    const d = swaps ? kind.w : kind.d;
-    item.center = {
-      x: clamp(item.center.x, w / 2, canvas.width - w / 2),
-      z: clamp(item.center.z, d / 2, canvas.length - d / 2),
-    };
-    return item;
-  });
+  room.furniture = room.furniture
+    // A kind with no palette entry — a typo in a hand-edited file, or a piece
+    // from a newer build — has no width, depth or height, and reading those was
+    // a TypeError part-way through loading: the whole document lost over one
+    // name, which is the one failure a repair pass must not have. There is no
+    // footprint to fall back on without inventing one, so the item is dropped,
+    // the way a stub wall or a door on a wall too short for it already is, and
+    // the rest of the plan still opens.
+    .filter(item => FURNITURE_KINDS[item.kind])
+    .map(item => {
+      item.rotationDegrees = quarterTurn(item.rotationDegrees);
+      const kind = FURNITURE_KINDS[item.kind];
+      const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
+      const w = swaps ? kind.d : kind.w;
+      const d = swaps ? kind.w : kind.d;
+      item.center = {
+        x: clamp(item.center.x, w / 2, canvas.width - w / 2),
+        z: clamp(item.center.z, d / 2, canvas.length - d / 2),
+      };
+      return item;
+    });
 
   room.publicAreas = (room.publicAreas || []).map(a => {
     const w = clamp(a.w, 0.5, canvas.width);
@@ -3439,7 +3499,7 @@ export function autoLayoutRooms(room, opts = {}) {
   };
 }
 
-// MARK: - The seven-room demo (restored from the original Swift plan)
+// MARK: - The seven-room demo (restored from the original app's plan)
 
 function frontFurnitureSet(bounds) {
   const clearance = 0.05;
@@ -3590,7 +3650,7 @@ export function demoRoom() {
   return room;
 }
 
-// MARK: - Room files (same format as the native app)
+// MARK: - Room files (the .rcad document format)
 
 /// The server file name for a room name. The Room Name IS the file: renaming a
 /// design and saving it starts a new one rather than adding a version to the

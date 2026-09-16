@@ -719,6 +719,59 @@ const near = (a, b, eps = 0.011) => Math.abs(a - b) <= eps;
     P.clamp(5, 2, 20) === 5 && P.clamp(1, 2, 20) === 2 && P.clamp(99, 2, 20) === 20);
 }
 
+// ── A document the engine cannot represent is repaired, not half-loaded ───
+//
+// parseRoom() rejects a wrong format or a too-new version rather than guessing,
+// so a document it DOES accept has to be one the engine can work with. Two
+// things an older export or a hand-edited file can name break that, and both
+// used to survive the load: a furniture kind with no footprint, which threw a
+// TypeError part-way through (so the whole document was lost over one name), and
+// a diagonal wall. Rooms are read off a grid built from wall ENDPOINTS and the
+// 3D collider builds an axis-aligned box per wall, so a diagonal wall is not a
+// shape this model has — it was quietly accepted and then mis-measured.
+{
+  // The unknown piece goes, the piece the build knows stays, and the load
+  // completes. Dropping matches what sanitize already does with a stub wall or
+  // a door on a wall too short for it.
+  const kinds = P.freshRoom("Kinds", 6, 4, 2.6);
+  kinds.canvas = { width: 20, length: 20 };
+  kinds.origin = { x: 0, z: 0 };
+  kinds.furniture = [
+    { id: "bed", kind: "bed", center: P.point(1, 1), rotationDegrees: 0 },
+    { id: "hammock", kind: "hammock", center: P.point(3, 2), rotationDegrees: 0 },
+  ];
+  let knownRoom = null;
+  let kindThrew = null;
+  try { knownRoom = P.parseRoom(P.serializeRoom(kinds)); } catch (e) { kindThrew = e.message; }
+  check("an unknown furniture kind does not take the document down", kindThrew === null, kindThrew || "");
+  check("the known piece survives and the unknown one is dropped",
+    !!knownRoom && knownRoom.furniture.length === 1 && knownRoom.furniture[0].id === "bed",
+    knownRoom ? knownRoom.furniture.map(f => f.kind).join(",") : "no room");
+  check("an unknown kind is never a valid placement",
+    P.isFurniturePlacementValid(knownRoom,
+      { id: "x", kind: "hammock", center: P.point(2, 2), rotationDegrees: 0 }) === false);
+
+  // The diagonal goes the same way, and the rectangle it was added to is left
+  // as a closed room rather than one the flood fill can no longer read.
+  const slanted = P.freshRoom("Diag", 6, 4, 2.6);
+  slanted.canvas = { width: 20, length: 20 };
+  slanted.origin = { x: 0, z: 0 };
+  slanted.walls.push({ id: "slant", start: P.point(1, 1), end: P.point(3, 3) });
+  const repaired = P.parseRoom(P.serializeRoom(slanted));
+  check("a hand-added diagonal wall is dropped on load",
+    repaired.walls.length === 4 && !repaired.walls.some(w => w.id === "slant"),
+    `${repaired.walls.length} walls`);
+  check("every wall that survives is square",
+    repaired.walls.every(w => Math.abs(w.start.x - w.end.x) < 1e-6
+      || Math.abs(w.start.z - w.end.z) < 1e-6));
+  check("the plan it was added to still measures as one room",
+    P.detectRooms(repaired).length === 1, `${P.detectRooms(repaired).length}`);
+  check("repairing a repaired plan changes nothing on the next load",
+    P.serializeRoom(repaired) === P.serializeRoom(P.parseRoom(P.serializeRoom(repaired))));
+  check("an already-rectilinear plan loses no wall to the alignment check",
+    P.parseRoom(P.serializeRoom(P.freshRoom("Plain", 6, 4, 2.6))).walls.length === 4);
+}
+
 // ── Which walls face the open air ─────────────────────────────────────────
 //
 // The outer skin is held still so that rearranging the inside of a plan cannot

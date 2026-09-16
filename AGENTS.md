@@ -22,9 +22,10 @@ in production: the deployed entry point is
 can be rebuilt from git. There are no releases and no tags.
 
 **There is no Swift, Xcode or native code anywhere in the tree.** An earlier native
-edition was removed; the only traces left are a few comments in `plan.js`/`store.js`
-that predate the web port. The GitHub description and the repository's own docs are
-kept in step with the code — if you change a fact here, change it there too.
+edition was removed, and the comments that still described it as the counterpart
+of this code have been corrected. The GitHub description and the repository's own
+docs are kept in step with the code — if you change a fact here, change it there
+too.
 
 ## Layout
 

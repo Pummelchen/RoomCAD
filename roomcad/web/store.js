@@ -1,5 +1,7 @@
 // store.js — editing state and operations for RoomCAD web.
-// Mirrors the native Swift RoomStore.
+// The one place a plan is edited: tools, selection, undo/redo and the remote
+// apply all mutate the room here, and the 2D editor reads the result back out.
+// It does no I/O — saving, loading and the live channel live in app.js.
 
 import * as P from "./plan.js";
 import { playDoorSound } from "./audio.js";
@@ -113,7 +115,10 @@ export const store = {
   /// a furniture item, so the 2D editor can show how much space surrounds it.
   refreshFurnitureGaps(id) {
     const item = this.room.furniture.find(f => f.id === id);
-    if (!item) {
+    // A kind this build has no footprint for cannot be measured. sanitize()
+    // drops those when a document loads, so this only matters for a room
+    // assembled in memory — and it must report nothing rather than throw.
+    if (!item || !P.FURNITURE_KINDS[item.kind]) {
       this.furnitureGaps = null;
       return;
     }
@@ -129,7 +134,11 @@ export const store = {
     let nearest = null;
     for (const other of this.room.furniture) {
       if (other.id === id) continue;
-      if (P.FURNITURE_KINDS[other.kind].category === "fixture") continue; // ceiling lights don't count as floor neighbours
+      // An unmeasurable neighbour is skipped, not compared against: there is no
+      // footprint to take a distance from.
+      const otherKind = P.FURNITURE_KINDS[other.kind];
+      if (!otherKind) continue;
+      if (otherKind.category === "fixture") continue; // ceiling lights don't count as floor neighbours
       const gap = P.rectDistance(f, P.furnitureFootprint(other));
       if (gap < (nearest ? nearest.cm / 100 : Infinity)) nearest = { cm: Math.round(gap * 100), kind: other.kind };
     }
@@ -585,7 +594,10 @@ export const store = {
 
   updateOpeningWidth(kind, width) {
     this.beginDrag();
-    const clamped = P.clamp(width, kind === "door" ? 0.6 : 0.4, kind === "door" ? 1.4 : 2.0);
+    // From plan.js, not typed out again: the inspector slider, this clamp and
+    // the one sanitize() applies on load all have to be the same range, or a
+    // width can be set to one the model then rewrites.
+    const clamped = P.clamp(width, P.MIN_OPENING_WIDTH[kind], P.MAX_OPENING_WIDTH[kind]);
     if (kind === "door") {
       const index = this.room.doors.findIndex(d => d.id === this.selectedDoorID);
       if (index >= 0) this.room.doors[index].width = clamped;
@@ -1229,6 +1241,16 @@ export const store = {
   },
 
   // MARK: Undo, redo, transactions
+  //
+  // These three fields are one thing, not three. `dragTransactionActive` means
+  // the TOP of `undoStack` is the pre-drag snapshot `beginDrag` pushed, and
+  // while it is true that one entry belongs to the drag: `commit` consumes it
+  // to fold the drag into the history the commit is writing, `endDrag` keeps it
+  // as the drag's own undo step, `discardDrag` throws it away. No other path may
+  // pop it. Undo and redo used to pop it and leave the flag set, so the next
+  // commit popped the entry UNDERNEATH — the user's most recent real change,
+  // silently destroyed. Every path here either owns that snapshot or cancels
+  // the transaction that does.
 
   canUndo() {
     return this.undoStack.length > 0;
@@ -1239,8 +1261,22 @@ export const store = {
   },
 
   undo() {
+    // A drag in flight owns the top snapshot and has not been committed, so it
+    // is cancelled first: the room goes back to where the drag picked it up and
+    // the transaction's snapshot stops being history's business. This ⌘Z then
+    // undoes the last committed change, which is what undo means.
+    const cancelled = this.discardDrag();
     const previous = this.undoStack.pop();
-    if (!previous) return;
+    if (!previous) {
+      // Nothing committed is left to undo. A cancelled drag still moved the room
+      // back, so the view has to hear about it even though history did not move.
+      if (cancelled) {
+        this.clearSelection();
+        this.status = "Cancelled the drag";
+        this.emit();
+      }
+      return;
+    }
     this.redoStack.push(this.cloneRoom());
     this.room = previous;
     this.clearSelection();
@@ -1250,8 +1286,18 @@ export const store = {
   },
 
   redo() {
+    // Same cancellation, for the same reason: redo must not run on top of a
+    // transaction whose snapshot is still sitting on the undo stack.
+    const cancelled = this.discardDrag();
     const next = this.redoStack.pop();
-    if (!next) return;
+    if (!next) {
+      if (cancelled) {
+        this.clearSelection();
+        this.status = "Cancelled the drag";
+        this.emit();
+      }
+      return;
+    }
     this.undoStack.push(this.cloneRoom());
     this.room = next;
     this.clearSelection();
@@ -1261,6 +1307,12 @@ export const store = {
   },
 
   commit(message, mutation) {
+    // The drag in flight owns the top snapshot: beginDrag parked the pre-drag
+    // room there, so popping it here is this commit taking ownership, and the
+    // push below records the room as the drag left it — the drag becomes its own
+    // history step instead of an untracked set of edits. Clearing the flag in
+    // the same breath is what stops any later commit from popping this entry a
+    // second time (see the MARK above).
     if (this.dragTransactionActive) {
       this.dragTransactionActive = false;
       this.undoStack.pop();
@@ -1309,11 +1361,18 @@ export const store = {
     this.emit();
   },
 
+  /// Abandons the drag in flight, and reports whether there was one. The
+  /// pre-drag snapshot `beginDrag` pushed is removed from the undo stack, the
+  /// room goes back to it — so nothing an uncommitted drag did leaks into the
+  /// document — and the flag is cleared, so `dragTransactionActive` can never be
+  /// left naming a snapshot that is gone.
   discardDrag() {
-    if (!this.dragTransactionActive) return;
+    if (!this.dragTransactionActive) return false;
     this.dragTransactionActive = false;
     this.furnitureFeedback = null;
-    this.undoStack.pop();
+    const before = this.undoStack.pop();
+    if (before) this.room = before;
+    return true;
   },
 
   cloneRoom() {
@@ -1331,6 +1390,9 @@ export const store = {
     P.centerRoom(this.room);
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    // The room is replaced, so any drag in flight is over; leaving the flag set
+    // would have it naming a snapshot that has just been thrown away.
+    this.dragTransactionActive = false;
     this.clearSelection();
     this.pendingFurnitureKind = null;
     this.tool = "select";
@@ -1355,6 +1417,9 @@ export const store = {
     P.splitWallsAtJunctions(this.room);
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    // The room is replaced, so any drag in flight is over; leaving the flag set
+    // would have it naming a snapshot that has just been thrown away.
+    this.dragTransactionActive = false;
     this.clearSelection();
     this.pendingFurnitureKind = null;
     this.tool = "select";
@@ -1376,6 +1441,9 @@ export const store = {
     this.room = room;
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    // The room is replaced, so any drag in flight is over; leaving the flag set
+    // would have it naming a snapshot that has just been thrown away.
+    this.dragTransactionActive = false;
     this.clearSelection();
     if (version != null) this.serverRoomVersion = version;   // v0 is a real version
     this.edited = false;
