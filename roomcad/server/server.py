@@ -87,19 +87,29 @@ LIVE_SEQ = {}
 LIVE_LOCK = threading.Lock()
 DB_LOCK = threading.Lock()
 _conn = None
+_CONN_LOCK = threading.Lock()
 
 
 def get_conn():
     global _conn
     if _conn is None:
-        # check_same_thread=False is safe here: every DB call is serialized
-        # by DB_LOCK, so the single connection is never used concurrently.
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA busy_timeout=5000")
-        init_db(_conn)
+        with _CONN_LOCK:
+            # Re-check inside the lock. Two threads can pass the test above
+            # together, and without this each built its own connection: one was
+            # leaked, and init_db (and the one-shot legacy migration) ran twice.
+            if _conn is None:
+                # check_same_thread=False is safe here: every DB call is
+                # serialized by DB_LOCK, so the one connection is never used
+                # concurrently.
+                conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                init_db(conn)
+                # Published only once it is fully usable, so another thread
+                # can never pick up a half-initialised connection.
+                _conn = conn
     return _conn
 
 
@@ -131,7 +141,13 @@ def init_db(conn):
 
 
 def migrate(conn):
-    """Move legacy .rcad files into the database (as version 1) and remove them."""
+    """Move legacy .rcad files into the database (as version 1) and remove them.
+
+    Each file is committed before it is unlinked. Committing once at the end and
+    removing as we went meant a crash in between lost the room from BOTH places:
+    the INSERT rolled back with the file already gone, and nothing was left to
+    recover it from.
+    """
     if not os.path.isdir(LEGACY_DIR):
         return
     for fname in sorted(os.listdir(LEGACY_DIR)):
@@ -147,8 +163,9 @@ def migrate(conn):
                 "INSERT INTO rooms (name, version, json, saved_at, client_id) VALUES (?, 1, ?, ?, ?)",
                 (name, json_text, int(os.path.getmtime(path) * 1000), ""),
             )
+            conn.commit()
+        # Already in the database (or just committed): the file is now redundant.
         os.remove(path)
-    conn.commit()
 
 
 def room_list():
@@ -182,6 +199,27 @@ def active_count(ttl=30):
         for t in stale:
             del PRESENCE[t]
         return len(PRESENCE)
+
+
+def password_matches(candidate):
+    """Constant-time password check that also survives non-ASCII input.
+
+    `secrets.compare_digest` raises TypeError when either str holds a non-ASCII
+    character. Comparing the UTF-8 *bytes* instead makes a non-ASCII password
+    work correctly rather than merely not crashing — and, because the caller
+    counts every False as a failure, it keeps those attempts inside the login
+    throttle. Before this, one accented character from an unauthenticated client
+    killed the handler before `note_login_failure` ran, so the attempt was never
+    counted and the connection was dropped with no response at all.
+    """
+    if not PASSWORD:
+        return False
+    try:
+        return secrets.compare_digest(
+            str(candidate).encode("utf-8"), PASSWORD.encode("utf-8")
+        )
+    except Exception:
+        return False
 
 
 def login_blocked(key):
@@ -382,9 +420,12 @@ def delete_room(name):
     # An unsaved draft is held in memory under the room's name. Left behind, it
     # outlives the file it belonged to and is handed to the next watcher of a
     # room created with the same name — so deleted work reappears in something
-    # that has nothing to do with it.
+    # that has nothing to do with it. The sequence counter goes with it: it
+    # exists only to order edits to THIS room, and keeping one entry per name
+    # ever seen was an unbounded leak in a long-running process.
     with LIVE_LOCK:
         LIVE.pop(name, None)
+        LIVE_SEQ.pop(name, None)
     return cur.rowcount > 0
 
 
@@ -618,6 +659,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "bad request"}, 400)
             return None
 
+    def _read_json_object(self):
+        """Reads a JSON *object* body, or answers 400 and returns None.
+
+        `_read_json` happily returns a list or a scalar for `[]`, `5` or `"x"`,
+        and every caller then reached straight for `.get(...)`. On the handlers
+        that did not happen to wrap that in a try/except it was an unhandled
+        AttributeError: no response, a dropped connection and a traceback in the
+        journal. Going through this instead means a caller never has to guard
+        against the body being the wrong *shape*, only the wrong *values*.
+        """
+        data = self._read_json()
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            self._send({"error": "bad request"}, 400)
+            return None
+        return data
+
     def _require_auth(self):
         token = self._cookie(SESSION_COOKIE)
         if not session_is_valid(token):
@@ -733,11 +792,11 @@ class Handler(BaseHTTPRequestHandler):
             if login_blocked(client):
                 self._send({"error": "too many attempts"}, 429)
                 return
-            data = self._read_json()
+            data = self._read_json_object()
             if data is None:
                 return
-            password = str(data.get("password", "")) if isinstance(data, dict) else ""
-            if not secrets.compare_digest(password, PASSWORD):
+            password = str(data.get("password", ""))
+            if not password_matches(password):
                 note_login_failure(client)
                 self._send({"error": "wrong password"}, 401)
                 return
@@ -781,7 +840,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_auth():
             return
         if path == "/api/session/last":
-            data = self._read_json()
+            data = self._read_json_object()
             if data is None:
                 return
             try:
@@ -814,7 +873,7 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send({"error": "bad name"}, 400)
                 return
-            data = self._read_json()
+            data = self._read_json_object()
             if data is None:
                 return
             digest = str(data.get("digest", ""))
@@ -842,7 +901,7 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send({"error": "bad name"}, 400)
                 return
-            data = self._read_json()
+            data = self._read_json_object()
             if data is None:
                 return
             try:
@@ -890,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
         if path != "/api/save":
             self._send({"error": "not found"}, 404)
             return
-        data = self._read_json()
+        data = self._read_json_object()
         if data is None:
             return
         try:

@@ -387,6 +387,57 @@ def main():
     status, _, _ = request(port, "POST", "/api/login", {"password": "testpass"})
     check("a correct password still works once the window is cleared", status == 200, f"{status}")
 
+    # A body that is valid JSON but not an object must be refused, not crash the
+    # handler. `_read_json` returns a list or a scalar happily, and every caller
+    # then reached for `.get(...)` — on the handlers without a try/except around
+    # it that was an unhandled AttributeError: no response, a dropped connection
+    # and a traceback in the journal.
+    cookie = login(port)
+    for bad_path in ("/api/save", "/api/session/last",
+                     "/api/live-check/shapes", "/api/live/shapes"):
+        st, _, _ = request(port, "POST", bad_path, [], cookie=cookie)
+        check(f"a JSON array body is refused on {bad_path}", st == 400, f"{st}")
+        st, _, _ = request(port, "POST", bad_path, 5, cookie=cookie)
+        check(f"a JSON scalar body is refused on {bad_path}", st == 400, f"{st}")
+
+    # A password containing a non-ASCII character used to raise TypeError inside
+    # secrets.compare_digest, before the failure was counted — so those attempts
+    # escaped the throttle and the connection was dropped with no response.
+    server.LOGIN_FAILURES.clear()
+    st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd"})
+    check("a non-ASCII password is rejected rather than crashing", st == 401, f"{st}")
+    st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd"})
+    check("a non-ASCII attempt is answered again, not dropped", st == 401, f"{st}")
+    check("non-ASCII attempts are counted by the throttle",
+          sum(f[0] for f in server.LOGIN_FAILURES.values()) >= 1,
+          str(server.LOGIN_FAILURES))
+
+    # The configured password itself may be non-ASCII; signing in must still work.
+    server.LOGIN_FAILURES.clear()
+    original_password = server.PASSWORD
+    server.PASSWORD = "pässwörd1A$"
+    st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd1A$"})
+    check("a non-ASCII configured password can be used to sign in", st == 200, f"{st}")
+    st, _, _ = request(port, "POST", "/api/login", {"password": "passwörd1A$"})
+    check("a near-miss non-ASCII password is rejected", st == 401, f"{st}")
+    server.PASSWORD = original_password
+    server.LOGIN_FAILURES.clear()
+
+    # Deleting a room has to drop its live sequence counter too, or the map keeps
+    # an entry for every room name the process has ever seen.
+    st, _, _ = request(port, "POST", "/api/save",
+                       {"json": "{}", "name": "seqprune", "clientId": ""}, cookie=cookie)
+    check("a room to prune can be saved", st == 200, f"{st}")
+    st, _, _ = request(port, "POST", "/api/live/seqprune",
+                       {"json": "{}", "clientId": "c"}, cookie=cookie)
+    check("a draft can be published to it", st == 200, f"{st}")
+    check("its sequence counter exists", "seqprune" in server.LIVE_SEQ,
+          str(sorted(server.LIVE_SEQ)))
+    st, _, _ = request(port, "DELETE", "/api/rooms/seqprune", cookie=cookie)
+    check("the room is deleted", st == 200, f"{st}")
+    check("deleting the room drops its sequence counter",
+          "seqprune" not in server.LIVE_SEQ, str(sorted(server.LIVE_SEQ)))
+
     # A watcher that stops reading must not grow an unbounded queue.
     check("watcher queues are bounded", server.WATCH_QUEUE_LIMIT > 0)
     check("watchers wait with a timeout so dead streams are reaped",
