@@ -75,7 +75,18 @@ const PARKED_FAR_BELOW = -400;  // where an unused pool body waits
 // on a roof is not mistaken for having fallen out of the simulation.
 const CITY_HEADROOM = 40;
 const JUMP_SPEED = 3.8;
-const MAX_POINT_LIGHTS = 16;
+// How many of the room's own fixtures may hold a real light.
+//
+// Every one of them casts shadows, on purpose: a point light that does not is a
+// light that goes through walls, and stopping that is what the sealed walls and
+// the zero shadow bias are for. A shadow-casting point light is six renders of
+// the room, so this is the renderer's budget, not a rule about the plan. A plan
+// may hold more fixtures than this — they are all drawn, and they all glow —
+// and the lights then go to the ones NEAREST THE VIEWER, so no particular lamp
+// is the one that is always dead wherever you stand. `roomLightReport()` says
+// how many are actually lit, and the inspector shows it, so a lamp that lights
+// nothing is never a mystery.
+const MAX_ROOM_LIGHTS = 16;
 // The street's own lights. The pool is what the renderer pays for every frame,
 // whether or not it is full; the reach is how far away a lamp is still worth
 // considering for it.
@@ -93,6 +104,17 @@ const SUN_HEIGHT = 120;
 // faces of that was 6.5 million triangles a frame. The nearest lamp still casts.
 const CITY_SHADOW_LIGHTS = 1;
 const CITY_SHADOW_MAP = 512;
+// The street lamp's shadow bias is ZERO, for the reason written at
+// POINT_SHADOW_BIAS below: three.js renders shadow maps from back faces, so a
+// closed caster already carries the margin a bias would buy, and a NEGATIVE bias
+// does not tighten anything — it lets light through. This one used to set
+// -0.004, the exact class of value that comment warns about.
+//
+// What a 512 map stretched over a lamp's reach does need is a NORMAL bias, which
+// moves the sample along the surface normal instead of displacing its depth, and
+// is therefore the leak-free way to stop acne. This is the sun's own formula
+// applied to this lamp's texel size.
+const CITY_SHADOW_NORMAL_BIAS = (CITY_LIGHT_REACH * 2 / CITY_SHADOW_MAP) * 0.18;
 // A layer that only the room's own geometry is on.
 //
 // A point light shadows its surroundings by rendering the scene six times, once
@@ -255,6 +277,8 @@ export class Walk3D {
     this.reusableTextures = new Set([this.skyTexture, this.cloudTexture]);
     this.pointLights = [];
     this.fixtureEmissives = []; // { mat, on } for the L lighting toggle
+    this.roomLightSlots = [];   // where a fixture is, for the light pool
+    this.roomLightsAssigned = -1;
     this.skyMesh = null;
     this.hemisphere = null;
     this.fill = null;
@@ -531,16 +555,21 @@ export class Walk3D {
     // Furniture and ceiling fixtures.
     this.pointLights = [];
     this.fixtureEmissives = [];
-    let lightCount = 0;
+    this.roomLightSlots = [];
     for (const item of room.furniture) {
       const kind = P.FURNITURE_KINDS[item.kind];
+      // sanitize() drops an unknown kind on load, so this only matters for a
+      // room assembled in memory — and it must not throw.
+      if (!kind) continue;
       if (kind.category === "fixture") {
-        this.addLightFixture(item, room.height, lightCount < MAX_POINT_LIGHTS);
-        lightCount++;
+        this.addLightFixture(item, room.height);
       } else {
         this.addFurniture(item);
       }
     }
+    // One pool for the whole room, sized to the plan and capped. Built after
+    // the fixtures, because it is their positions it is handing lights to.
+    this.buildRoomLightPool();
 
     // Everything the room is made of goes on the room-only layer as well as
     // the default one, so the point lights' shadow cameras can be pointed at
@@ -943,7 +972,7 @@ export class Walk3D {
   /// A ceiling-mounted light: a bare 60 W bulb on a cord, or a 200 W
   /// 60×60 cm office panel. Both are emissive and (when enabled) cast a point
   /// light; `applyTimeOfDay` decides whether that light is actually used.
-  addLightFixture(item, roomHeight, withPointLight) {
+  addLightFixture(item, roomHeight) {
     const group = new THREE.Group();
     const metal = new THREE.MeshStandardMaterial({ color: LIGHT_METAL, metalness: 0.7, roughness: 0.35 });
     const isPanel = item.kind === "lightPanel";
@@ -1020,9 +1049,29 @@ export class Walk3D {
     group.position.set(item.center.x, 0, item.center.z);
     this.roomGroup.add(group);
 
-    if (withPointLight) {
-      const pl = new THREE.PointLight(pointColor, pointIntensity, pointDistance, 2);
-      pl.position.set(item.center.x, lightY, item.center.z);
+    // Where this fixture is and what its light would be. The light itself comes
+    // from the room's own pool (buildRoomLightPool), so that a plan holding more
+    // fixtures than the renderer will light is not served in arbitrary plan
+    // order.
+    this.roomLightSlots.push({
+      x: item.center.x, y: lightY, z: item.center.z,
+      color: pointColor, intensity: pointIntensity, distance: pointDistance,
+    });
+  }
+
+  /// Builds the room's pool of fixture lights: fixed size, one per fixture up to
+  /// the cap, all of them casting shadows.
+  ///
+  /// Sized to the plan, so a room with one bulb pays for one — a fixed pool of
+  /// sixteen would make every small room cost sixteen cube maps. The count is
+  /// fixed for the life of the pool (until the next rebuild), because turning a
+  /// shadow-casting light on and off reallocates its map and recompiles, which
+  /// is the stutter the city's pool exists to avoid too.
+  buildRoomLightPool() {
+    this.pointLights = [];
+    const count = Math.min(this.roomLightSlots.length, MAX_ROOM_LIGHTS);
+    for (let i = 0; i < count; i++) {
+      const pl = new THREE.PointLight(0xffffff, 0, 1, 2);
       // Cast shadows so walls actually block the light and it only reaches the
       // neighbouring rooms through open doorways, instead of leaking through.
       pl.castShadow = true;
@@ -1034,13 +1083,73 @@ export class Walk3D {
       pl.shadow.bias = POINT_SHADOW_BIAS;
       pl.shadow.normalBias = 0;
       pl.shadow.camera.near = 0.05;
-      pl.shadow.camera.far = pointDistance;
       // The room, and nothing else. A lamp on a ceiling cannot see the street
       // and has no business rendering it six times a frame.
       pl.shadow.camera.layers.set(ROOM_ONLY_LAYER);
       this.roomGroup.add(pl);
       this.pointLights.push(pl);
     }
+    this.roomLightsAssigned = -1;
+    this.updateRoomLights();
+  }
+
+  /// Points the pool at the fixtures nearest the viewer.
+  ///
+  /// This pool used to be dealt out in plan order at build time — the first
+  /// sixteen fixtures won, and the seventeenth was dead for the life of the
+  /// room no matter where you stood. Nearest-first means the lights you can see
+  /// are the ones that work, and it is how the street lamps are pooled as well.
+  ///
+  /// A pool at least as large as the fixture list needs no choosing, and is
+  /// assigned once. More fixtures than lights means a sort per frame, over the
+  /// fixtures in one room — a handful, not the city's six hundred and eighty.
+  updateRoomLights() {
+    const pool = this.pointLights;
+    if (!pool || !pool.length) return;
+    const slots = this.roomLightSlots;
+
+    if (slots.length <= pool.length) {
+      if (this.roomLightsAssigned === slots.length) return;
+      for (let i = 0; i < pool.length; i++) this.assignRoomLight(pool[i], slots[i]);
+      this.roomLightsAssigned = slots.length;
+      return;
+    }
+
+    const cam = this.camera.position;
+    const order = slots.map((s, i) => i);
+    order.sort((a, b) => {
+      const da = (slots[a].x - cam.x) ** 2 + (slots[a].z - cam.z) ** 2;
+      const db = (slots[b].x - cam.x) ** 2 + (slots[b].z - cam.z) ** 2;
+      return da - db;
+    });
+    for (let i = 0; i < pool.length; i++) this.assignRoomLight(pool[i], slots[order[i]]);
+    this.roomLightsAssigned = pool.length;
+  }
+
+  /// Moves one pool light onto one fixture, or switches it off when there is no
+  /// fixture to hold it.
+  assignRoomLight(light, slot) {
+    if (!slot) {
+      light.visible = false;
+      light.intensity = 0;
+      light.distance = 1;
+      if (light.shadow) light.shadow.camera.far = 1;
+      return;
+    }
+    light.position.set(slot.x, slot.y, slot.z);
+    light.color.setHex(slot.color);
+    light.intensity = slot.intensity;
+    light.distance = slot.distance;
+    if (light.shadow) light.shadow.camera.far = slot.distance;
+  }
+
+  /// How the room's fixtures are lit, for the inspector to report.
+  ///
+  /// { fixtures, lit } — `lit` is below `fixtures` only when the plan holds more
+  /// ceiling lights than the renderer will light, which the user is told about
+  /// rather than left to discover as a lamp that does nothing.
+  roomLightReport() {
+    return { fixtures: this.roomLightSlots.length, lit: this.pointLights.length };
   }
 
   disposeScene() {
@@ -1788,7 +1897,8 @@ export class Walk3D {
       if (light.castShadow) {
         light.shadow.mapSize.set(CITY_SHADOW_MAP, CITY_SHADOW_MAP);
         light.shadow.camera.near = 0.4;
-        light.shadow.bias = -0.004;
+        light.shadow.bias = 0;
+        light.shadow.normalBias = CITY_SHADOW_NORMAL_BIAS;
       }
       scene.add(light);
       this.cityLights.push(light);
@@ -2584,6 +2694,10 @@ export class Walk3D {
     this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
     this.camera.getWorldDirection(_viewForward);
     this.city.update(dt, this.camera.position, _viewForward);
+
+    // Which of the room's fixtures hold a light, after the camera has moved.
+    // A no-op unless the plan has more ceiling lights than the pool can light.
+    this.updateRoomLights();
 
     this.tick(dt);
     this.updatePaintballs(dt);

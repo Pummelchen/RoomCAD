@@ -216,6 +216,44 @@ function check(name, cond, detail = "") {
     Math.abs(bias) * d * d / ((far / (far - near)) * near);
   check("renderer: chosen point bias leaks nothing at 8 m", leakAt(8, pointBias) < 0.001);
   check("test proves the old -0.0015 bias was a >1 m leak at 8 m", leakAt(8, -0.0015) > 1);
+
+  // The street lamp followed a different policy: -0.004, which is the exact
+  // class of value the comment above warns about, on the one light in the city
+  // that casts a shadow at all. The rule is the rule for every shadow caster in
+  // the renderer, so this resolves EVERY depth bias in the file — whether it is
+  // written as a literal or behind a named constant — and requires that none of
+  // them is negative.
+  const namedBiases = {};
+  for (const m of walkSrc.matchAll(/const ([A-Z0-9_]*BIAS[A-Z0-9_]*) = (-?[\d.]+);/g)) {
+    namedBiases[m[1]] = Number(m[2]);
+  }
+  // The minus sign is in the character class on purpose: without it a negative
+  // literal would not match at all, and this check would skip the very value it
+  // exists to find.
+  const biasValues = [...walkSrc.matchAll(/shadow\.bias\s*=\s*(-?[A-Za-z0-9_.]+);/g)]
+    .map(m => (/^-?[\d.]+$/.test(m[1]) ? Number(m[1]) : namedBiases[m[1]]))
+    .filter(v => v !== undefined);
+  check("renderer: every shadow caster's depth bias resolves to a number",
+    biasValues.length >= 3, `${biasValues.length} of them`);
+  check("renderer: none of them is negative",
+    biasValues.length >= 3 && biasValues.every(v => v >= 0),
+    `found ${biasValues.filter(v => v < 0).join(", ")}`);
+
+  // What the street lamp uses instead: a normal bias derived from its own texel
+  // size, exactly as the sun does — the leak-free way to stop acne on a coarse
+  // map spread over a wide reach.
+  const cityNormalBias = (() => {
+    const m = /const CITY_SHADOW_NORMAL_BIAS = \(CITY_LIGHT_REACH \* 2 \/ CITY_SHADOW_MAP\) \* ([\d.]+);/.exec(walkSrc);
+    return m ? Number(m[1]) : NaN;
+  })();
+  const cityReach = Number(/const CITY_LIGHT_REACH = ([\d.]+);/.exec(walkSrc)?.[1]);
+  const cityMap = Number(/const CITY_SHADOW_MAP = (\d+);/.exec(walkSrc)?.[1]);
+  check("renderer: the street lamp derives a normal bias from its texel size",
+    cityNormalBias > 0 && Number.isFinite(cityNormalBias),
+    "a 512 map over a lamp's reach needs one; a depth bias is not the tool");
+  check("renderer: and it stays a fraction of that texel",
+    cityNormalBias > 0 && cityNormalBias < (cityReach * 2 / cityMap),
+    `${cityNormalBias?.toFixed(4)} m against a ${(cityReach * 2 / cityMap).toFixed(3)} m texel`);
 }
 
 // ── 7. Wall joins are closed solids (the vertical light line) ──────────
