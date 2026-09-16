@@ -5,7 +5,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import * as RAPIER from "./lib/rapier.mjs";
 import * as P from "./plan.js";
 import { store } from "./store.js";
-import { City, seedFromString } from "./city.js";
+import { City, seedFromString, BLOCK_SIZE, SIDEWALK, ROAD_WIDTH, GRID_RADIUS } from "./city.js";
 import { playPlop } from "./audio.js";
 
 // WebGPU post-processing (TSL nodes).
@@ -38,6 +38,16 @@ const NIGHT_FOG = 0x0a0e1a;
 // of streets.
 const FOG_NEAR = 45;
 const FOG_FAR = 380;
+
+// The sky dome has to contain the world under it. It is sized from the city's
+// own reach — see cityReach() — because a fixed 200 m sphere is smaller than
+// the neighbourhood: city.js lays its grid out to roughly 272 m even for a
+// small room, so a player who simply walked to the edge of the streets stood
+// OUTSIDE the dome and saw the inside of its back faces from the wrong side.
+// The cap is the fog's own far edge, which is also inside the camera's 400 m
+// far plane: a larger dome would be clipped away entirely, and past that
+// distance the fog has already reduced the world to sky colour anyway.
+const SKY_DOME_MAX = FOG_FAR;
 
 // Player capsule dimensions (metres).
 const PLAYER_RADIUS = 0.20;
@@ -212,6 +222,15 @@ export class Walk3D {
     this.lastRoomKey = null;
     this.locked = false;
     this.raf = 0;
+    // The frame chain, as three separate things. `running` is whether frames
+    // are wanted at all (pause()/resume()), `ready` is whether start() has
+    // finished enough for a frame to mean anything, and `raf` is the one
+    // pending callback. Keeping them apart is what lets pause() and resume()
+    // be idempotent: the chain begins only where all three agree, never twice.
+    // It starts wanted, because start() has always begun the loop itself as
+    // soon as the renderer was up.
+    this.running = true;
+    this.ready = false;
 
     // Crouch and jump (Rapier drives the actual body once it's ready).
     this.crouching = false;
@@ -292,6 +311,12 @@ export class Walk3D {
           layer.mesh.position.y = baseY + layer.mesh.userData.altitude;
         }
         this.syncCity(store.room);
+        // Changing floor is a different city — it gets its own tower and its
+        // own lift — and a rebuilt city comes up at its own defaults. Whoever
+        // asked for the lift has already run applyTimeOfDay() against the city
+        // that is now gone, so re-run it here; its guard sees a new city key
+        // and does the whole job.
+        this.applyTimeOfDay();
         if (this.physicsReady) this.buildPhysics(store.room, false);
       }
     });
@@ -329,6 +354,17 @@ export class Walk3D {
     };
   }
 
+  /// How far the city reaches from its own centre, worked out exactly the way
+  /// city.js lays the grid out: the room's block, blown up to hold the
+  /// building, then GRID_RADIUS blocks of street in every direction plus the
+  /// outer pavement. The sky dome has to be bigger than this, or the player
+  /// walks out from under it.
+  cityReach(bounds) {
+    const block = Math.max(BLOCK_SIZE, bounds.width + SIDEWALK * 4, bounds.length + SIDEWALK * 4);
+    const span = block + ROAD_WIDTH;
+    return GRID_RADIUS * span + block / 2 + ROAD_WIDTH;
+  }
+
   /// WebGPU + Rapier are async; build the scene and start once both are ready.
   async start() {
     try {
@@ -350,7 +386,13 @@ export class Walk3D {
 
       this.build(store.room, true);
       this.setupPostProcessing();
-      this.loop();
+      // Only now is a frame worth running: the room was built against a real
+      // environment and the pipeline exists. update() refuses to build before
+      // this, so the store emit that arrives while the renderer is still
+      // initialising can no longer build the room a second time, without the
+      // environment, only for this line to discard it and build again.
+      this.ready = true;
+      this.startFrames();
     } catch (err) {
       console.error("RoomCAD 3D init failed:", err);
       this.show3dError("3D failed to start: " + (err && err.message ? err.message : err));
@@ -372,6 +414,19 @@ export class Walk3D {
   // MARK: Scene building
 
   build(room, resetCamera = false) {
+    // Nothing to build with yet. The image-based environment is created inside
+    // start(), and it is what lights every PBR material in the room; a build
+    // before it exists is not merely dim, it is a whole room — geometry,
+    // materials and the city's twelve pool lights — that start() would then
+    // throw away and build again without a frame of it ever being drawn. The
+    // store emits synchronously while start() is still awaiting WebGPU, which
+    // is exactly how that happened. start() builds store.room, so skipping here
+    // loses nothing.
+    if (!this.environment) return;
+    // The scene now holds this room. Recorded here rather than in update(),
+    // because start() builds without going through update(), and the next
+    // store emit must not decide the room is unbuilt and build it again.
+    this.lastRoomKey = JSON.stringify(room);
     if (resetCamera) {
       const origin = P.roomOrigin(room);
       this.position.set(origin.x + room.width / 2, 1.5, origin.z + Math.max(0.5, room.length - 0.6));
@@ -496,6 +551,11 @@ export class Walk3D {
     this.syncCity(room);
     this.roomGroup.position.y = this.floorY();
     this.lastFloorY = this.floorY();
+    // The scene is new — a fresh sun, sky and cloud decks, and possibly a
+    // freshly built city — so nothing the previous applyTimeOfDay() set
+    // survives in it. Forget what it was last applied for, or its own
+    // no-change guard would skip lighting the room it is now standing in.
+    this.invalidateTimeOfDay();
     this.applyTimeOfDay();
 
     // Refresh the physics colliders for the new room layout.
@@ -994,10 +1054,24 @@ export class Walk3D {
         if (Array.isArray(node.material)) node.material.forEach(m => this.disposeMaterial(m));
         else this.disposeMaterial(node.material);
       }
+      // Lights are not meshes and clear() does not free them. A shadow-casting
+      // point light owns a 1024² cube map, the sun a single 4096² one and a
+      // shadow-casting street lamp its own, and three.js only releases a map
+      // when its light's shadow is disposed. build() runs on every room edit,
+      // so clearing the scene dropped those render targets on the floor with
+      // the lights that owned them and leaked the GPU memory.
+      if (node.isLight) this.disposeLight(node);
     });
     this.scene.clear();
     for (const node of persistent) this.scene.add(node);
     this.floorMaterial = null;
+  }
+
+  /// Releases one light's shadow map. The light itself holds no other GPU
+  /// resource, and the city's persistent subtrees never come through here.
+  disposeLight(light) {
+    if (light.shadow && typeof light.shadow.dispose === "function") light.shadow.dispose();
+    if (typeof light.dispose === "function") light.dispose();
   }
 
   /// Builds or reuses the surrounding city for this room and floor. The city
@@ -1171,8 +1245,17 @@ export class Walk3D {
   }
 
   /// A large unlit sky dome so the gradient rotates naturally with the camera.
+  ///
+  /// It is sized from the city's reach, not from a constant: the dome has to
+  /// contain everywhere the player can walk, and the neighbourhood city.js
+  /// builds is wider than the 200 m sphere this used to be. The cap keeps it
+  /// inside the camera's far plane, where it is not clipped away, and the
+  /// viewer-centred followSky() below keeps it around the player whatever its
+  /// radius. `BackSide` stays: the dome is meant to be looked at from inside.
   buildSky(room) {
-    const geo = new THREE.SphereGeometry(200, 32, 16);
+    const building = this.currentBuildingBounds || this.buildingBounds(room);
+    const radius = Math.min(this.cityReach(building), SKY_DOME_MAX);
+    const geo = new THREE.SphereGeometry(radius, 32, 16);
     const mat = new THREE.MeshBasicMaterial({
       map: this.skyTexture,
       side: THREE.BackSide,
@@ -1180,12 +1263,25 @@ export class Walk3D {
       depthWrite: false,
     });
     const sky = new THREE.Mesh(geo, mat);
-    const building = this.currentBuildingBounds || this.buildingBounds(room);
     sky.position.set(building.centerX, this.floorY(), building.centerZ);
     sky.renderOrder = -10;
     this.scene.add(sky);
     this.skyMesh = sky;
     this.buildClouds(room);
+  }
+
+  /// Keeps the sky dome around the viewer.
+  ///
+  /// A dome with `BackSide` is only ever seen from inside it, so its centre is
+  /// the one thing that must never be walked away from. Centred on the building
+  /// it could be: the city reaches about 272 m from the plot even for a small
+  /// room, and the outermost streets — and the roofs above them — are places
+  /// the player can stand. Moving with the camera means there is no edge to
+  /// reach, whatever the room's size.
+  followSky() {
+    if (!this.skyMesh) return;
+    this.skyMesh.position.set(
+      this.camera.position.x, this.floorY(), this.camera.position.z);
   }
 
   /// Sun direction as a unit vector (North = -Z, azimuth clockwise from North,
@@ -1199,12 +1295,39 @@ export class Walk3D {
     );
   }
 
+  /// Forgets what the lighting was last applied for. A rebuild leaves the new
+  /// scene — sun, sky, cloud decks — at its own defaults, and the no-change
+  /// guard in applyTimeOfDay() would otherwise skip lighting it because the
+  /// store's hour, lights and weather have not moved.
+  invalidateTimeOfDay() {
+    this.appliedHour = undefined;
+    this.appliedWeather = undefined;
+    this.appliedLightsOn = undefined;
+    this.appliedCityKey = undefined;
+  }
+
   /// Positions the sun, sky and ambient light for the current store.timeOfDay
   /// hour (24 h clock). Called after a build and whenever the time (or the L
   /// lighting mode) changes.
   applyTimeOfDay() {
     if (!this.sun || !this.sunTarget) return;
     const hour = store.timeOfDay;
+    // This also runs from the store's change subscription on every emit while
+    // 3D is visible — in the inspector that is once per keystroke. Everything
+    // below is a function of these values alone, and it is not free: several
+    // Colours, the weather materials, all three cloud decks and all six of the
+    // city's light bands. When none of them moved there is nothing to redo.
+    // The city's key is one of them, because a rebuilt neighbourhood comes up
+    // at its own defaults even at an unchanged hour; a rebuilt scene
+    // invalidates the lot outright.
+    if (hour === this.appliedHour
+        && store.weather === this.appliedWeather
+        && this.lightsOn === this.appliedLightsOn
+        && this.city.key === this.appliedCityKey) return;
+    this.appliedHour = hour;
+    this.appliedWeather = store.weather;
+    this.appliedLightsOn = this.lightsOn;
+    this.appliedCityKey = this.city.key;
     const { altitude, azimuth } = sunForHour(hour);
     const altDeg = altitude * 180 / Math.PI;
 
@@ -1344,7 +1467,6 @@ export class Walk3D {
     // that leaves the rest of the building standing over nothing: you walk
     // through the floor and sink to the street. Nor the whole editing canvas,
     // which is bigger again and hangs an invisible slab over the pavement.
-    const canvas = P.canvasOf(room);
     const envelope = this.currentBuildingBounds || this.buildingBounds(room);
     const pad = P.WALL_THICKNESS + 0.2;      // far enough out to carry the walls
     const fx = envelope.centerX;
@@ -1357,7 +1479,6 @@ export class Walk3D {
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(fw, 0.05, fl).setTranslation(fx, baseY + room.height + 0.025, fz)
     );
-    void canvas;
 
     // The city. Pavements, kerbs, the carriageway and every building, as the
     // city itself laid them out — so the ground you can see through a broken
@@ -1544,14 +1665,14 @@ export class Walk3D {
   /// A pool of solid bodies lent to whichever vehicles are nearest.
   ///
   /// The traffic was scenery you walked through. It cannot simply be given
-  /// colliders — there are 240 of them and their positions come from the
-  /// traffic model, not from the solver — so each frame the nearest few are
-  /// lent a KINEMATIC body: one the traffic drives and the solver respects.
-  /// Standing on one, you are carried along by it; standing in front of one,
-  /// it shoves you out of the way.
+  /// colliders — there are 680 of them (city.js's FLEET_SIZE) and their
+  /// positions come from the traffic model, not from the solver — so each frame
+  /// the nearest few are lent a KINEMATIC body: one the traffic drives and the
+  /// solver respects. Standing on one, you are carried along by it; standing in
+  /// front of one, it shoves you out of the way.
   ///
   /// A pool rather than one each, because only what is within a few metres can
-  /// possibly be touched, and a body for every vehicle in the city is 240
+  /// possibly be touched, and a body for every vehicle in the city is 680
   /// bodies stepped every frame to no purpose.
   buildVehicleBodies() {
     this.vehicleBodies = [];
@@ -1969,9 +2090,10 @@ export class Walk3D {
   /// straight through — the ray already reaches the city, the glass was simply
   /// the first thing in its way — so the room can be shot out of.
   ///
-  /// The wall's collider is unaffected: physics treats a wall as solid whether
-  /// or not it has openings, so this changes what you can SEE and SHOOT
-  /// through, not what you can walk through.
+  /// The wall itself stays standing — it is the pane that goes — but the
+  /// opening is recorded and the colliders are rebuilt around it, so a window
+  /// that is shot out changes what you can walk through as well as what you can
+  /// see through. That is the point of shooting one out.
   breakGlass(pane) {
     if (!pane || pane.userData.broken) return;
     pane.userData.broken = true;
@@ -2364,12 +2486,18 @@ export class Walk3D {
     const keepCamera = sameRoom
       && previous && previous.id === room.id
       && previous.width === room.width && previous.length === room.length;
-    this.lastRoomKey = key;
     this.build(room, !keepCamera);
   }
 
   dispose() {
-    cancelAnimationFrame(this.raf);
+    // Frames off before anything is torn down: a callback that landed after
+    // the renderer was disposed would try to draw into it.
+    this.running = false;
+    this.ready = false;
+    if (this.raf) {
+      cancelAnimationFrame(this.raf);
+      this.raf = 0;
+    }
     for (const [target, type, handler, options] of this._listeners || []) {
       target.removeEventListener(type, handler, options);
     }
@@ -2386,23 +2514,91 @@ export class Walk3D {
 
   // MARK: Loop
 
+  /// Stops the frame chain. Nothing is torn down: the scene, the player, the
+  /// traffic and the weather are all exactly where they were, so resume() puts
+  /// the user back where they left off — but while the 3D view is hidden the
+  /// renderer, Rapier and the traffic model stop costing anything. Without this
+  /// the chain ran forever: setMode() only hid the container, so after a single
+  /// visit to 3D the whole world kept rendering at 60 fps behind the 2D editor.
+  pause() {
+    this.running = false;
+    if (this.raf) {
+      cancelAnimationFrame(this.raf);
+      this.raf = 0;
+    }
+  }
+
+  /// Starts the chain again, exactly once. Idempotent: while frames are already
+  /// wanted this does nothing, so a setMode() that both resumes the view and
+  /// creates it cannot leave two chains rescheduling each other.
+  ///
+  /// Safe before start() has finished and after dispose(): startFrames() only
+  /// schedules once there is a ready scene, and start() calls it itself when
+  /// its build is done.
+  resume() {
+    if (this.running) return;
+    this.running = true;
+    this.startFrames();
+  }
+
+  /// Schedules the next frame if frames are wanted, the scene is ready and none
+  /// is already pending — the single place a chain may begin.
+  ///
+  /// The clock is read and thrown away immediately before the chain starts.
+  /// getDelta() measures from the last read, so the first frame after a pause
+  /// would otherwise see all the time the user spent in the 2D editor; dt is
+  /// clamped to 50 ms, but the physics accumulator and the cloud scroll would
+  /// still take the jump.
+  startFrames() {
+    if (!this.running || !this.ready || this.raf) return;
+    this.clock.getDelta();
+    // The FPS readout measures from its own sample time, which has the same
+    // gap in it; without this the first window after a pause reports the whole
+    // pause as one frame.
+    this.fpsFrames = 0;
+    this.fpsLastSample = performance.now();
+    this.raf = requestAnimationFrame(() => this.loop());
+  }
+
   loop() {
+    // This callback is no longer pending. Cleared first, so a pause() landing
+    // inside the frame has nothing to cancel, and the tail below can tell
+    // whether something else has already restarted the chain.
+    this.raf = 0;
+    if (!this.running) return;
+
     const dt = Math.min(this.clock.getDelta(), 0.05);
+
+    // The traffic advances BEFORE the physics that consumes it.
+    //
+    // updateVehicleBodies() lends the nearest cars their kinematic bodies from
+    // the traffic model's own positions, and those bodies are what shove the
+    // player. Stepping physics first drove every collider from where the
+    // traffic was the frame before, so the car that hit you was always one
+    // frame behind the car that was drawn.
+    //
+    // The direction as well as the position: the city draws the traffic it can
+    // be seen from here, and most of the fleet is behind you. The camera's
+    // orientation is refreshed first, so the direction handed over is this
+    // frame's rather than the last one's.
+    this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
+    this.camera.getWorldDirection(_viewForward);
+    this.city.update(dt, this.camera.position, _viewForward);
+
     this.tick(dt);
     this.updatePaintballs(dt);
     this.updateShards(dt);
     this.updateSplats();
-    // The direction as well as the position: the city draws the traffic it can
-    // be seen from here, and most of the fleet is behind you.
-    this.camera.getWorldDirection(_viewForward);
-    this.city.update(dt, this.camera.position, _viewForward);
     this.updateClouds(dt);
 
     const now = performance.now();
     if (this.renderPipeline) this.renderPipeline.render();
     else this.renderer.render(this.scene, this.camera);
     this.updateFps(now);
-    this.raf = requestAnimationFrame(() => this.loop());
+    // Rescheduled from the tail. A pause() during the frame stops the chain; a
+    // resume() during it has already scheduled the one callback; either way
+    // there is exactly one pending frame.
+    if (this.running && !this.raf) this.raf = requestAnimationFrame(() => this.loop());
   }
 
   /// Updates the small FPS readout in the top-left corner twice a second.
@@ -2427,8 +2623,8 @@ export class Walk3D {
 
     if (this.physicsReady) this.tickPhysics(dt, forward, right);
 
-    this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
     this.aimSun();
+    this.followSky();
     this.updateCityLights();
     this.updateGun(dt);
   }

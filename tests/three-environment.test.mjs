@@ -84,11 +84,27 @@ check("the city releases its own GPU resources", city.includes("dispose()") &&
 check("the city itself is built from the seed, not from chance",
   city.includes("makeRandom(seed)"));
 {
-  // Real randomness is reached for in exactly one place, so this can check
-  // that the geometry never touches it.
-  const rolls = (city.match(/Math\.random\(\)/g) || []).length;
-  check("real randomness has a single entry point", rolls === 1, `${rolls} uses`);
-  check("and it is the named helper", /function trueRandom\(\) \{\s*\n\s*return Math\.random\(\);/.test(city));
+  // Real randomness is reached for in exactly one place — `trueRandom()`, which
+  // delegates to a swappable default — so this can check that the geometry never
+  // touches it. Every mention of Math.random must live inside that seam: the
+  // default binding and the restore in the setter, and nowhere else.
+  const seamStart = city.indexOf("let transportRandom = Math.random;");
+  const setterStart = city.indexOf("export function setTransportRandom");
+  // The seam runs to the END of the setter, whose restore is the other
+  // legitimate mention of Math.random.
+  const seamEnd = city.indexOf("\n}", setterStart) + 2;
+  check("the transport randomness seam can be located",
+    seamStart > 0 && setterStart > seamStart && seamEnd > setterStart);
+  const seam = city.slice(seamStart, seamEnd);
+  const outsideSeam = city.slice(0, seamStart) + city.slice(seamEnd);
+  check("real randomness has a single entry point",
+    !/Math\.random/.test(outsideSeam),
+    "Math.random is reached for outside the transport seam");
+  check("and it is the named helper",
+    /function trueRandom\(\) \{\s*\n\s*return transportRandom\(\);/.test(city));
+  check("which is swappable, so a gate can make a drive repeatable",
+    /export function setTransportRandom\(fn\)/.test(city)
+    && /transportRandom = typeof fn === "function" \? fn : Math\.random;/.test(city));
   const buildPath = city.slice(city.indexOf("build(bounds, seed, floorLift) {"),
     city.indexOf("// MARK: - Traffic"));
   check("nothing that builds the city uses it",

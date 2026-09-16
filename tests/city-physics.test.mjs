@@ -17,8 +17,29 @@ import { readFileSync } from "node:fs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
 
 const {
-  City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS, SIDEWALK,
+  City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS, SIDEWALK, setTransportRandom,
 } = await loadWebModule("city.js");
+
+// Make the traffic's runtime randomness reproducible for this file.
+//
+// The city's layout is seeded and identical every run, but what the traffic
+// DOES in it is deliberately real randomness — v.pace, which bay a car takes,
+// how long a van unloads. That is right for the app and wrong for a gate: the
+// ride check at the bottom picks ONE eligible bus and asks whether it carried
+// its passenger five metres, and a bus that happened to brake for a light a
+// second in made that inconclusive rather than wrong. It failed on a machine
+// that was merely busy, which is exactly the kind of gate nobody trusts. With
+// the traffic seeded, the same bus takes the same drive every time.
+//
+// Production is unaffected: this swap exists only for tests, and the app never
+// calls it.
+let seed = 0x9e3779b9;
+setTransportRandom(() => {
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+});
 
 // The player, as walk3d builds them — read OUT of walk3d rather than written
 // down again here. A replica with its own copy of the numbers keeps passing

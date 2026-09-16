@@ -1,9 +1,12 @@
 // city.js — the stylised city the room stands in.
 //
-// Purely a visual reference: it gives the 3D walkthrough a sense of scale and
-// place, and it is what you see through a window. It has no colliders, no
-// lights of its own and no knowledge of the room model — walk3d.js hands it a
-// building envelope and it builds a neighbourhood around it.
+// It gives the 3D walkthrough a sense of scale and place, and it is what you see
+// through a window. It is not scenery, though: it publishes `solids` for walk3d
+// to collide against, it owns the city's lights — `lampPosts` and
+// `collectLights` are the street lamps, headlamps and brake lights walk3d draws
+// its light pool from — and `build(bounds, seed, floorLift)` is handed the
+// room's own building envelope, so the neighbourhood is laid out around the room
+// rather than around a fixed origin.
 //
 // Realism target: 4/10. Still readable, friendly, blocky shapes with flat
 // colours rather than photoreal materials, but the things that read as "alive"
@@ -48,7 +51,6 @@ const FLOOR_HEIGHT = 3;         // matches walk3d's per-storey lift
 // texture, not as buildings — and rather than a range because these are the
 // heights that were asked for.
 const STOREY_CHOICES = [50, 55, 60];
-const STOREYS_MAX = 60;         // 180 m
 // How far up a building you can see into. Rooms behind the windows are what
 // gives a facade depth, and they cost an instance each — a sixty storey tower
 // modelled all the way up is thousands of them for floors nobody can see into
@@ -172,8 +174,6 @@ const DIGIT_ROWS = {
   "9": ["111", "101", "111", "001", "111"],
 };
 const DIGIT_CELL = 0.062;
-const DOOR_W = 1.45;
-const DOOR_H = 2.35;
 const ENTRANCE_COLOR = 0x2b2622;   // the doorway itself, in shadow
 const SURROUND_COLOR = 0xd8d2c4;   // stone surround and canopy
 const STEP_COLOR = 0xb9b3a6;
@@ -241,7 +241,8 @@ const PACE_FASTEST = 1.20;
 // How many vehicles are on the streets altogether, spread over every lane.
 export const FLEET_SIZE = 680;
 // Which traffic is worth drawing. A vehicle is around a thousand triangles and
-// there are 240 of them, so the fleet is half of everything in the city.
+// the fleet is FLEET_SIZE of them, so it costs hundreds of thousands — enough
+// that not drawing the ones behind you is worth the bookkeeping.
 //
 // Culled on DIRECTION rather than distance. A distance cut has to be set past
 // where a car is still several pixels across — 150 m — which only removes about
@@ -298,7 +299,6 @@ export const BUS_DWELL_MAX = 300;      // ... and at most five
 const BUS_STOP_COOLDOWN = 90;   // it does not call at two stops in a row
 export const BUS_STOPS_PER_BLOCK = 2;  // out of the block's four sides
 const LAYBY_DEPTH = 2.6;        // how far a bus stop is cut back into the pavement
-const LAYBY_TAPER = 4.0;        // the angled run in and out of it
 // How much kerb a vehicle needs beyond its own length. Parallel parking wants
 // about half a vehicle of slack, and at 2.5 m a 6.6 m van claimed a single 7 m
 // bay — four centimetres of room at each end. It reversed into it and clipped
@@ -308,7 +308,7 @@ const BAY_CLEARANCE = 4.0;
 const BAY_LINE_W = 0.12;        // painted bay markings
 const BAY_LENGTH = 5.6;         // the box itself, inside the pitch
 const PARK_BOX_DEPTH = 2.3;     // how far the painted box reaches into the road
-const BUS_LAYBY_LENGTH = 17;    // room for a bus and the taper either end
+const BUS_LAYBY_LENGTH = 17;    // room for a bus and a little clear at each end
 // Junction furniture. A driver meets the stop line, then the crossing, then
 // the carriageway, so the crossing sits between the line and the junction.
 const CROSS_GAP = 0.6;          // carriageway edge to the near edge of the crossing
@@ -325,8 +325,8 @@ const STOP_LINE_AT = ROAD_WIDTH / 2 + CROSS_GAP + CROSS_DEPTH + STOP_LINE_W;
 // This is what keeps the grid from seizing: the jam is not caused by too many
 // vehicles but by spillback — a vehicle waiting at the line for room in the
 // lane it wants to turn into blocks everyone behind it, including the ones
-// who were going somewhere empty. Measured at 240 vehicles, 26 were held at
-// stop lines with nowhere to turn into and 129 more were queued behind them.
+// who were going somewhere empty. A measured run had 26 held at stop lines
+// with nowhere to turn into and 129 more queued behind them.
 export const TURN_CONTROL_PERIOD = 2;   // seconds between reviews
 const TURN_SLOT = 8;            // road length one vehicle and its gap occupy
 const TURN_LOAD_FLOOR = 0.5;    // never red-out a street emptier than this
@@ -442,8 +442,25 @@ const WEATHER = {
 ///
 /// This is the only place the city reaches for real randomness, which is what
 /// lets a test check that the geometry never does.
+///
+/// It is swappable so that a test which has to WATCH a vehicle over hundreds of
+/// frames can make the drive reproducible. Every use below is in code that runs
+/// while the traffic is driving (a turn, a pace, a stop, a parking bay) — none
+/// of it is reached while the city is being built — so swapping this out cannot
+/// change the streets. Consumption of real randomness is what made
+/// tests/city-physics.test.mjs flaky: it picks the first eligible bus and asks
+/// whether it carried its passenger five metres, and a bus that happened to
+/// brake for a light a second in made that inconclusive rather than wrong.
+let transportRandom = Math.random;
 function trueRandom() {
-  return Math.random();
+  return transportRandom();
+}
+
+/// Replaces the traffic's runtime randomness. Pass a seeded generator to make a
+/// drive repeatable; pass nothing (or a non-function) to restore Math.random.
+/// Production never calls this.
+export function setTransportRandom(fn) {
+  transportRandom = typeof fn === "function" ? fn : Math.random;
 }
 
 /// Deterministic PRNG (mulberry32) so a given room always gets the same city.
@@ -935,9 +952,7 @@ export class City {
     this.solids = [];
     this._turnControlAt = 0;
     this._turnLookahead = 0;
-    this.strays = 0;
-    this._parkedCars = 0;
-    this._parkingSoon = 0;
+    this._junctionKeys = null;
     this.signals = [];
     this.signalLamps = null;
     this.turnArrows = null;
@@ -1000,6 +1015,8 @@ export class City {
         // Room to blow holes in. Each one turns a piece of wall into as many
         // as four, so this is the budget for how much of the city can be
         // knocked about before it stops taking damage.
+        // Everything added here must be UNROTATED — punchHole reads the size
+        // back off the matrix diagonal (see City.boxOf).
         { spare: DAMAGE_SLOTS, casts: true, receives: true }
       ),
       roofs: new InstanceSet(
@@ -1503,11 +1520,20 @@ export class City {
 
   // MARK: - Damage
 
-  /// The centre, size and colour of one instance, read back out of its matrix.
+  /// The centre and size of one instance, read back out of its matrix.
   ///
-  /// Everything in the city is an axis-aligned box placed by boxMatrix, so the
-  /// matrix holds the size on its diagonal and the position in its last column
-  /// and nothing else has to be remembered about it.
+  /// ONLY VALID FOR AN UNROTATED BOX. The size is taken off the matrix diagonal
+  /// (e[0], e[5], e[10]), which a rotation about Y replaces with its cosine —
+  /// so a box turned a quarter turn would read back as zero width and depth,
+  /// and `punchHole` would bore its hole through the wrong piece of wall.
+  /// `boxMatrix` puts the position in the last column and the size on the
+  /// diagonal, and nothing else has to be remembered about the box.
+  ///
+  /// Every instance in `facadeSet` — the set `punchHole` and `_facadeAt`
+  /// search — is added by `boxMatrix` with no rotation, because the streets
+  /// they face are axis-aligned. That is a constraint, not an accident: a
+  /// rotated facade must not be added to that set without teaching this
+  /// function to decompose the matrix properly first.
   static boxOf(matrix) {
     const e = matrix.elements;
     return { x: e[12], y: e[13], z: e[14], w: e[0], h: e[5], d: e[10] };
@@ -2533,6 +2559,18 @@ export class City {
     this._arrowsDrawn = -1;
     this._turnControlAt = 0;
     this._demand = new Map();
+    // One key string per junction, interned here rather than rebuilt for every
+    // vehicle every frame. The junction key is looked up per-VEHICLE — by the
+    // demand picture and by the signal phase — but there are only as many
+    // distinct junctions as there are cells, so the strings are made once and
+    // indexed by the same road pair they name. `_junctionKey` is the only way
+    // in, so the arithmetic index and the string can never disagree.
+    this._junctionKeys = new Array(this.roadX.length * this.roadZ.length);
+    for (let ix = 0; ix < this.roadX.length; ix++) {
+      for (let iz = 0; iz < this.roadZ.length; iz++) {
+        this._junctionKeys[ix * this.roadZ.length + iz] = `${ix}|${iz}`;
+      }
+    }
     this._startSignals();
     // A lane object per road per direction. Every lane exists even where no
     // vehicle starts, because a turn has to have somewhere to turn into.
@@ -2838,11 +2876,10 @@ export class City {
   _writeTurnArrows() {
     const parts = this.turnArrows;
     if (!parts || !this.signals.length) return;
-    // Only when the arrows have actually changed. They are reviewed a few times
-    // a minute and there are 432 of them, so rewriting every one every frame
-    // cost more than driving all 240 vehicles did — the single most expensive
-    // thing in the simulation, for a picture that was identical 119 frames out
-    // of 120.
+    // Only when the arrows have actually changed. There are three arrows for
+    // every signal — one per turn — so rewriting them all every frame cost more
+    // than driving the whole fleet did: the single most expensive thing in the
+    // simulation, for a picture that was identical 119 frames out of 120.
     if (this._arrowsDrawn === this._turnRevision) return;
     this._arrowsDrawn = this._turnRevision;
     let green = 0;
@@ -2890,16 +2927,16 @@ export class City {
   ///
   /// The timings used to be a pure function of the clock: a fixed thirty second
   /// cycle, split evenly, the same at every junction forever. That is a
-  /// timetable rather than a controller, and it showed — measured at 240
-  /// vehicles, EIGHTY PER CENT of green phases had nobody passing through them
-  /// at all, while the queue on the cross street sat at red. Green given to an
+  /// timetable rather than a controller, and it showed — in a measured run,
+  /// EIGHTY PER CENT of green phases had nobody passing through them at all,
+  /// while the queue on the cross street sat at red. Green given to an
   /// empty approach is throughput taken from a full one.
   _startSignals() {
     this.phases = new Map();
     for (let ix = 0; ix < this.roadX.length; ix++) {
       for (let iz = 0; iz < this.roadZ.length; iz++) {
         const offset = this._junctionOffset(ix, iz);
-        this.phases.set(`${ix}|${iz}`, {
+        this.phases.set(this._junctionKey(ix, iz), {
           ix, iz,
           axis: offset < LIGHT_CYCLE / 2 ? "x" : "z",
           state: "green",
@@ -2915,7 +2952,18 @@ export class City {
   }
 
   _phaseAt(ix, iz) {
-    return this.phases ? this.phases.get(`${ix}|${iz}`) : null;
+    return this.phases ? this.phases.get(this._junctionKey(ix, iz)) : null;
+  }
+
+  /// The map key for a junction pair.
+  ///
+  /// Returns one of the strings interned at build time rather than making a new
+  /// one, because this is asked once per vehicle per frame — by `_collectDemand`
+  /// and, from the phase state, by `_isGreen` and `_timeToCrossGreen` through
+  /// `_phaseAt`. A fresh `${ix}|${iz}` at each of those was several hundred
+  /// throwaway keys a frame to reach at most one junction per road pair.
+  _junctionKey(ix, iz) {
+    return this._junctionKeys[ix * this.roadZ.length + iz];
   }
 
   /// Who is waiting at each junction, and on which side.
@@ -2937,7 +2985,7 @@ export class City {
       if (!junction || junction.distance > QUEUE_REACH) continue;
       const ix = v.axis === "x" ? junction.index : v.lane.roadIndex;
       const iz = v.axis === "x" ? v.lane.roadIndex : junction.index;
-      const key = `${ix}|${iz}`;
+      const key = this._junctionKey(ix, iz);
       let cell = this._demand.get(key);
       if (!cell) {
         cell = { x: { queue: 0, moving: 0 }, z: { queue: 0, moving: 0 } };
@@ -2970,7 +3018,7 @@ export class City {
     const demand = this._demand;
     for (const phase of this.phases.values()) {
       if (this._clock < phase.until) continue;
-      const here = demand ? demand.get(`${phase.ix}|${phase.iz}`) : null;
+      const here = demand ? demand.get(this._junctionKey(phase.ix, phase.iz)) : null;
       const other = phase.axis === "x" ? "z" : "x";
       const mine = here ? here[phase.axis] : { queue: 0, moving: 0 };
       const theirs = here ? here[other] : { queue: 0, moving: 0 };
@@ -3488,8 +3536,8 @@ export class City {
   ///
   /// This is the difference between a queue and a deadlock. Held inside the
   /// box, a vehicle waiting for a gap blocks the traffic crossing it, which is
-  /// waiting for the same kind of gap somewhere else — and at 240 vehicles the
-  /// whole grid stopped, permanently, with 24 held mid-turn and 184 queued
+  /// waiting for the same kind of gap somewhere else — and in a measured run
+  /// the whole grid stopped, permanently, with 24 held mid-turn and 184 queued
   /// behind them. A driver decides before entering, and waits on the line,
   /// where waiting costs nobody else their right of way.
   _turnExitClear(v, junction) {
@@ -3928,10 +3976,10 @@ export class City {
           && !this._turnExitClear(v, junction)) {
           // Rather than sit on the line holding up everyone behind, go straight
           // on if that way is open — which is what a driver does when the turn
-          // they wanted is plainly not happening this phase. Measured at 240
-          // vehicles, queue heads waiting for a turn that had nowhere to go
-          // were 17% of everything stopped at a junction, and each one was a
-          // whole approach at a standstill behind it.
+          // they wanted is plainly not happening this phase. In a measured run,
+          // queue heads waiting for a turn that had nowhere to go were 17% of
+          // everything stopped at a junction, and each one was a whole approach
+          // at a standstill behind it.
           //
           // Only ever onto the straight-ahead: it needs no arc and no room in
           // another lane, so it cannot fail halfway. Changing to the OTHER
@@ -3944,8 +3992,8 @@ export class City {
           // Deliberately NOT gated on the arrows. This is the escape valve for
           // a vehicle that is already at the line and stuck; closing it because
           // the street ahead is busy trades one blocked approach for another,
-          // and measured at 240 vehicles it cost more than the whole manager
-          // gained — throughput in the eighth minute fell from 5.4 to 1.0.
+          // and in a measured run it cost more than the whole manager gained —
+          // throughput in the eighth minute fell from 5.4 to 1.0.
           if (!v.mustTurn && onwards && room >= needed) {
             v.turn = 0;
             v.indicate = 0;
@@ -4753,13 +4801,13 @@ export class City {
 
     // Only the traffic near enough to be worth drawing.
     //
-    // A vehicle is around a thousand triangles and there are 240 of them, so
-    // the fleet is 276,000 triangles — half of everything in the city. All of
-    // it was drawn every frame, and drawn again into every shadow map, when a
-    // quarter of it is within a hundred metres and the rest is behind buildings
-    // or lost in the fog. The instances are packed towards the front of the
-    // mesh and the count is set to what was written, which is the one thing an
-    // InstancedMesh lets you do cheaply.
+    // A vehicle is around a thousand triangles and there are FLEET_SIZE of
+    // them, so the fleet is hundreds of thousands of triangles — a large share
+    // of everything in the city. All of it was drawn every frame, and drawn
+    // again into every shadow map, when a quarter of it is within a hundred
+    // metres and the rest is behind buildings or lost in the fog. The instances
+    // are packed towards the front of the mesh and the count is set to what was
+    // written, which is the one thing an InstancedMesh lets you do cheaply.
     const seen = this._viewer;
     const look = this._viewDir;
     for (const mesh of Object.values(this.vehicleMeshes)) mesh.count = 0;
@@ -4785,10 +4833,9 @@ export class City {
       // that the traffic is culled, so a vehicle rarely sits in the same one
       // twice — and the colours were written once, at build time, per slot.
       // Every car in the city changed colour as the packing shifted under it.
-      if (mesh.instanceColor) {
-        mesh.setColorAt(v.slot, _paint.setHex(v.color));
-        mesh.instanceColor.needsUpdate = true;
-      }
+      // The upload is flagged once per mesh below, not once per vehicle: the
+      // flag is a flag, and setting it six hundred times a frame bought nothing.
+      if (mesh.instanceColor) mesh.setColorAt(v.slot, _paint.setHex(v.color));
       const ref = VEHICLE_REF[v.kind];
       const rotY = -v.heading;
       const fx = Math.cos(v.heading);
@@ -4865,7 +4912,12 @@ export class City {
     }
 
     for (const kind of Object.keys(this.vehicleMeshes)) {
-      this.vehicleMeshes[kind].instanceMatrix.needsUpdate = true;
+      const mesh = this.vehicleMeshes[kind];
+      mesh.instanceMatrix.needsUpdate = true;
+      // Every slot this mesh kept had a colour written into it above, so the
+      // colour upload is flagged once per mesh that is actually drawing
+      // something, rather than once per vehicle.
+      if (mesh.instanceColor && mesh.count) mesh.instanceColor.needsUpdate = true;
     }
     head.count = heads;
     tail.count = tails;
@@ -5096,9 +5148,6 @@ export class City {
     this.roadX = [];
     this.roadZ = [];
     this.drops = [];
-    this.signals = [];
-    this.signalLamps = null;
-    this.turnArrows = null;
     this._turning = [];
     this.precipitation = null;
     this.terrain = null;
@@ -5113,6 +5162,18 @@ export class City {
     this.lampHeads = null;
     this.headlights = null;
     this._groundMaterials = [];
+    // What the last build accumulated, and what the next one must not inherit.
+    // A phase map or a demand cell carried over would run this city's lights on
+    // the last one's traffic; the turn statistics would describe a city that is
+    // gone; and `damage` and the facade index belong to geometry that has just
+    // been disposed — left alone, the next paintball would look for a hole in a
+    // building that is no longer there.
+    this.phases = null;
+    this._demand = null;
+    this._junctionKeys = null;
+    this.turnStats = null;
+    this.damage = 0;
+    this.facadeSet = null;
     this.key = null;
   }
 

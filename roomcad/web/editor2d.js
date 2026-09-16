@@ -374,8 +374,13 @@ export class Editor2D {
   }
 
   isTyping() {
+    // Same rule as app.js's isTyping(), contentEditable included. This decides
+    // whether a key belongs to the canvas or to whatever has focus, and the two
+    // modules answering it differently meant a key could be acted on twice — or
+    // not at all — depending on which handler saw it first.
     const el = document.activeElement;
-    return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+    return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+      || el.tagName === "SELECT" || el.isContentEditable);
   }
 
   // MARK: Context menu (right-click)

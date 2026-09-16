@@ -398,8 +398,11 @@ function openingSection(kind) {
   const wall = store.selectedOpeningWall();
   const spacing = store.selectedOpeningSpacing();
   if (!opening || !wall) return roomSection();
-  const minW = kind === "door" ? 0.6 : 0.4;
-  const maxW = kind === "door" ? 1.4 : 2.0;
+  // From plan.js, not typed out again: the inspector slider and the model's own
+  // clamp must agree, or the slider can be dragged to a width the editor then
+  // refuses.
+  const minW = kind === "door" ? P.MIN_OPENING_WIDTH.door : P.MIN_OPENING_WIDTH.window;
+  const maxW = kind === "door" ? P.MAX_OPENING_WIDTH.door : P.MAX_OPENING_WIDTH.window;
   const maxOffset = Math.max(0.1, P.wallLength(wall) - opening.width - 0.1);
   let html = `<h4>${title}</h4>`;
   html += field("Width", range(minW, maxW, opening.width.toFixed(2), "width"), opening.width);
