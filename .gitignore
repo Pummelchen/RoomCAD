@@ -3,3 +3,18 @@ dist/
 pix/
 .wiki/
 .debug/
+
+# Python bytecode. The API suite imports server.py in place, so running the
+# tests leaves roomcad/server/__pycache__/ behind and it was stageable.
+__pycache__/
+*.pyc
+
+# A Caddy downloaded by web/serve.sh. It is a binary, not source, and the
+# README already told people it was ignored when it was not.
+roomcad/web/bin/
+
+# SQLite databases, including the production one. Schema and a restorable
+# dump live in roomcad/server/; the database itself never belongs in git.
+*.db
+*.db-wal
+*.db-shm

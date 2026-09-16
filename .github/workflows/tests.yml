@@ -1,0 +1,45 @@
+name: tests
+
+# The suite is this repository's only gate, and until now nothing ran it but a
+# human. deploy.sh ships straight to production without touching it, so a
+# broken commit could reach the live site with every test red.
+#
+# No install step: there is no package.json, no bundler and no dependencies —
+# the app is plain ES modules and the API is Python's standard library.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # node:sqlite (used by live-multi) needs Node >= 22.5.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The full suite, not --fast: city-fuzz alone runs for over six minutes,
+      # and a fuzz file that never runs is a fuzz file that never finds anything.
+      - name: Run the suite
+        run: ./tests/run.sh
+
+      - name: Report node and python versions
+        if: always()
+        run: |
+          node --version
+          python3 --version
