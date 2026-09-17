@@ -865,10 +865,12 @@ fileInput.addEventListener("change", () => {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      const room = P.parseRoom(String(reader.result));
+      const repairs = {};
+      const room = P.parseRoom(String(reader.result), repairs);
       if (!confirmDiscard()) { fileInput.value = ""; return; }
       const name = file.name.replace(/\.(room|json|rcad)$/i, "");
       store.loadRoom(room, name);
+      announceRepairs(repairs);
     } catch (err) {
       window.alert("Could not open " + file.name + ":\n" + err.message);
     }
@@ -1308,8 +1310,10 @@ async function openStoredRoom(name, version) {
     const data = version != null
       ? await apiLoadRoomVersion(name, version)
       : await apiLoadRoom(name);
-    const room = P.parseRoom(data.json);
+    const repairs = {};
+    const room = P.parseRoom(data.json, repairs);
     store.loadRoom(room, data.name, true);
+    announceRepairs(repairs);
     store.serverRoomVersion = data.version;
     watchRoom(data.name);
     // Persist the exact version the person selected. This is deliberately
@@ -1373,11 +1377,13 @@ async function resumeLastRoom() {
   try {
     const data = await apiLoadLastRoom();
     if (!data || !data.name || !data.json || !Number.isInteger(data.version)) return;
-    const room = P.parseRoom(data.json);
+    const repairs = {};
+    const room = P.parseRoom(data.json, repairs);
     store.loadRoom(room, data.name, true);
     store.serverRoomVersion = data.version;
     store.status = (data.projectLatest ? "Opened latest project design " : "Resumed ")
       + data.name + " · v" + data.version;
+    announceRepairs(repairs);
     watchRoom(data.name);
     store.emit();
   } catch (err) {
@@ -1789,6 +1795,24 @@ store.onChange(() => {
 
 const toastEl = document.getElementById("toast");
 let toastTimer = null;
+
+/// Says what opening a document had to repair, if there was anything.
+///
+/// `sanitize()` used to do this in silence, so a plan that lost a wall opened
+/// looking whole and the user went on to build on it, save it and print it
+/// without ever being told. The document still opens — that is the point of the
+/// repair pass — but it opens SAYING what it cost.
+///
+/// Only a DROP gets a toast. A wall that is gone changes what the user has; a
+/// joint that was healed, or a coordinate nudged into the plate, is invisible
+/// either way and does not deserve to interrupt anyone. Both go in the status
+/// line, because "it opened" and "it opened unchanged" are different facts.
+function announceRepairs(report) {
+  if (!report || P.reportIsEmpty(report)) return;
+  const said = P.describeReport(report);
+  store.status = (store.status ? store.status + " · " : "") + "with repairs: " + said;
+  if (report.dropped.length) toast("Opened with repairs — " + said, "warn");
+}
 
 function toast(message, kind = "info") {
   if (!toastEl) return;

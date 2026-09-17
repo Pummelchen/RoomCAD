@@ -91,7 +91,7 @@ no cap at all.
 
 ## Identity
 
-`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.7";`. It is
+`roomcad/web/version.js`, a single line: `export const APP_VERSION = "10.8";`. It is
 the only release source, and it is **enforced** by `tests/version.test.mjs` — the
 footer must render it, `app.js` must import it, and `app.js`/`index.html` must not
 hard-code a `vX.Y` tag.
@@ -257,6 +257,21 @@ contract, not that anything renders.
   untouched. The older tests that lift app.js functions with `new Function` still work;
   new ones should drive the real module. `walk3d.js` needs `await RAPIER.init()` before
   it will build a physics world.
+- **A load that repaired or dropped something says so.** `sanitize()` returns
+  `{ dropped, repaired }` and `parseRoom()` fills an optional sink with it, which
+  the three paths that open a document (a local file, a stored design, the resumed
+  last design) turn into a status line and — for DROPS only — a warning toast.
+  Two halves matter and the second is the one that rots: it must report a wall it
+  discarded, **and it must report nothing when nothing happened**. A repair pass
+  that announces "repaired 2 openings" every time you open a healthy file teaches
+  the user to ignore the message that exists to tell them a wall is gone. That
+  nearly shipped — casting a coordinate through `clamp` can move it by 1e-17 and
+  the demo room's own doors do it on one wall — which is why `fit()` ignores
+  changes at rounding level (`NOISE`), and why `tests/sanitize-report.test.mjs`
+  asserts a clean room and a second pass both report nothing. The report is passed
+  to a sink and **never hung on the room**: `serializeRoom()` writes the whole
+  object, so anything attached would travel into the next save as part of the
+  document.
 - **A wall's collider is oriented to the wall, not to a horizontal/vertical guess.**
   `wallRunBox()` returns the half-extents and the rotation for a run of wall, and all
   four collider sites — the wall itself, a closed door's panel, the header over a

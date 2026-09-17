@@ -37,7 +37,15 @@ export function serializeRoom(room) {
   );
 }
 
-export function parseRoom(text) {
+/// Reads a .rcad document into a room, and repairs what cannot be loaded.
+///
+/// `report` is an optional object to fill with what `sanitize()` had to do — see
+/// there for why a load is not allowed to keep that to itself. It is a sink
+/// rather than something returned, because every caller already wants the room
+/// and the room is what the function is for. It is NOT attached to the room:
+/// `serializeRoom()` writes the whole object, so a note hung on the room would
+/// travel into the next save and be read back as part of the document.
+export function parseRoom(text, report = null) {
   const data = JSON.parse(text);
   if (!data || data.format !== ROOM_FILE_FORMAT) {
     throw new Error("This is not a RoomCAD room file.");
@@ -61,6 +69,10 @@ export function parseRoom(text) {
   room.furniture = Array.isArray(room.furniture) ? room.furniture : [];
   room.publicAreas = Array.isArray(room.publicAreas) ? room.publicAreas : [];
   room.labels = Array.isArray(room.labels) ? room.labels : [];
-  sanitize(room);
+  const did = sanitize(room);
+  if (report) {
+    report.dropped = did.dropped;
+    report.repaired = did.repaired;
+  }
   return room;
 }

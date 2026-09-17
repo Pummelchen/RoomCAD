@@ -146,11 +146,18 @@ export function demoRoom() {
   room.doors.push(rearDoor);
   room.furniture.push(...rearFurnitureSet(rearBounds));
 
-  // The two-pane rear window of Room 7
+  // The two-pane rear window of Room 7.
+  //
+  // The first pane starts at 10 cm, which is the margin `sanitize()` enforces on
+  // every opening, rather than the 8 cm this was written with. At 8 cm the demo
+  // was the one document in the project that did not survive its own repair pass:
+  // opening it moved the pane 2 cm, so "the demo loads unchanged" was not true and
+  // could not be asserted. A demo that needs repairing teaches the wrong lesson
+  // about what loading a file does.
   const rearWall = room.walls.find(w => w.start.x === 0 && w.start.z === room.length);
   if (rearWall) {
     room.windows.push(
-      { id: uid(), wallID: rearWall.id, offset: 0.08, width: 0.72 },
+      { id: uid(), wallID: rearWall.id, offset: 0.10, width: 0.72 },
       { id: uid(), wallID: rearWall.id, offset: 0.88, width: 0.72 },
     );
   }

@@ -187,7 +187,7 @@ Leave previous releases' notes and performance tables alone.
 ## RoomCAD — a browser app and a Python API, no release yet
 
 - **Identity: established.** `roomcad/web/version.js` is the single source —
-  `export const APP_VERSION = "10.7";` — and `tests/version.test.mjs` enforces it:
+  `export const APP_VERSION = "10.8";` — and `tests/version.test.mjs` enforces it:
   the footer must render that value, `app.js` must import it, and neither `app.js`
   nor `index.html` may carry a hard-coded version tag. It is bumped once per
   completed task, so the footer always says which build the user is looking at.

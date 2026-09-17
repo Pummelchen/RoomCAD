@@ -929,6 +929,14 @@ body.resizing-sidebars * {
   color: #ffd7d3;
 }
 
+/* Warn: the document opened, but the repair pass had to drop something. Amber
+   rather than red, because it is not a failure — but not the neutral colour
+   either, because the user has lost part of their plan and should notice. */
+#toast.warn {
+  border-color: rgba(255, 193, 94, 0.6);
+  color: #ffe6bf;
+}
+
 /* ── Server latency ball (next to the version) ──────── */
 
 .latency-dot {
