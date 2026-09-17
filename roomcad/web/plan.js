@@ -16,6 +16,7 @@ export * from "./plan/labels.js";
 export * from "./plan/rooms.js";
 export * from "./plan/captions.js";
 export * from "./plan/sanitize.js";
+export * from "./plan/heal.js";
 export * from "./plan/layout-grid.js";
 export * from "./plan/layout-slice.js";
 export * from "./plan/layout-partition.js";
