@@ -17,6 +17,7 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize } from "node:path";
+import { appSource } from "./harness/app-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -172,7 +173,7 @@ check("and the addons walk3d imports by mapped path",
   check("login.js defines the 401 hook app.js calls",
     /window\.__roomcadShowLogin\s*=/.test(readFileSync(join(web, "login.js"), "utf8")));
   check("and app.js calls exactly that name",
-    /__roomcadShowLogin/.test(readFileSync(join(web, "app.js"), "utf8")));
+    /__roomcadShowLogin/.test(appSource()));
 }
 
 console.log(`${passed} passed, ${failed} failed — the page can boot`);

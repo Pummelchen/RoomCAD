@@ -13,11 +13,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { appSource } from "./harness/app-source.mjs";
+import { appLiftable } from "./harness/app-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const app = appSource();
+const app = appLiftable();
 
 let failed = 0;
 let passed = 0;
@@ -57,13 +57,15 @@ function build({ walk3d = null, walk3dHasPause = true } = {}) {
   };
   const api = new Function(
     "store", "planCanvas", "walkHost", "document", "Walk3D",
-    "renderToolbar", "renderStatus", "initialWalk3d",
-    "let walk3d = initialWalk3d;\n" + code +
-    "\nreturn { setMode, syncMode, shown: () => shownMode, walk3d: () => walk3d };"
+    "renderToolbar", "renderStatus", "appState",
+    code +
+    "\nreturn { setMode, syncMode, shown: () => shownMode, walk3d: () => appState.walk3d };"
   )(
     fake.store, fake.planCanvas, fake.walkHost, fake.document, fake.Walk3D,
     () => { fake.toolbar.n++; }, () => { fake.status.n++; },
-    walk3d,
+    // The walkthrough handle is shared between the view and the inspector, so it
+    // is a property of appState rather than a module-level `let`.
+    { walk3d },
   );
   return { ...fake, api };
 }

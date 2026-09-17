@@ -24,7 +24,10 @@ function check(name, condition) {
 
 const match = versionSrc.match(/export const APP_VERSION = "(\d+)\.(\d+)";/);
 check("version source uses a numeric major.minor release", !!match);
-check("app imports the shared version", appSrc.includes('import { APP_VERSION } from "./version.js";'));
+// The split moved this import into roomcad/web/app/, so the specifier is
+// "../version.js" — the contract is that SOME app module imports it, not that a
+// particular file does.
+check("app imports the shared version", appSrc.includes("import { APP_VERSION } from \"../version.js\";"));
 check("footer renders the shared version", appSrc.includes('appVersion.textContent = "v" + APP_VERSION;'));
 check("server-status footer also uses the shared version", appSrc.includes('let html = "v" + APP_VERSION;'));
 check("app has no hard-coded release tag", !/\bv\d+\.\d+\b/.test(appSrc));

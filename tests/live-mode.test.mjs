@@ -7,10 +7,14 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { pageCss } from "./harness/page-css.mjs";
-import { appSource } from "./harness/app-source.mjs";
+import { appSource, appLiftable } from "./harness/app-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = appSource();
+// Lifting a function with `new Function` needs the source WITHOUT `export `,
+// which is not valid inside a function body; the data: import above needs it
+// WITH, because that is how the function is handed over. Hence both.
+const liftable = appLiftable();
 const html = readFileSync(join(root, "roomcad", "web", "index.html"), "utf8");
 // The page's stylesheets, concatenated in cascade order: the CSS is split
 // under roomcad/web/styles/ now, and reading one of the six would answer a
@@ -31,7 +35,10 @@ function check(name, condition) {
 check("toolbar exposes a Join Live button", html.includes('id="live-room"') && html.includes(">Join Live</button>"));
 check("toolbar exposes the red leave action", html.includes('id="leave-live-room"') && html.includes(">Leave Live Mode</button>"));
 check("second-session invitation uses Join Live text", app.includes('liveButton.textContent = store.live ? "Live Active" : "Join Live";'));
-check("live drafts wait safely for an explicit join", app.includes("let pendingLiveDraft = null;") && app.includes("pendingLiveDraft = { room, version }"));
+// The draft is shared mutable state, so it lives on appState now — an imported
+// binding cannot be assigned to, which is why it is not a module-level `let`.
+check("live drafts wait safely for an explicit join",
+  app.includes("pendingLiveDraft: null") && app.includes("appState.pendingLiveDraft = { room, version }"));
 check("joining never pushes stale local data immediately", !app.includes("pushLiveDraft(); // publish our current state right away"));
 check("leave saves before detaching the watcher", app.includes("const saved = await saveRoom({ watch: false });") && app.includes("stopWatching({ detached: true });"));
 check("leave failure keeps the editor live", app.includes("still in Live Active"));
@@ -41,13 +48,13 @@ check("leave action is styled red", css.includes("#toolbar #leave-live-room.live
 // Status polling. setInterval around an await lets a slow server collect
 // overlapping requests from every open tab, which makes it slower still.
 check("status polls are scheduled one at a time, not on a fixed interval",
-  !app.includes("setInterval(pollStatus") && app.includes("scheduleStatus(statusBackoff)"));
+  !app.includes("setInterval(pollStatus") && app.includes("scheduleStatus(appState.statusBackoff)"));
 check("the next poll is scheduled only after the previous one resolves",
   app.includes("const offline = await pollStatus();"));
 check("pollStatus reports whether the server could be reached",
   app.includes("/// Polls the server once. Resolves true if the server could not be reached."));
 check("an unreachable server is backed off from rather than hammered",
-  app.includes("Math.min(statusBackoff * 2, STATUS_BACKOFF_MAX_MS)"));
+  app.includes("Math.min(appState.statusBackoff * 2, STATUS_BACKOFF_MAX_MS)"));
 check("backoff is bounded",
   /STATUS_BACKOFF_MAX_MS\s*=\s*\d+/.test(app));
 check("returning to the tab refreshes immediately",
@@ -82,7 +89,7 @@ check("floor area is the enclosed floor, not width times length",
 // function is lifted out of app.js on its own because app.js reaches for the
 // DOM the moment it loads.
 {
-  const src = app.slice(app.indexOf("export function liveUpdateAction"));
+const src = app.slice(app.indexOf("export function liveUpdateAction"));
   const body = src.slice(0, src.indexOf("\nfunction watchRoom"));
   const { liveUpdateAction } = await import(
     "data:text/javascript;base64," + Buffer.from(body, "utf8").toString("base64"));
@@ -141,9 +148,14 @@ check("floor area is the enclosed floor, not width times length",
 // seconds whether it still matches, and this runs that real code — the timer
 // and the network handed in, so the guards can be exercised rather than read.
 {
-  const start = app.indexOf("let livePushTimer = null;");
-  const end = app.indexOf("// MARK: - Store change subscription", start);
-  check("the sync code can be located", start > 0 && end > start);
+  // The boundary used to be the next section's MARK comment, which is no longer
+  // adjacent to this code — the split gave that MARK its own module. The sync
+  // code is the run of functions ending with stopLiveSync(), and the indices come
+  // from the LIFTABLE source because that is what gets sliced below; indices from
+  // the other one would land mid-identifier.
+  const start = liftable.indexOf("let livePushTimer = null;");
+  const end = liftable.indexOf("\n}", liftable.indexOf("function stopLiveSync")) + 2;
+  check("the sync code can be located", start > 0 && end > start + 2);
 
   // The interval is read out of the app rather than restated here: a test that
   // repeats the number it is checking passes whatever the number becomes.
@@ -169,10 +181,10 @@ check("floor area is the enclosed floor, not width times length",
       return { ok: true, json: async () => reply };
     };
     const api = new Function(
-      "store", "P", "CLIENT_ID", "fetch", "apiLiveDraft", "toast",
+      "store", "P", "CLIENT_ID", "fetch", "apiLiveDraft", "toast", "appState",
       "setInterval", "clearInterval", "setTimeout", "clearTimeout",
-      `const LIVE_SYNC_MS = ${declared};\nlet liveSeq = 0;\n` + app.slice(start, end) +
-      "\nreturn { checkLiveSync, startLiveSync, stopLiveSync, scheduleLivePush, pushLiveDraft, seq: () => liveSeq };"
+      `const LIVE_SYNC_MS = ${declared};\n` + liftable.slice(start, end) +
+      "\nreturn { checkLiveSync, startLiveSync, stopLiveSync, scheduleLivePush, pushLiveDraft, seq: () => appState.liveSeq };"
     )(
       store,
       { serializeRoom: r => JSON.stringify(r), parseRoom: t => JSON.parse(t) },
@@ -182,6 +194,9 @@ check("floor area is the enclosed floor, not width times length",
         return pushAnswer;
       },
       () => {},
+      // appState: the live sequence is shared mutable state now, so the lifted
+      // code writes this rather than a `let` declared in the lifted fragment.
+      { liveSeq: 0 },
       (fn, ms) => { scheduled = { fn, ms }; return 1; },
       () => { scheduled = null; },
       () => 1, () => {},

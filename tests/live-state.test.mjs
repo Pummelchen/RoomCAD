@@ -15,11 +15,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { appSource } from "./harness/app-source.mjs";
+import { appLiftable } from "./harness/app-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const app = appSource();
+const app = appLiftable();
 
 let failed = 0;
 let passed = 0;
@@ -40,16 +40,17 @@ function check(name, condition) {
 
   const code = app.slice(start, end + 2);
   const cleared = [];
-  const api = new Function("clearTimeout", `
-    let liveSeq = 42;
+  // The live-channel counters are shared mutable state on appState now, so the
+  // lifted function writes THOSE rather than locals declared here.
+  const api = new Function("clearTimeout", "appState", `
     let liveUnpublished = true;
     let livePushTimer = 7;
     ${code}
     return {
       resetLiveSequence,
-      state: () => ({ liveSeq, liveUnpublished, livePushTimer }),
+      state: () => ({ liveSeq: appState.liveSeq, liveUnpublished, livePushTimer }),
     };
-  `)((t) => cleared.push(t));
+  `)((t) => cleared.push(t), { liveSeq: 42 });
 
   check("before the reset the state is dirty",
     api.state().liveSeq === 42 && api.state().liveUnpublished === true);

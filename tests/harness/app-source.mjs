@@ -29,3 +29,13 @@ export function appSource() {
   }
   return parts.join("\n");
 }
+
+/// The same source, with top-level `export ` removed.
+///
+/// Three tests LIFT a function out of app.js and evaluate it with `new Function`
+/// to drive it in isolation. `export` is not valid there, and the split added it
+/// to every declaration another module uses — so the lift has to strip it. Kept
+/// here rather than in each test so the reason is written down once.
+export function appLiftable() {
+  return appSource().replace(/^export /gm, "");
+}
