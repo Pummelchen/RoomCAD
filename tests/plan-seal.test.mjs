@@ -180,8 +180,13 @@ function check(name, cond, detail = "") {
   check("physics: colliders use the same per-end join seal as the meshes",
     walkSrc.includes("const before = seg.startSeal;") &&
     walkSrc.includes("const after = seg.endSeal;"));
+  // The depth is written as the FULL thickness rather than the half now, because
+  // wallRunBox() halves whatever it is handed. The rule this pins is unchanged:
+  // a closed door's collider is a whole wall thick with the seal on both faces,
+  // so it fills the gap instead of leaving a slot either side of it.
   check("physics: closed door fills the complete wall depth",
-    walkSrc.includes("const halfDoorDepth = P.WALL_THICKNESS / 2 + CLOSED_DOOR_SEAL;"));
+    walkSrc.includes("const doorThickness = P.WALL_THICKNESS + 2 * CLOSED_DOOR_SEAL;") &&
+    walkSrc.includes("wallRunBox(a.x, a.z, b.x, b.z, doorThickness)"));
   check("renderer: point shadows use a 1024 map", mapSize >= 1024);
 
   // The regression this whole file exists for. A negative shadow bias makes

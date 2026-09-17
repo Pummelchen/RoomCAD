@@ -3,7 +3,7 @@
 // Part of the plan model; the public entry point is ../plan.js, which re-exports
 // every module here.
 
-import { FURNITURE_KINDS, point } from "./core.js";
+import { FURNITURE_KINDS, point, unknownFurnitureKind } from "./core.js";
 import { wallDirection, wallPerp, wallPointAt, wallProjection } from "./walls.js";
 
 
@@ -110,6 +110,9 @@ export function openingNear(room, p, tolerance = 0.25) {
 
 export function furnitureFootprint(item) {
   const kind = FURNITURE_KINDS[item.kind];
+  // No entry, no footprint — see unknownFurnitureKind(). This is the loud end of
+  // a decision whose quiet end is sanitize() dropping the item on load.
+  if (!kind) throw unknownFurnitureKind(item.kind);
   const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
   const w = swaps ? kind.d : kind.w;
   const d = swaps ? kind.w : kind.d;

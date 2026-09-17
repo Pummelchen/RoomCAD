@@ -58,8 +58,11 @@ too.
   BUTTONS testable: they are static markup, and `app.js` binds their clicks by
   querying for them as it loads.
 - `.github/workflows/tests.yml` — CI. `.github/traffic.json` is badge data.
-- `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`.
-  Required by `RELEASE.md` §1.6; update it in the same commit as a vendored upgrade.
+- `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`, plus
+  a SHA-256 for every file there and the version of each. Required by `RELEASE.md`
+  §1.6, and **enforced** by `tests/vendored-pins.test.mjs`: update the file in the
+  same commit as a vendored upgrade, or the suite fails. The pin is the point — a
+  vendored dependency is one whose contents nobody checks.
 
 ## Build, test, run
 
@@ -243,6 +246,37 @@ contract, not that anything renders.
 - **A module whose imports are all local is loadable as a `data:` URL; one that
   re-exports is not.** Seven tests used to read `plan.js` into a data URL, which
   worked only while it had no imports. A data URL cannot resolve a relative one.
+- **`app.js` and `walk3d.js` ARE importable now** — `tests/harness/three-resolver.mjs`
+  resolves the page's import map for the whole graph, which rewriting import lines
+  cannot do (`walk3d` imports `three/addons/…`, and those vendored addons import the
+  bare `three` themselves, so the chain dies a file deeper than any rewrite reaches).
+  A test opts in by registering the hook before it imports:
+  `import { register } from "node:module"; register("./harness/three-resolver.mjs", import.meta.url);`
+  then a dynamic `await import("../roomcad/web/app.js")`. Registering affects only the
+  imports made after it, so a test's own static imports and every other test file are
+  untouched. The older tests that lift app.js functions with `new Function` still work;
+  new ones should drive the real module. `walk3d.js` needs `await RAPIER.init()` before
+  it will build a physics world.
+- **A wall's collider is oriented to the wall, not to a horizontal/vertical guess.**
+  `wallRunBox()` returns the half-extents and the rotation for a run of wall, and all
+  four collider sites — the wall itself, a closed door's panel, the header over a
+  doorway, and `addWallSlab()` — go through it. It replaced
+  `const horizontal = Math.abs(dz) < 0.001` choosing between two axis-aligned boxes,
+  which read as a guard and was an **assumption**: anything not horizontal was treated
+  as vertical, so a run at any other angle got a box pointing the wrong way — solid
+  where the wall is not, and passable where it is. `sanitize()` drops a diagonal wall,
+  so nothing in this app could reach that; which is why it was never noticed, and not a
+  reason for the collider to depend on another module's filter. The two axis-aligned
+  cases are deliberately left unrotated, so no wall's geometry changed;
+  `tests/wall-collider.test.mjs` walks a capsule into a 45° wall, and into the box the
+  old code built, so the assertion is about which one the solver stops.
+- **`Walk3D.dispose()` has no caller, and is tested anyway.** The walkthrough lives for
+  the page's lifetime, so teardown only ever runs on a reload — the worst state for a
+  method whose whole job is releasing a renderer, a Rapier world, a 4096² shadow map
+  and a cube map per lit fixture. `tests/walk3d-dispose.test.mjs` drives the real
+  method on an object built from the real prototype with fake resources and checks
+  every release it claims. A failure there is GPU memory that never comes back, and
+  nothing else would report it.
 
 ## Releasing
 

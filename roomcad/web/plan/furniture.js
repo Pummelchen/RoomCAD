@@ -3,7 +3,7 @@
 // Part of the plan model; the public entry point is ../plan.js, which re-exports
 // every module here.
 
-import { FURNITURE_KINDS, GRID_STEPS, WALL_THICKNESS, clamp, clean } from "./core.js";
+import { FURNITURE_KINDS, GRID_STEPS, WALL_THICKNESS, clamp, clean, unknownFurnitureKind } from "./core.js";
 import { furnitureFootprint } from "./hit.js";
 import { solidSpans } from "./openings.js";
 import { canvasOf } from "./room.js";
@@ -147,6 +147,9 @@ function furnitureSnapLines(room, item, axis) {
 
 export function furnitureCenter(room, raw, item) {
   const kind = FURNITURE_KINDS[item.kind];
+  // As in furnitureFootprint(): no entry means no size, and no size can be
+  // guessed. sanitize() is what keeps this unreachable for a loaded document.
+  if (!kind) throw unknownFurnitureKind(item.kind);
   const swaps = item.rotationDegrees === 90 || item.rotationDegrees === 270;
   const w = swaps ? kind.d : kind.w;
   const d = swaps ? kind.w : kind.d;

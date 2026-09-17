@@ -158,6 +158,53 @@ const SUN_SHADOW_BIAS = 0;
 const SUN_SHADOW_TEXEL = (SUN_SHADOW_REACH * 2) / SUN_SHADOW_MAP;
 const SUN_SHADOW_NORMAL_BIAS = SUN_SHADOW_TEXEL * 0.18;
 
+// How square a run has to be before it counts as axis-aligned. A tenth of a
+// millimetre: the editor's own walls are exactly axis-locked, so this is only
+// ever asked about a document that came from somewhere else.
+const AXIS_EPS = 0.0001;
+
+/// The box to give a run of wall, as half-extents in x and z plus the rotation
+/// that turns the box to lie along the run.
+///
+/// Callers build `cuboid(hx, <half height>, hz)` with it. This replaces an
+/// "is the wall horizontal?" test that picked between two axis-aligned boxes:
+///
+///     const horizontal = Math.abs(dz) < 0.001;
+///     const desc = horizontal ? cuboid(len/2, h, t/2) : cuboid(t/2, h, len/2);
+///
+/// Read that `else` as what it is — an ASSUMPTION, not a guard. Anything that is
+/// not horizontal is treated as vertical, so a run at any other angle got a box
+/// pointing the wrong way: solid where the wall is not, and passable where it
+/// is. `sanitize()` drops a diagonal wall on load, so nothing in this app could
+/// reach that; which is the reason it was never noticed, and not a reason for
+/// the collider to depend on another module's filter to be correct.
+///
+/// The two axis-aligned cases are left EXACTLY as they were, unrotated, because
+/// those are the only runs this app produces and a rotation would be a change to
+/// the geometry of every wall in every room for no gain. Only a run that is
+/// genuinely neither gets a real angle, which is the case that used to be wrong.
+export function wallRunBox(ax, az, bx, bz, thickness) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const len = Math.hypot(dx, dz);
+  const halfThickness = thickness / 2;
+  if (Math.abs(dz) <= AXIS_EPS) {
+    return { len, hx: len / 2, hz: halfThickness, rotation: null };
+  }
+  if (Math.abs(dx) <= AXIS_EPS) {
+    return { len, hx: halfThickness, hz: len / 2, rotation: null };
+  }
+  // A rotation about +Y by θ sends the box's local +X to (cos θ, 0, −sin θ), so
+  // the angle that lays its length along (dx, dz) is atan2(−dz, dx).
+  const half = Math.atan2(-dz, dx) / 2;
+  return {
+    len,
+    hx: len / 2,
+    hz: halfThickness,
+    rotation: { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) },
+  };
+}
+
 // Scratch vector for the viewmodel, which is positioned every frame.
 const _gunOffset = new THREE.Vector3();
 const _viewForward = new THREE.Vector3();
@@ -1664,11 +1711,9 @@ export class Walk3D {
       const midX = (startX + endX) / 2;
       const midZ = (startZ + endZ) / 2;
       const h = room.height / 2 + WALL_VERTICAL_SEAL;
-      const t = P.WALL_THICKNESS;
-      const horizontal = Math.abs(dz) < 0.001;
-      const desc = horizontal
-        ? RAPIER.ColliderDesc.cuboid(len / 2, h, t / 2)
-        : RAPIER.ColliderDesc.cuboid(t / 2, h, len / 2);
+      const box = wallRunBox(startX, startZ, endX, endZ, P.WALL_THICKNESS);
+      const desc = RAPIER.ColliderDesc.cuboid(box.hx, h, box.hz);
+      if (box.rotation) desc.setRotation(box.rotation);
       desc.setTranslation(midX, baseY + room.height / 2, midZ);
       this.world.createCollider(desc);
     }
@@ -1685,11 +1730,10 @@ export class Walk3D {
       const midX = (a.x + b.x) / 2;
       const midZ = (a.z + b.z) / 2;
       const doorTop = Math.min(P.DOOR_HEIGHT, room.height);
-      const horizontal = Math.abs(b.z - a.z) < 0.001;
-      const halfDoorDepth = P.WALL_THICKNESS / 2 + CLOSED_DOOR_SEAL;
-      const desc = horizontal
-        ? RAPIER.ColliderDesc.cuboid(len / 2, doorTop / 2 + CLOSED_DOOR_SEAL, halfDoorDepth)
-        : RAPIER.ColliderDesc.cuboid(halfDoorDepth, doorTop / 2 + CLOSED_DOOR_SEAL, len / 2);
+      const doorThickness = P.WALL_THICKNESS + 2 * CLOSED_DOOR_SEAL;
+      const box = wallRunBox(a.x, a.z, b.x, b.z, doorThickness);
+      const desc = RAPIER.ColliderDesc.cuboid(box.hx, doorTop / 2 + CLOSED_DOOR_SEAL, box.hz);
+      if (box.rotation) desc.setRotation(box.rotation);
       desc.setTranslation(midX, baseY + doorTop / 2, midZ);
       this.world.createCollider(desc);
     }
@@ -1707,10 +1751,9 @@ export class Walk3D {
       const midX = (a.x + b.x) / 2;
       const midZ = (a.z + b.z) / 2;
       const headerH = room.height - doorTop;
-      const horizontal = Math.abs(b.z - a.z) < 0.001;
-      const desc = horizontal
-        ? RAPIER.ColliderDesc.cuboid(len / 2, headerH / 2, P.WALL_THICKNESS / 2)
-        : RAPIER.ColliderDesc.cuboid(P.WALL_THICKNESS / 2, headerH / 2, len / 2);
+      const box = wallRunBox(a.x, a.z, b.x, b.z, P.WALL_THICKNESS);
+      const desc = RAPIER.ColliderDesc.cuboid(box.hx, headerH / 2, box.hz);
+      if (box.rotation) desc.setRotation(box.rotation);
       desc.setTranslation(midX, baseY + doorTop + headerH / 2, midZ);
       this.world.createCollider(desc);
     }
@@ -1969,11 +2012,9 @@ export class Walk3D {
     if (len < 0.01 || h < 0.01) return;
     const a = P.wallPointAt(wall, from);
     const b = P.wallPointAt(wall, to);
-    const horizontal = Math.abs(b.z - a.z) < 0.001;
-    const t = P.WALL_THICKNESS;
-    const desc = horizontal
-      ? RAPIER.ColliderDesc.cuboid(len / 2, h / 2, t / 2)
-      : RAPIER.ColliderDesc.cuboid(t / 2, h / 2, len / 2);
+    const box = wallRunBox(a.x, a.z, b.x, b.z, P.WALL_THICKNESS);
+    const desc = RAPIER.ColliderDesc.cuboid(box.hx, h / 2, box.hz);
+    if (box.rotation) desc.setRotation(box.rotation);
     desc.setTranslation((a.x + b.x) / 2, baseY + y0 + h / 2, (a.z + b.z) / 2);
     this.world.createCollider(desc);
   }

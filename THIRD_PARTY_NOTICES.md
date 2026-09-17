@@ -15,19 +15,50 @@ upgrade anything under `roomcad/web/lib/`, update this file in the same commit.
 | Three.js addons | `environments/RoomEnvironment.js`, `math/ImprovedNoise.js`, `utils/BufferGeometryUtils.js`, `tsl/display/*.js` | MIT | <https://github.com/mrdoob/three.js> |
 | Rapier (3D physics, WASM) | `rapier.mjs` | Apache-2.0 | <https://github.com/dimforge/rapier> |
 
-## Pinned versions, and one that is not
+## Pinned versions, and the hashes that hold them
 
 - Three.js is `REVISION = '186dev'`, and the revision string is visible in
   `three.core.js`.
-- **The vendored Rapier build carries no version string.** `rapier.mjs` is a
-  minified wasm-bindgen bundle with the WebAssembly embedded as a base64 string,
-  and its `version` export is an opaque minified identifier. Which upstream
-  release this is therefore **cannot be determined from the repository** — only
-  that it is a `rapier3d-compat`-style build (it exports `Voxels`,
-  `PidController`, `SerializationPipeline` and `HeightFieldFlags`).
+- Rapier is **0.20.0**. This used to say the version "cannot be determined from
+  the repository", because the build's `version` export is an opaque minified
+  identifier (`Vg` in `rapier.mjs`). The identifier is opaque; what it RETURNS is
+  not. The build is an ES module, so it can simply be asked:
 
-  When you next upgrade it, record the exact version here and pin it in the
-  upgrade commit. Do not guess at a version number in this file.
+  ```js
+  import * as RAPIER from "./roomcad/web/lib/rapier.mjs";
+  await RAPIER.init();          // the WASM must exist first
+  RAPIER.version();             // "0.20.0"
+  ```
+
+  `tests/vendored-pins.test.mjs` asks it on every run and compares the answer
+  with the number written here, so the two cannot drift apart.
+
+### SHA-256 of every vendored file
+
+A vendored dependency is a dependency whose contents nobody checks. These hashes
+are checked: `tests/vendored-pins.test.mjs` recomputes each one and fails if a
+file no longer matches the table. An upgrade is therefore a deliberate act — you
+change the file, the test tells you, and you record the new hash and version in
+this file and in the commit message.
+
+| File under `roomcad/web/lib/` | SHA-256 |
+| --- | --- |
+| `rapier.mjs` | `09a000bee2ad827608780cf8821258cadc243aaeb8881ab3e769de73f945eee0` |
+| `three.core.js` | `518807bc05a546546005a725d5ffcf3ec3988f06adf6f7c037d2c7a86627e5cb` |
+| `three.webgpu.js` | `8b078e3184372e72f598ce105efaf313c664f9429c7549c8f07d1a89e125c2c2` |
+| `three.tsl.js` | `9479ed1a9f13c3817c186a8d456d593fbff6140c7e0890b075382023e56e96e5` |
+| `environments/RoomEnvironment.js` | `55f466192cc84298755a424c5e040345006b2ee1455589b3b54126c2ea4123f4` |
+| `math/ImprovedNoise.js` | `d3821241e25bf0c8bfc13cec941924573bbaaf8f599a4fa07d60664b97832b39` |
+| `utils/BufferGeometryUtils.js` | `11645a800387b6db1d690aa3bc8f19518ba06ed84ca0a50a7cc02957180e132b` |
+| `tsl/display/BloomNode.js` | `554463b323f5511340edaa2d9c56f89810888448d36d6e271b3e2fea2b8db8eb` |
+| `tsl/display/GaussianBlurNode.js` | `f9a9f00895616f5be4ce3ad86d42768fe69a0e3d93f4fe315cf4dd9133a989d5` |
+| `tsl/display/SSAONode.js` | `cef720f576dcd6faf8a2080e98ee20d35d2aa250a01113cf8d2d7b435eef7946` |
+| `tsl/display/depthAwareBlur.js` | `63adcf205b903ca202a0a2c3b0ed4d230ddac1e761b580e76e23ab3ed18cf80e` |
+
+The table lists everything the page loads from `lib/`, which is why it is longer
+than the licence table above: the licence table groups the Three.js addons onto
+one row, and this one names each file so each can be hashed.
+
 - `rapier.mjs` ends with `//# sourceMappingURL=rapier.mjs.map`, but the map is
   **not redistributed** — a devtools session will request it and 404. That is
   untidy, not a functional problem. It is left as upstream shipped it rather

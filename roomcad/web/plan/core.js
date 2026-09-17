@@ -29,6 +29,32 @@ export const FURNITURE_KINDS = {
   lightPanel: { title: "Office Panel", category: "fixture", w: 0.60, d: 0.60, h: 0.06, color: [0.95, 0.97, 1.00], label: "PANEL", standHeight: 0, ceiling: true, watts: 200 },
 };
 
+/// Why a piece of furniture this build does not know is refused rather than
+/// measured, and why the refusal says which kind it was.
+///
+/// `sanitize()` drops an item whose kind is not in the table above, so a
+/// document cannot carry one into the model: it is refused at the one door
+/// there is. The two functions with no such door — `furnitureFootprint()` and
+/// `furnitureCenter()` — read `w` and `d` straight off the entry and must not
+/// invent them. There is no honest default: a footprint decides whether a piece
+/// fits, so a guessed one answers "yes" about a position that is wrong, which is
+/// a silent lie about the user's own plan. Throwing is the loud alternative.
+///
+/// The message names the kind because that is what makes the failure
+/// diagnosable. `undefined` has no `d`, so without this the caller gets "cannot
+/// read properties of undefined (reading 'd')" — true, and no help at all in
+/// finding which item in a document caused it.
+///
+/// The callers that CAN be reached holding an un-repaired item guard instead:
+/// `isFurniturePlacementValid()` refuses the placement and
+/// `store.refreshFurnitureGaps()` reports no gaps, because a child dragging a
+/// piece across the floor must not meet a stack trace.
+export function unknownFurnitureKind(kind) {
+  return new Error(
+    `Unknown furniture kind: ${JSON.stringify(kind)}. This build has no size for it, `
+    + "and a size cannot be guessed — see FURNITURE_KINDS.");
+}
+
 export const WALL_THICKNESS = 0.10;
 /// How far a wall end has to reach past a join to close it. A corner is only
 /// solid once each wall crosses its neighbour's *half* thickness — anything
