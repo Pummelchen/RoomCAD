@@ -13,16 +13,23 @@
 //
 // Run:  node tests/model-fuzz.test.mjs
 
-import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { registerHooks } from "node:module";
+import { resolve, stubModule } from "./harness/three-resolver.mjs";
+
+// The real store, on the real plan module, with the WebAudio helper replaced by a
+// stub: audio.js needs a WebAudio context and nothing here is about sound. The
+// stub is installed in the RESOLVER rather than by rewriting store.js's source,
+// because store.js is a facade over store/ now and the import that used to be
+// rewritten is no longer in that file.
+registerHooks({ resolve });
+stubModule("audio.js", "export function playDoorSound() {}");
 // plan.js re-exports roomcad/web/plan/*.js, so it is imported for real:
 // a data: URL cannot resolve the relative imports inside the facade.
 const planUrl = new URL("../roomcad/web/plan.js", import.meta.url).href;
 const P = await import(planUrl);
-const storeSrc = readFileSync("roomcad/web/store.js","utf8")
-  .replace('import * as P from "./plan.js";', `import * as P from "${planUrl}";`)
-  .replace('import { playDoorSound } from "./audio.js";', "const playDoorSound = () => {};");
-const { store } = await import("data:text/javascript;base64," + Buffer.from(storeSrc).toString("base64"));
+const storeUrl = new URL("../roomcad/web/store.js", import.meta.url).href;
+const { store } = await import(storeUrl);
 let seed = 0;
 const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
 const pick = a => a[Math.floor(rnd() * a.length)];

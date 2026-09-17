@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { storeSource } from "./harness/store-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -16,7 +17,9 @@ const walk = readFileSync(join(root, "roomcad", "web", "walk3d.js"), "utf8");
 // leaves the text in place and the check still passes.
 const walkCode = walk.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
 const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
-const store = readFileSync(join(root, "roomcad", "web", "store.js"), "utf8");
+// The whole store package: store.js is a facade over roomcad/web/store/*.js, so
+// grepping the facade alone would look for a rule in a file that only composes.
+const store = storeSource();
 
 /// The sun model and the daylight ramp, lifted out of walk3d.js and run for
 /// real. They are pure functions of the hour, and how smoothly the light

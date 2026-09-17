@@ -29,19 +29,28 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { registerHooks } from "node:module";
+import { resolve, stubModule } from "./harness/three-resolver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "..", "roomcad", "web");
+const at = name => pathToFileURL(join(web, name)).href;
 const asDataUrl = src => "data:text/javascript;base64," + Buffer.from(src).toString("base64");
 
 // The real store, with its imports resolved inline, exactly as wall-lengths and
 // furniture-freedom do. plan.js re-exports roomcad/web/plan/*.js, so it is
 // loaded by URL: a data: URL cannot resolve the relative imports in the facade.
 const planUrl = pathToFileURL(join(web, "plan.js")).href;
-const storeSrc = readFileSync(join(web, "store.js"), "utf8")
-  .replace('import * as P from "./plan.js";', `import * as P from "${planUrl}";`)
-  .replace('import { playDoorSound } from "./audio.js";', "const playDoorSound = () => {};");
-const { store } = await import(asDataUrl(storeSrc));
+// The real store, on the real plan module, with the WebAudio helper replaced by a
+// stub: audio.js needs a WebAudio context, and nothing here is about sound. The stub
+// is installed in the RESOLVER rather than by rewriting store.js's source, because
+// store.js is a facade over store/ now — the import to rewrite is no longer in the
+// file it used to be in.
+registerHooks({ resolve });
+stubModule("audio.js", "export function playDoorSound() {}");
+const storeUrl = at("store.js");
+
+const { store } = await import(storeUrl);
 const P = await import(planUrl);
 
 let passed = 0;

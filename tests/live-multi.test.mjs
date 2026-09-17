@@ -97,14 +97,19 @@ const fnSrc = appSrc.slice(appSrc.indexOf("export function liveUpdateAction"));
 const { liveUpdateAction } = await import("data:text/javascript;base64," +
   Buffer.from(fnSrc.slice(0, fnSrc.indexOf("\nfunction watchRoom")), "utf8").toString("base64"));
 
-/// Five independent stores. ESM caches by URL, so a distinct query string is a
-/// distinct module — which is what makes five separate people rather than one
-/// person with five names.
-const storeURL = "file://" + join(root, "roomcad", "web", "store.js");
+/// Five independent stores, which is what makes five separate people rather than
+/// one person with five names.
+///
+/// This used to import store.js under five query strings, on the theory that a
+/// distinct URL is a distinct module. That stopped being true the moment store.js
+/// became a facade over store/: the query string gave a new FACADE, while the
+/// state it composes stayed the one instance, so all five "people" shared a room.
+/// It failed one check and would have gone on passing everything else. A factory
+/// says what it means.
+const { createStore } = await import("file://" + join(root, "roomcad", "web", "store.js"));
 const clients = [];
 for (let i = 0; i < 5; i++) {
-  const mod = await import(`${storeURL}?client=${i}`);
-  clients.push({ id: "client-" + i, store: mod.store, applied: 0, ignored: 0, held: 0, seq: 0 });
+  clients.push({ id: "client-" + i, store: createStore(), applied: 0, ignored: 0, held: 0, seq: 0 });
 }
 check("five separate clients, five separate rooms",
   new Set(clients.map(c => c.store.room)).size === 5);
@@ -460,7 +465,7 @@ check("every one of the four received every update",
 {
   const late = {
     id: "client-5", applied: 0, ignored: 0, held: 0,
-    store: (await import(`${storeURL}?client=5`)).store,
+    store: createStore(),
   };
   late.store.room = P.parseRoom(P.serializeRoom(blank));
   late.store.serverRoomName = ROOM;

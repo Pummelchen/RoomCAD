@@ -29,6 +29,11 @@ too.
 
 ## Layout
 
+- `roomcad/web/store/` — the editing store, split by concern: `base` (the initial
+  state, `TOOL_HELP`, `clockText`), `notifications`, `walls`, `items`, `editing`,
+  `history`. `store.js` composes them with `Object.assign` into the one `store`
+  object the app imports, so `this` is still the store and nothing outside
+  changed. **Use `createStore()` for a second store**, never a query string.
 - `roomcad/web/` — the app: `plan.js` (**the facade** over `plan/`: room model, grid,
   snapping, wall geometry and joins, room detection, auto-layout, the `.rcad` format;
   pure, no DOM, no network), `store.js`
@@ -62,9 +67,9 @@ too.
   the page's import map resolves, and loads everything else from its real path),
   `three-resolver.mjs` (a `registerHooks` resolver that applies that same map to the
   whole graph, which is what makes `app.js` and `walk3d.js` importable at all),
-  `plan-source.mjs` (the plan model's source as one string, for the tests that grep
-  it), `page-css.mjs` (the same idea for the stylesheets, in cascade order),
-  `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
+  `plan-source.mjs` and `store-source.mjs` (a package's source as one string, for
+  the tests that grep it), `page-css.mjs` (the same idea for the stylesheets, in
+  cascade order), `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
   the real `roomcad/web/index.html` into the stub, which is what makes the app's
   BUTTONS testable: they are static markup, and `app.js` binds their clicks by
   querying for them as it loads.
@@ -254,6 +259,17 @@ contract, not that anything renders.
   modules came back `undefined` — which silently changed generated floor plans and
   failed a fuzz check on every run, with no error anywhere. Strip comments before
   looking for identifiers, and keep the leaf modules (`core.js`) dependency-free.
+- **The store is composed, and a second store comes from `createStore()`.** The
+  methods are spread over `roomcad/web/store/*.js` and `Object.assign`ed in
+  `store.js`; `this` is still the store, and every method is an own property as
+  before. Two consequences worth knowing. **A duplicate method name in two files
+  would silently win**, with no error and no test failure that names it — check for
+  collisions when moving a method between files. And **the old way to get a second
+  store, importing `store.js` under a different query string, no longer works**:
+  the query string gives a new FACADE while the state it composes stays the one
+  instance, so several "clients" quietly share one room. That is exactly what
+  `tests/live-multi.test.mjs` caught — one check of forty-four, and the rest would
+  have gone on passing. `createStore()` builds one from `freshState()`.
 - **A stylesheet is not a file any more, and the link order is part of the CSS.**
   Six sheets under `roomcad/web/styles/` replaced `styles.css`, cut at the
   section markers and linked in the original order. A test that greps the CSS must
@@ -263,6 +279,14 @@ contract, not that anything renders.
   permanent check can be "no rule was lost" rather than "nothing changed", because
   the second fails on the next legitimate edit and a gate that has to be edited
   away is one nobody trusts.
+- **A stubbed module goes in the resolver, not in a rewritten source.** Four tests
+  used to read `store.js` as text, replace its plan import and stub its audio
+  import, and load the result as a `data:` URL — which stopped working the moment
+  `store.js` became a facade, because the line being replaced was no longer in that
+  file. They call `stubModule("audio.js", …)` from
+  `tests/harness/three-resolver.mjs` instead, which replaces the SPECIFIER and so
+  does not care which file says it or how it is spelled. The same applies to any
+  module that needs a browser: stub the specifier, load the real code.
 - **A module whose imports are all local is loadable as a `data:` URL; one that
   re-exports is not.** Seven tests used to read `plan.js` into a data URL, which
   worked only while it had no imports. A data URL cannot resolve a relative one.

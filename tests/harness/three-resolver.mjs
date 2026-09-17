@@ -63,9 +63,49 @@ function mapSpecifier(specifier) {
 /// returned value as the resolution, so an async function hands it a Promise and
 /// it reports "expected a URL string but got undefined". Nothing here needs to
 /// await: the map is read from disk once, at load.
+/// Modules a test wants replaced with a stub, by absolute file URL.
+///
+/// The app's real modules are loaded from their real paths now, which is what
+/// makes a test exercise the code that ships — but some of them cannot run
+/// outside a browser. `audio.js` reaches for a WebAudio context on the first
+/// door that opens, so a test driving the real store would fail on a ReferenceError
+/// about `window` rather than on anything to do with the store.
+///
+/// The alternative used to be reading the module's source, replacing its import
+/// lines, and importing the result as a `data:` URL. That worked while the app
+/// was a handful of files with no imports of their own; it stopped working the
+/// moment `store.js` became a facade over `store/`, because the imports being
+/// replaced were no longer in the file. This replaces the SPECIFIER instead, so
+/// it does not care which file says it or how it is spelled.
+const stubs = new Map();
+
+/// Replaces one of the app's modules with `source` for the rest of the process.
+/// `relativeToWeb` is a path under roomcad/web, e.g. "audio.js".
+export function stubModule(relativeToWeb, source) {
+  stubs.set(pathToFileURL(join(web, relativeToWeb)).href, source);
+}
+
+export function unstubAll() {
+  stubs.clear();
+}
+
 export function resolve(specifier, context, nextResolve) {
   const parent = context.parentURL;
   if (parent && parent.startsWith("file:")) {
+    // A stubbed module first, however the importer spelled the specifier:
+    // resolve it against the parent and compare the result.
+    let target = null;
+    try {
+      target = new URL(specifier, parent).href;
+    } catch {
+      target = null;
+    }
+    if (target && stubs.has(target)) {
+      return {
+        url: "data:text/javascript;base64," + Buffer.from(stubs.get(target)).toString("base64"),
+        shortCircuit: true,
+      };
+    }
     const parentPath = fileURLToPath(parent);
     const bare = !specifier.startsWith(".") && !specifier.startsWith("/")
       && !specifier.startsWith("node:") && !specifier.includes(":");
