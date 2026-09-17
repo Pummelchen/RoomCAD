@@ -69,8 +69,10 @@ architectural or building-code tool.
 
 ## Quick start
 
-Open the deployed site and enter the password. To run it locally, start the
-backend, then the static server:
+**Use it here: <https://roomcad.91.99.176.243.nip.io/>** — enter the shared
+password and you are in. Nothing to install, nothing to build.
+
+To run it locally instead, start the backend, then the static server:
 
 ```bash
 ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
@@ -134,7 +136,8 @@ Guides live in the [wiki](https://github.com/Pummelchen/RoomCAD/wiki):
 [File Format](https://github.com/Pummelchen/RoomCAD/wiki/File-Format) ·
 [Hosting and Deployment](https://github.com/Pummelchen/RoomCAD/wiki/Hosting-and-Deployment) ·
 [Architecture](https://github.com/Pummelchen/RoomCAD/wiki/Architecture-and-Development) ·
-[Troubleshooting](https://github.com/Pummelchen/RoomCAD/wiki/Troubleshooting)
+[Troubleshooting](https://github.com/Pummelchen/RoomCAD/wiki/Troubleshooting) ·
+[Project Tracker](https://github.com/Pummelchen/RoomCAD/wiki/Project-Tracker)
 
 ## License
 

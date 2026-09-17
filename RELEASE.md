@@ -184,8 +184,38 @@ Leave previous releases' notes and performance tables alone.
 
 # Part 2 — This repository
 
-## RoomCAD — JavaScript, no release yet
+## RoomCAD — a browser app and a Python API, no release yet
 
-- **Identity** semantic version, not yet established.
-- **No compiled artifact.** A release would ship a bundle or a package tarball;
-  §1.2.1–1.2.4 are not applicable to interpreted output.
+- **Identity: established.** `roomcad/web/version.js` is the single source —
+  `export const APP_VERSION = "10.7";` — and `tests/version.test.mjs` enforces it:
+  the footer must render that value, `app.js` must import it, and neither `app.js`
+  nor `index.html` may carry a hard-coded version tag. It is bumped once per
+  completed task, so the footer always says which build the user is looking at.
+- **The one deviation from §1.3, stated rather than implied.** §1.3 asks for a
+  `VERSION` file at the repository root. This repository deliberately does not have
+  one: the version is not only a release label, the page displays it, so the value
+  has to live in a module the page can import. The **enforcement** §1.3 is really
+  after — one authoritative value, mirrors that fail when they disagree, no second
+  declaration in a test — is all in place, which is why this is a spelling
+  difference and not an exception.
+- **No compiled artifact.** Nothing here is built, linked, lipo-checked, archived
+  or published, so §1.2.1–1.2.4, §1.6 and §1.7 do not apply. If a release is ever
+  wanted it would ship a source archive, and then §1.2.5 (a digest beside the
+  artifact), §1.6 (notices and a `README-binaries.txt` stating the platform floor)
+  and §1.7 would apply in full.
+- **The gate is the release check.** `./tests/run.sh` — 29 files, 1932 checks — is
+  run by CI on every push and pull request, and it must be green. Its §1.5 traps
+  are already honoured: the runner has been seen to fail both on an injected
+  assertion and on a timeout, and it reports the count that passed rather than
+  only the failures.
+- **Deployment is not a release, and does not pretend to be one.**
+  `roomcad/server/deploy.sh` ships `main` to the production host, which is the only
+  thing ever "published" from this repository. It validates the candidate Caddyfile
+  with the server's own Caddy before installing it, and refuses to report success
+  until the live URL answers. That is a deploy, not a versioned release: no tag, no
+  archive, no notes.
+- **There are no releases and no tags.** The version number tracks completed work,
+  not published artifacts. When the first real release happens, §1.2.3 (a tag alone
+  is not a release), §1.8 (notes in `docs/`, ending in a checksum block) and §1.9
+  (verify the published Release) start applying from that moment.
+

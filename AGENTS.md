@@ -71,10 +71,13 @@ ROOMCAD_DB_PATH=/tmp/roomcad.db ROOMCAD_PASSWORD=ternak \
 cd roomcad/web && ./serve.sh                # app on http://localhost:8080
 ```
 
-**The suite is slow, not instant.** `city-fuzz` alone runs for over six minutes; the
-full sweep is roughly 12–15 minutes. Use `--fast` (about 30 s) while iterating and run
-the whole thing before you commit. Each file prints its own `N passed, M failed` and
-the runner totals them.
+**The suite is slow, not instant.** `city-fuzz` alone has been measured at 705 s and
+runs for over ten minutes on a busy machine; the full sweep is roughly 13–15 minutes.
+Use `--fast` (about 45 s) while iterating and run the whole thing before you commit.
+Each file prints its own `N passed, M failed` and the runner totals them. The
+per-file timeout is 30 minutes, deliberately generous: a timeout is there to catch a
+hang, and a cap tight enough to fail an honest run on a shared machine is worse than
+no cap at all.
 
 ## Identity
 
@@ -228,9 +231,13 @@ contract, not that anything renders.
 
 **Read [`RELEASE.md`](RELEASE.md) before cutting a release.** It is this repository's
 own release standard — edited here, not deployed from anywhere — and it carries both
-the general rules and this repository's own section. Do not improvise a release.
+the general rules and this repository's own section (**Part 2 wins** where the two
+disagree). Do not improvise a release.
 
-The non-negotiables:
+There is no compiled artifact today, so the packaging and publishing sections do not
+apply yet; **Part 2 names which sections already bind** (identity, the gate) and which
+wait for a real release (packaging, notes, publishing). The non-negotiables below are
+the ones that bind now or bind the moment anything compiles:
 
 - **Apple Silicon only** — build native `arm64` (M1–M6). Never `--arch x86_64`,
   never `ARCHS=arm64 x86_64`, and never `lipo -create`, which is how a universal
@@ -239,7 +246,11 @@ The non-negotiables:
   silently produced a fat binary is a release defect, not a build option.
 - **Every release carries the artifacts.** A tag alone is not a release.
 - **Identity is single-sourced and enforced** — never bump one declaration of the
-  version or build number on its own; the build or CI must fail on a mismatch.
+  version or build number on its own; the build or CI must fail on a mismatch. Here
+  that single source is `roomcad/web/version.js`, and `tests/version.test.mjs` is the
+  enforcement.
 - **Dry run first**; publish only on an explicit flag.
 - **Never fetch a model, dataset or dependency to make a gate pass.** A check that
   cannot run is reported *not checked*, and the release notes must name it.
+- **A deploy is not a release.** `deploy.sh` ships `main` to production; it creates no
+  tag, no archive and no notes, and passing it does not satisfy this section.
