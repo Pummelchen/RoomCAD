@@ -9,9 +9,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { appSource } from "./harness/app-source.mjs";
+import { editor2dSource } from "./harness/editor2d-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const editor = readFileSync(join(root, "roomcad", "web", "editor2d.js"), "utf8");
+const editor = editor2dSource();
 
 let passed = 0;
 let failed = 0;
