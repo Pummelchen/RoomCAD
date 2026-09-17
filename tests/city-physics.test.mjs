@@ -15,6 +15,7 @@
 import * as RAPIER from "../roomcad/web/lib/rapier.mjs";
 import { readFileSync } from "node:fs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
+import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS, SIDEWALK, setTransportRandom,
@@ -44,7 +45,7 @@ setTransportRandom(() => {
 // The player, as walk3d builds them — read OUT of walk3d rather than written
 // down again here. A replica with its own copy of the numbers keeps passing
 // when the real ones change, which is the one thing a replica must not do.
-const walkSource = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+const walkSource = walk3dSource();
 const walkConst = (name) => {
   const m = new RegExp(`const ${name} = ([-0-9./ *]+);`).exec(walkSource);
   if (!m) throw new Error(`walk3d has no constant ${name}`);
@@ -308,7 +309,7 @@ const insideABuilding = (x, z) => buildings.some(b =>
 
   // And the renderer must size that floor to the envelope, not to the declared
   // room. Matched on the assignment, because it is the value that matters.
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
   check("the room floor is sized to the building envelope",
     /const envelope = this\.currentBuildingBounds \|\| this\.buildingBounds\(room\);/.test(walk)
     && /const fw = envelope\.width \/ 2 \+ pad;/.test(walk),
@@ -607,7 +608,7 @@ const insideABuilding = (x, z) => buildings.some(b =>
 
 // The renderer's side of it.
 {
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
   check("the player is given a mass rather than a density",
     /\.setMass\(PLAYER_MASS\)/.test(walk) && /const PLAYER_MASS = 75;/.test(walk));
   check("the traffic is lent solid bodies",

@@ -15,10 +15,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const walk = readFileSync(join(root, "roomcad", "web", "walk3d.js"), "utf8");
+const walk = walk3dSource();
 
 let passed = 0;
 let failed = 0;
@@ -30,10 +31,16 @@ function check(name, cond, detail = "") {
 
 // ── The two methods, lifted whole ─────────────────────────────────────────
 const start = walk.indexOf("  updateRoomLights() {");
+// start..end covers updateRoomLights AND assignRoomLight, which it calls — the
+// boundary is roomLightReport's doc comment, as it always was. The methods are
+// still adjacent after the split, so the marker still lands in the right place.
 const end = walk.indexOf("  /// How the room's fixtures are lit");
 check("the light-pool code can be located", start > 0 && end > start);
 
-const Probe = new Function(`return class { ${walk.slice(start, end)} };`)();
+// The fragment is lifted out of an object literal, where each method ends with a
+// comma; inside a class body that comma is a syntax error.
+const asClassBody = s => s.replace(/^  \},$/gm, "  }");
+const Probe = new Function(`return class { ${asClassBody(walk.slice(start, end))} };`)();
 
 function fakeLight() {
   return {
@@ -114,7 +121,7 @@ const litAt = p => p.pointLights.map(l => (l.intensity > 0 ? l.position.x : null
   p.updateRoomLights();
   const reportStart = walk.indexOf("  roomLightReport() {");
   const reportEnd = walk.indexOf("\n  }", reportStart) + 4;
-  const reportFn = new Function(`return class { ${walk.slice(reportStart, reportEnd)} };`)();
+  const reportFn = new Function(`return class { ${asClassBody(walk.slice(reportStart, reportEnd))} };`)();
   const r = Object.assign(new reportFn(), p);
   const report = r.roomLightReport();
   check("the report counts every fixture",

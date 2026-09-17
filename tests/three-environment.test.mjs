@@ -8,10 +8,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { storeSource } from "./harness/store-source.mjs";
+import { walk3dSource, walk3dSolarSource } from "./harness/walk3d-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const walk = readFileSync(join(root, "roomcad", "web", "walk3d.js"), "utf8");
+const walk = walk3dSource();
 // Comments discuss the very calls being checked for, so anything that asserts
 // a call HAPPENS has to look at code only — commenting a line out otherwise
 // leaves the text in place and the check still passes.
@@ -25,9 +26,11 @@ const store = storeSource();
 /// real. They are pure functions of the hour, and how smoothly the light
 /// changes is a property of what they RETURN — reading the source only tells
 /// you the ramp is spelled the way it used to be.
+// Lifted from the sun modules rather than sliced out of walk3d.js: the split put
+// the solar constants in walk3d/constants.js and the maths in walk3d/sun.js, and
+// the class entry no longer contains either.
 const solar = await import("data:text/javascript;base64," + Buffer.from(
-  walk.slice(walk.indexOf("const SG_LAT"), walk.indexOf("export class Walk3D"))
-    .replace(/^import .*/gm, "")
+  walk3dSolarSource().replace(/^import .*/gm, "").replace(/^export /gm, "")
   + "\nexport { sunForHour, smoothstep01, clamp01 };"
 ).toString("base64"));
 

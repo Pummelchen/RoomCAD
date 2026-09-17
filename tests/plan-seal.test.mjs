@@ -12,9 +12,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const walkSrc = readFileSync(join(here, "..", "roomcad", "web", "walk3d.js"), "utf8");
+const walkSrc = walk3dSource();
 // plan.js re-exports roomcad/web/plan/*.js, so it is imported for real:
 // a data: URL cannot resolve the relative imports inside the facade.
 const plan = await import(pathToFileURL(join(here, "..", "roomcad", "web", "plan.js")).href);

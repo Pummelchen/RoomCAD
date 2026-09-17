@@ -20,6 +20,7 @@ import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
 import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
 import { readFileSync } from "node:fs";
+import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 // The same Three.js the city itself builds with, so a matrix composed here is
 // composed the way the renderer will compose it.
@@ -1399,7 +1400,7 @@ for (const [w, l, label] of [
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
   const web = join(dirname(fileURLToPath(import.meta.url)), "..", "roomcad", "web");
-  const walk = readFileSync(join(web, "walk3d.js"), "utf8");
+  const walk = walk3dSource();
   const line = /const dt = ([^\n]+);/.exec(walk);
   check("walk3d caps the frame length before anything consumes it",
     !!line && /Math\.min\(/.test(line[1]) && /getDelta\(\)/.test(line[1]),
@@ -2252,7 +2253,7 @@ for (const [w, l, label] of [
 // scene is something the renderer compiles its shaders around, so adding and
 // removing them as you walk down a street recompiles on the move.
 {
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
   check("the street lights are a fixed pool",
     /for \(let i = 0; i < CITY_LIGHT_POOL; i\+\+\)/.test(walk));
   check("the pool is filled by the shared selection rule, not a second copy of it",
@@ -2450,7 +2451,7 @@ for (const [w, l, label] of [
 
 // The sun's own volume, and the pool's shadow slots.
 {
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
 
   check("the sun's shadow volume follows the viewer",
     /const cx = Math\.round\(this\.position\.x \/ texel\) \* texel;/.test(walk),
@@ -2550,7 +2551,7 @@ for (const [w, l, label] of [
 
 // The room's lamps must not shadow the city.
 {
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
   check("the room is on a layer of its own",
     /this\.roomGroup\.traverse\(node => node\.layers\.enable\(ROOM_ONLY_LAYER\)\);/.test(walk));
   check("and the room lamps' shadows are pointed at only that layer",
@@ -2749,7 +2750,7 @@ for (const [w, l, label] of [
 
 // Paint on a vehicle nobody can see is not drawn either.
 {
-  const walk = readFileSync(new URL("../roomcad/web/walk3d.js", import.meta.url), "utf8");
+  const walk = walk3dSource();
   check("a splat is hidden with the vehicle carrying it",
     /splat\.visible = !carrier\.vehicle \|\| carrier\.vehicle\.slot >= 0;/.test(walk),
     "the traffic is culled, and paint on a culled vehicle hangs in the air");
