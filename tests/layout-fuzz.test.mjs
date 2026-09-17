@@ -14,14 +14,14 @@
 // Run:  node tests/layout-fuzz.test.mjs
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { planSource as planSrc } from "./harness/plan-source.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const P = await import(
-  "data:text/javascript;base64," +
-  Buffer.from(readFileSync(join(here, "..", "roomcad", "web", "plan.js"), "utf8")).toString("base64")
-);
+// plan.js re-exports roomcad/web/plan/*.js, so it is imported for real:
+// a data: URL cannot resolve the relative imports inside the facade.
+const P = await import(pathToFileURL(join(here, "..", "roomcad", "web", "plan.js")).href);
 
 let passed = 0;
 let failed = 0;
@@ -376,7 +376,10 @@ check("almost every room has a way in",
     // from 69% to 65%. A bound tight enough to catch that would fail on any
     // unrelated change. The ordering itself is checked in plan.js, where it is
     // exact — see "doors are offered the user's floor first" below.
-    const planSource = readFileSync(join(here, "..", "roomcad", "web", "plan.js"), "utf8");
+    // The whole plan package: plan.js is a facade over roomcad/web/plan/*.js now,
+    // so grepping the facade alone would look for a line in a file that only
+    // re-exports.
+    const planSource = planSrc();
     check("doors are offered the user's floor first",
       /fitDoor\(longestFirst\(access\[k\]\.walkway\)\)\s*\n\s*\|\| fitDoor\(longestFirst\(access\[k\]\.circulation\)\)\s*\n\s*\|\| fitDoor\(longestFirst\(access\[k\]\.outside\)\)/
         .test(planSource));

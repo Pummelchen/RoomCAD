@@ -14,7 +14,7 @@
 // Run:  node tests/wall-lengths.test.mjs
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,9 @@ const asDataUrl = src => "data:text/javascript;base64," + Buffer.from(src).toStr
 
 // The real store, with its imports resolved inline: plan.js as a nested data
 // URL and the Web Audio helper stubbed, exactly as furniture-freedom does.
-const planUrl = asDataUrl(readFileSync(join(web, "plan.js"), "utf8"));
+// plan.js re-exports roomcad/web/plan/*.js, so it is loaded by URL: a data:
+// URL cannot resolve the relative imports inside the facade.
+const planUrl = pathToFileURL(join(web, "plan.js")).href;
 const storeSrc = readFileSync(join(web, "store.js"), "utf8")
   .replace('import * as P from "./plan.js";', `import * as P from "${planUrl}";`)
   .replace('import { playDoorSound } from "./audio.js";', "const playDoorSound = () => {};");

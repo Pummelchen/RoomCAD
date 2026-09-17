@@ -14,14 +14,13 @@
 // Run:  node tests/auto-layout.test.mjs
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const planSrc = readFileSync(join(here, "..", "roomcad", "web", "plan.js"), "utf8");
-const P = await import(
-  "data:text/javascript;base64," + Buffer.from(planSrc).toString("base64")
-);
+// plan.js re-exports roomcad/web/plan/*.js, so it is imported for real:
+// a data: URL cannot resolve the relative imports inside the facade.
+const P = await import(pathToFileURL(join(here, "..", "roomcad", "web", "plan.js")).href);
 
 let passed = 0;
 let failed = 0;

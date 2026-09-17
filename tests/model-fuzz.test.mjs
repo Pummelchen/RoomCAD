@@ -14,7 +14,10 @@
 // Run:  node tests/model-fuzz.test.mjs
 
 import { readFileSync } from "node:fs";
-const planUrl = "data:text/javascript;base64," + Buffer.from(readFileSync("roomcad/web/plan.js","utf8")).toString("base64");
+import { pathToFileURL } from "node:url";
+// plan.js re-exports roomcad/web/plan/*.js, so it is imported for real:
+// a data: URL cannot resolve the relative imports inside the facade.
+const planUrl = new URL("../roomcad/web/plan.js", import.meta.url).href;
 const P = await import(planUrl);
 const storeSrc = readFileSync("roomcad/web/store.js","utf8")
   .replace('import * as P from "./plan.js";', `import * as P from "${planUrl}";`)
