@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { appSource } from "./harness/app-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const P = await import(pathToFileURL(join(here, "..", "roomcad", "web", "plan.js")).href);
@@ -217,7 +218,7 @@ const countOf = (list, what, why) => {
 // which is the exact failure being fixed.
 
 {
-  const app = readFileSync(join(here, "..", "roomcad", "web", "app.js"), "utf8");
+  const app = appSource();
   const wired = (app.match(/announceRepairs\(repairs\);/g) || []).length;
   // A local file, a stored design, and the resumed last design.
   check("all three paths that open a document announce the repairs", wired === 3,

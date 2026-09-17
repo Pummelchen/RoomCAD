@@ -13,10 +13,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { appSource } from "./harness/app-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const app = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
+const app = appSource();
 
 let failed = 0;
 let passed = 0;

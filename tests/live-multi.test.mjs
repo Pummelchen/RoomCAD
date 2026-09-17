@@ -24,6 +24,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import sqlite from "node:sqlite";
+import { appSource } from "./harness/app-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 8231;
@@ -92,7 +93,7 @@ check("the seeded session is accepted",
 const P = await import(join(root, "roomcad", "web", "plan.js"));
 
 // liveUpdateAction, lifted out of app.js — app.js reaches for the DOM on load.
-const appSrc = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
+const appSrc = appSource();
 const fnSrc = appSrc.slice(appSrc.indexOf("export function liveUpdateAction"));
 const { liveUpdateAction } = await import("data:text/javascript;base64," +
   Buffer.from(fnSrc.slice(0, fnSrc.indexOf("\nfunction watchRoom")), "utf8").toString("base64"));

@@ -16,9 +16,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { appSource } from "./harness/app-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const appRaw = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
+const appRaw = appSource();
 // Comments discuss the very calls being checked for — this file's own subject
 // is named in a comment explaining why it is no longer called — so the checks
 // look at code only. Whole-line comments are dropped; trailing ones are left

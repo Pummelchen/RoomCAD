@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { appSource } from "./harness/app-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const editor = readFileSync(join(root, "roomcad", "web", "editor2d.js"), "utf8");
@@ -116,7 +117,7 @@ check("both menu actions reach the store",
 // R turns what is in hand first. Reaching for the selected item instead is how
 // a piece being carried came to be the one thing that could not be turned.
 {
-  const app = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
+  const app = appSource();
   check("R offers the piece being placed before anything else",
     /rotatePendingFurniture\(\) && !store\.rotateSelectedLabel\(\)/.test(app));
   check("the ghost is drawn the way round it will land",
