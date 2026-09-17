@@ -13,11 +13,15 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { pageCss } from "./harness/page-css.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = readFileSync(join(root, "roomcad", "web", "app.js"), "utf8");
 const html = readFileSync(join(root, "roomcad", "web", "index.html"), "utf8");
-const css = readFileSync(join(root, "roomcad", "web", "styles.css"), "utf8");
+// The page's stylesheets, concatenated in cascade order: the CSS is split
+// under roomcad/web/styles/ now, and reading one of the six would answer a
+// question about the page with a sixth of its stylesheet.
+const css = pageCss();
 
 let passed = 0;
 let failed = 0;

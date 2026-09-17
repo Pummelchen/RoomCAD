@@ -1,0 +1,168 @@
+/* The toast, the latency ball, the login gate, and the context menu.
+   Part 5 of 6 under roomcad/web/styles/. index.html loads them in
+   this order, and that order IS the cascade order — do not reorder the links. */
+/* ── Toast notifications ────────────────────────────── */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 5000;
+  max-width: 70vw;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+#toast.error {
+  border-color: rgba(255, 107, 94, 0.6);
+  color: #ffd7d3;
+}
+
+/* Warn: the document opened, but the repair pass had to drop something. Amber
+   rather than red, because it is not a failure — but not the neutral colour
+   either, because the user has lost part of their plan and should notice. */
+#toast.warn {
+  border-color: rgba(255, 193, 94, 0.6);
+  color: #ffe6bf;
+}
+
+/* ── Server latency ball (next to the version) ──────── */
+
+.latency-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin: 0 3px 1px 0;
+  vertical-align: middle;
+}
+
+.lat-green { background: #39ff14; }
+.lat-orange { background: #f5a623; }
+.lat-red { background: #ff6b5e; }
+
+/* ── Login gate ─────────────────────────────────────── */
+
+#login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.login-box {
+  width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.login-box h1 {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.login-sub {
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+.login-box input[type="password"] {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.login-box button.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.login-error {
+  color: var(--danger);
+  text-align: center;
+  font-size: 12px;
+}
+
+/* ── Right-click context menu ───────────────────────── */
+
+#context-menu {
+  position: fixed;
+  z-index: 4000;
+  min-width: 168px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 5px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+}
+
+#context-menu .ctx-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 5px 9px 7px;
+}
+
+#context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+#context-menu button:hover {
+  background: var(--accent-soft);
+}
+
+#context-menu button.danger {
+  color: var(--danger);
+}
+
+#context-menu button.danger:hover {
+  background: rgba(255, 107, 94, 0.12);
+}
+

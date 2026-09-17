@@ -1,0 +1,245 @@
+/* Choosing what to place: the furniture palette and the floor selector.
+   Part 2 of 6 under roomcad/web/styles/. index.html loads them in
+   this order, and that order IS the cascade order — do not reorder the links. */
+/* ── Furniture palette ───────────────────────────────── */
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.palette .palette-head {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.palette-grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 10px 4px 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.palette-grid button:hover {
+  background: var(--accent-soft);
+}
+
+.palette-grid button .icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.palette-grid button span:last-child {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.palette-grid button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.palette-grid button.active .icon,
+.palette-grid button.active span:last-child {
+  color: #fff;
+}
+
+#canvas-area {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  background: var(--bg);
+}
+
+/* Drag either inner edge to make its sidebar fit the way you work. */
+/* The panel toggles sit at the far right of the menu bar, away from the tools,
+   because they act on the window rather than on the drawing. */
+.toolbar-group.panel-toggles {
+  margin-left: auto;
+}
+
+#toolbar button.panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Pressed means the panel is showing. A toggle that looks the same either way
+   makes the user click it to find out which state they are in. */
+#toolbar button.panel-toggle[aria-pressed="false"] {
+  color: var(--muted);
+  background: transparent;
+}
+
+#toolbar button.panel-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Hidden means gone, including its resizer: leaving an 8px drag handle against
+   the window edge gives you something to grab that resizes nothing. */
+body.sidebar-collapsed #sidebar,
+body.sidebar-collapsed #left-sidebar-resizer,
+body.inspector-collapsed #inspector,
+body.inspector-collapsed #right-sidebar-resizer {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  #toolbar button.panel-toggle .label { display: none; }
+}
+
+/* The time slider runs the width of the panel: a day is 24 hours and the part
+   worth looking at is twenty minutes of it, so it needs the travel. */
+input[type="range"].time-slider {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.sidebar-resizer {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 8px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--panel);
+  outline: none;
+}
+
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+body.resizing-sidebars .sidebar-resizer::after {
+  background: var(--accent);
+}
+
+body.resizing-sidebars,
+body.resizing-sidebars * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+#plan-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: default;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+#plan-canvas.selecting {
+  cursor: grab;
+}
+
+#walk-host {
+  position: absolute;
+  inset: 0;
+}
+
+#walk-host canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#walk-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(35, 35, 39, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── Floor selector (right sidebar) ──────────────────── */
+
+.floor-row {
+  margin-top: 14px;
+}
+
+.floor-row > label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.floor-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Same again: two buttons and a label that would not shrink, so on a narrow
+     panel the right-hand button hung 14 px past the scrollbar. */
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.floor-control > * {
+  min-width: 0;
+}
+
+.floor-control .floor-btn {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.floor-value {
+  flex: 1 1 0;
+  /* Allowed to shrink between the two buttons rather than holding the row
+     open at its text width. */
+  min-width: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+

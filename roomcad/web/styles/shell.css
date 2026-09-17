@@ -1,0 +1,291 @@
+/* The page shell: design tokens, reset, layout, and the toolbar.
+   Part 1 of 6 under roomcad/web/styles/. index.html loads them in
+   this order, and that order IS the cascade order — do not reorder the links. */
+[hidden] {
+  display: none !important;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* Breathing space between the side panels and the edge of the screen.
+     Set in mm because that is the measure that was asked for; the JS that
+     budgets panel widths measures this value rather than assuming a pixel
+     count, so the two can never drift apart. */
+  --edge-gap: 5mm;
+  --bg: #101012;
+  --panel: #1b1b1f;
+  --panel-2: #232327;
+  --line: #2c2c31;
+  --text: #e9e9ee;
+  --muted: #9a9aa2;
+  --accent: #3d8bfd;
+  --accent-soft: rgba(61, 139, 253, 0.16);
+  --danger: #ff6b5e;
+  --sidebar-width: 200px;
+  --inspector-width: 260px;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ── Toolbar ─────────────────────────────────────────── */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.segmented .seg,
+.segmented button {
+  border: none;
+  background: transparent;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmented .seg.active,
+.segmented button.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* The chosen grid reads at a glance: a light grey chip, not just bolder text. */
+#grid-picker button.active {
+  background: #d4d6da;
+  color: #16181d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* A non-actionable caption inside the right-click menu (e.g. a size readout). */
+.ctx-note {
+  padding: 5px 12px 7px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#toolbar button.tool,
+#toolbar button.primary,
+#toolbar button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#toolbar button:hover {
+  background: var(--accent-soft);
+}
+
+#toolbar button.tool.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Save feedback: orange while saving, neon green once verified. */
+#save-room.saving {
+  background: #f5a623;
+  border-color: #f5a623;
+  color: #1a1206;
+  font-weight: 600;
+}
+
+#save-room.saved {
+  background: #39ff14;
+  border-color: #39ff14;
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
+/* Live collaboration: a calm neon invitation, then an explicit exit. */
+#live-room {
+  border-color: rgba(57, 255, 20, 0.55);
+  color: #b7ffad;
+}
+
+#live-room:hover {
+  background: rgba(57, 255, 20, 0.14);
+}
+
+#live-room.live-on {
+  background: #39ff14;
+  border-color: #39ff14;
+  color: #0a0a0a;
+  font-weight: 700;
+  box-shadow: 0 0 12px rgba(57, 255, 20, 0.65);
+}
+
+#live-room.join-live {
+  animation: roomcad-live-pulse 1.7s ease-in-out infinite;
+  background: rgba(57, 255, 20, 0.12);
+  border-color: #39ff14;
+  color: #d9ffd2;
+  font-weight: 700;
+}
+
+@keyframes roomcad-live-pulse {
+  0%, 100% { box-shadow: 0 0 5px rgba(57, 255, 20, 0.3); }
+  50% { box-shadow: 0 0 19px rgba(57, 255, 20, 0.95); }
+}
+
+#toolbar #leave-live-room.live-leave {
+  background: #c93a3a;
+  border-color: #e85a5a;
+  color: #fff;
+  font-weight: 700;
+}
+
+#toolbar #leave-live-room.live-leave:hover {
+  background: #e34b4b;
+}
+
+#toolbar button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+#toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#toolbar #undo,
+#toolbar #redo {
+  padding: 5px 9px;
+}
+
+/* Undo/redo SVG icons. */
+#toolbar #undo .icon-svg,
+#toolbar #redo .icon-svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.divider {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+  margin: 0 2px;
+}
+
+/* ── Main ────────────────────────────────────────────── */
+
+#main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+#sidebar {
+  width: var(--sidebar-width);
+  min-width: 0;
+  flex: 0 0 var(--sidebar-width);
+  margin-left: var(--edge-gap);
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+#sidebar h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 6px;
+}
+
+#rooms-list {
+  list-style: none;
+  flex: 1;
+  min-height: 60px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#rooms-list button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#rooms-list button:hover {
+  background: var(--accent-soft);
+}
+
+#rooms-list .room-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+#rooms-list .room-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+#rooms-list li {
+  position: relative;
+}
+

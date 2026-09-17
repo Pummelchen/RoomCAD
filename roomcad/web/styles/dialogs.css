@@ -1,0 +1,142 @@
+/* The Open Room and version modals, and the paintball easter egg.
+   Part 3 of 6 under roomcad/web/styles/. index.html loads them in
+   this order, and that order IS the cascade order — do not reorder the links. */
+/* ── Open Room / version modals ──────────────────────── */
+
+#open-modal,
+#version-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.open-box {
+  width: 340px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 14px 16px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+}
+
+.open-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.open-header h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.open-header button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.open-header button:hover {
+  background: rgba(255, 107, 94, 0.14);
+  color: var(--danger);
+}
+
+#open-list,
+#version-list {
+  list-style: none;
+  overflow-y: auto;
+  min-height: 60px;
+  margin-bottom: 10px;
+}
+
+#open-list li,
+#version-list li {
+  position: relative;
+  margin-bottom: 4px;
+}
+
+#open-list button,
+#version-list button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#open-list button:hover,
+#version-list button:hover {
+  background: var(--accent-soft);
+}
+
+#open-list .room-name,
+#version-list .room-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+#open-list .room-meta,
+#version-list .room-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── Paintball (easter egg) ──────────────────────────── */
+
+#paintball-ui {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#paint-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(46, 204, 64, 0.9);
+  border-radius: 50%;
+}
+
+#paint-crosshair::before,
+#paint-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(46, 204, 64, 0.9);
+}
+
+#paint-crosshair::before {
+  left: 50%;
+  top: -9px;
+  width: 2px;
+  height: 36px;
+  transform: translateX(-50%);
+}
+
+#paint-crosshair::after {
+  top: 50%;
+  left: -9px;
+  width: 36px;
+  height: 2px;
+  transform: translateY(-50%);
+}
+

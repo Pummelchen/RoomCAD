@@ -36,8 +36,18 @@ too.
   `editor2d.js` (2D canvas), `walk3d.js` (Three.js walkthrough, Rapier physics, sun,
   bloom), `city.js` (the stylised surrounding city), `app.js` (UI glue — **the only
   module besides `login.js` that touches the network**), plus `svg.js`, `audio.js`,
-  `login.js`, `version.js`, `index.html`, `serve.sh`, `Caddyfile`, and `lib/`
-  (vendored Three.js WebGPU + Rapier, so the page works offline).
+  `login.js`, `version.js`, `index.html`, `serve.sh`, `Caddyfile`, `styles/`
+  (six stylesheets; see below), and `lib/` (vendored Three.js WebGPU + Rapier, so
+  the page works offline).
+- `roomcad/web/styles/` — the CSS, split at the section markers into `shell`,
+  `palette`, `dialogs`, `inspector`, `overlays`, `controls`, linked from
+  `index.html` **in that order**. They are CONTIGUOUS CUTS of what used to be one
+  `styles.css`, so **the link order IS the cascade**: a rule in a later sheet wins
+  a specificity tie exactly as it used to win by coming later in the one file.
+  Reordering the links, or moving a rule to a differently-ordered sheet, changes
+  which rule wins and nothing will report it — a control is just the wrong size.
+  `tests/styles-split.test.mjs` checks the links resolve, are brace-balanced, are
+  in the declared order, and that no rule from before the split has gone missing.
 - `roomcad/web/plan/` — that model, split by subject: `core`, `room`, `grid`, `walls`,
   `hit`, `openings`, `furniture`, `labels`, `rooms`, `captions`, `sanitize`,
   `layout-grid`, `layout-slice`, `layout-partition`, `layout`, `demo`, `rcad`.
@@ -53,7 +63,8 @@ too.
   `three-resolver.mjs` (a `registerHooks` resolver that applies that same map to the
   whole graph, which is what makes `app.js` and `walk3d.js` importable at all),
   `plan-source.mjs` (the plan model's source as one string, for the tests that grep
-  it), `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
+  it), `page-css.mjs` (the same idea for the stylesheets, in cascade order),
+  `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
   the real `roomcad/web/index.html` into the stub, which is what makes the app's
   BUTTONS testable: they are static markup, and `app.js` binds their clicks by
   querying for them as it loads.
@@ -243,6 +254,15 @@ contract, not that anything renders.
   modules came back `undefined` — which silently changed generated floor plans and
   failed a fuzz check on every run, with no error anywhere. Strip comments before
   looking for identifiers, and keep the leaf modules (`core.js`) dependency-free.
+- **A stylesheet is not a file any more, and the link order is part of the CSS.**
+  Six sheets under `roomcad/web/styles/` replaced `styles.css`, cut at the
+  section markers and linked in the original order. A test that greps the CSS must
+  read the whole page through `tests/harness/page-css.mjs`, or it is asking about
+  one sheet out of six. Byte-for-byte equality with the pre-split file was verified
+  when the split landed; `tests/fixtures/styles-before-split.css` is kept so the
+  permanent check can be "no rule was lost" rather than "nothing changed", because
+  the second fails on the next legitimate edit and a gate that has to be edited
+  away is one nobody trusts.
 - **A module whose imports are all local is loadable as a `data:` URL; one that
   re-exports is not.** Seven tests used to read `plan.js` into a data URL, which
   worked only while it had no imports. A data URL cannot resolve a relative one.

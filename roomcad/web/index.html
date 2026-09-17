@@ -4,7 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RoomCAD</title>
-  <link rel="stylesheet" href="styles.css">
+  <!-- The stylesheet is split under styles/. The ORDER OF THESE LINKS IS THE
+       CASCADE: they are contiguous cuts of what used to be one file, so a rule in
+       a later sheet wins a specificity tie exactly as it did before. Do not
+       reorder them, and add a new sheet at the end unless you have checked what
+       it needs to override. -->
+  <link rel="stylesheet" href="styles/shell.css">
+  <link rel="stylesheet" href="styles/palette.css">
+  <link rel="stylesheet" href="styles/dialogs.css">
+  <link rel="stylesheet" href="styles/inspector.css">
+  <link rel="stylesheet" href="styles/overlays.css">
+  <link rel="stylesheet" href="styles/controls.css">
   <script type="importmap">
     {
       "imports": {
