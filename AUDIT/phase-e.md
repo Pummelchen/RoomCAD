@@ -4,6 +4,11 @@ Run from a **fresh clone** on one independent host, in a single clean run.
 The host is a Linux container under colima (a genuine second OS, native aarch64,
 not the primary Mac). Nothing here was run against production.
 
+The run was performed twice: once on `bed325a` and then, because two
+documentation-only and audit-gate-config commits landed afterwards, repeated on
+the final commit `3ec7f71` so the verification is of the state that is actually
+being handed over. Both runs passed every check with identical numbers.
+
 ## The host
 
 | | |
@@ -25,7 +30,7 @@ host's installs to be recorded.
 
 ```
 === fresh clone from /src (audit/2026-09-18) ===
-HEAD: bed325a audit(phase-e): the report generator and the independent-host verification runbook
+HEAD: 3ec7f71 audit(T0049): gate semgrep on ERROR severity, on the record, so the esc()-mitigated innerHTML rule reports without gating forever
 node: v24.21.0  npm: 11.19.0  python: Python 3.11.2
 os:   Linux 6.8.0-117-generic aarch64
 === clean tree ===
@@ -68,8 +73,8 @@ the check was then run over the fresh clone's full history:
 
 ```
 $ /tmp/gitleaks detect --source . --log-opts="--all" --redact
-230 commits scanned.
-scanned ~11790381 bytes (11.79 MB) in 1.45s
+232 commits scanned.
+scanned ~11805424 bytes (11.81 MB) in 1.26s
 no leaks found
 phase E gitleaks findings: 0
 ```
@@ -96,6 +101,7 @@ reported as "not checked" in the final run.
 | Caddy `validate` | both valid | **both valid** | unchanged |
 | production placeholders / facades | 0 | **0** | unchanged |
 | ledger open count | n/a | **0** | §12 |
+| final-commit Phase E re-run | — | **13 PASS, 0 FAIL on `3ec7f71`** | identical numbers to the `bed325a` run |
 
 **The one fractional decrease, stated rather than hidden.** Branches covered went
 from 1647/2065 (79.75%) to 2056/2580 (79.68%), a 0.07 pp dip while the absolute
