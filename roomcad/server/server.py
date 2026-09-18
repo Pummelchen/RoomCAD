@@ -1127,6 +1127,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send({"error": "bad request"}, 400)
             return
+        # The document is stored as text and handed back to the client to parse,
+        # so it has to BE text. A dict or a list used to reach the INSERT and die
+        # inside sqlite3 ("Error binding parameter 3: type 'dict' is not
+        # supported"), which is not a response — the connection was dropped with
+        # a traceback in the journal and the client could not tell a bad request
+        # from a dead server. A number was worse: it was accepted and stored.
+        if not isinstance(room_json, str):
+            self._send({"error": "bad request"}, 400)
+            return
         name, version = save_room(name, room_json, client_id)
         remember_last_room(self._cookie(SESSION_COOKIE), name, version)
         # A real save supersedes any unsaved draft for this room, and moves the

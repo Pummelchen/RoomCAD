@@ -151,7 +151,10 @@ try_code() {
     got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null)" || got="000"
     [ -z "$got" ] && got="000"
     for ok in $want; do [ "$got" = "$ok" ] && { echo "$got"; return 0; }; done
-    sleep 1
+    # $attempt is read here, not just looped over: shellcheck is right that a
+    # bare counter is dead (SC2034), and there is no point sleeping after the
+    # final attempt anyway.
+    if [ "$attempt" -lt 5 ]; then sleep 1; fi
   done
   echo "$got"
 }
