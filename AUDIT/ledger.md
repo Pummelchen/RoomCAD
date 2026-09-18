@@ -4,7 +4,7 @@
 
 Branch: `audit/2026-09-18` · Base: `dbba4df`
 
-Totals: **58 tasks** — done:58 open:0 blocked:0
+Totals: **59 tasks** — done:59 open:0 blocked:0
 
 Open count (the number that ends the run) = **0**.
 
@@ -13,7 +13,7 @@ Open count (the number that ends the run) = **0**.
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 18 | 18 | 0 | 0 |
 | S2 | 22 | 22 | 0 | 0 |
-| S3 | 12 | 12 | 0 | 0 |
+| S3 | 13 | 13 | 0 | 0 |
 
 ## Tasks
 
@@ -662,3 +662,13 @@ Open count (the number that ends the run) = **0**.
 - **fix**: the tests block disables no-unsanitized/method's defaults and re-enables all four real DOM sinks explicitly, so the import() pseudo-sink is scoped out of Node while every DOM sink stays at error; no-await-in-loop stays at error for production and off for poll loops in the suite
 - **evidence (after)**: eslint roomcad/web tests -> exit 0, 0 problems; the rule is at error in both blocks
 - **commit**: 553b887
+
+#### T0059 — onPointerUp bound a local `drag` that shadowed the module's exported `drag` object; renamed, and no-shadow is now on for production
+
+- **status**: DONE
+- **tier**: A · **project**: P1 roomcad/web · **category**: maintainability
+- **where**: `roomcad/web/editor2d/drag.js:398-493`
+- **host**: mac-local · **discovered by**: enabling no-shadow while removing the last rule waivers
+- **evidence (before)**: `const drag = this.drag;` inside onPointerUp shadowed the `drag` object the module itself exports, so a later edit inside that function intending the module object would silently get the gesture. The only production finding for the rule.
+- **fix**: The local is renamed `gesture` (13 lines); `no-shadow` is enabled for `roomcad/web` and is clean.
+- **evidence (after)**: eslint roomcad/web tests -> exit 0, 0 problems; editor-behaviour 37/0; editor-fuzz 133/0; audit-editor 17/0; wall-collider 11/0.

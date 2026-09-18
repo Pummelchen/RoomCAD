@@ -991,6 +991,23 @@
    "evidence_after": "eslint roomcad/web tests -> exit 0, 0 problems; the rule is at error in both blocks",
    "commit": "553b887",
    "blocked_reason": ""
+  },
+  {
+   "id": "T0059",
+   "severity": "S3",
+   "tier": "A",
+   "project": "P1 roomcad/web",
+   "file": "roomcad/web/editor2d/drag.js:398-493",
+   "title": "onPointerUp bound a local `drag` that shadowed the module's exported `drag` object; renamed, and no-shadow is now on for production",
+   "category": "maintainability",
+   "status": "DONE",
+   "host": "mac-local",
+   "discovered_by": "enabling no-shadow while removing the last rule waivers",
+   "evidence_before": "`const drag = this.drag;` inside onPointerUp shadowed the `drag` object the module itself exports, so a later edit inside that function intending the module object would silently get the gesture. The only production finding for the rule.",
+   "fix_summary": "The local is renamed `gesture` (13 lines); `no-shadow` is enabled for `roomcad/web` and is clean.",
+   "evidence_after": "eslint roomcad/web tests -> exit 0, 0 problems; editor-behaviour 37/0; editor-fuzz 133/0; audit-editor 17/0; wall-collider 11/0.",
+   "commit": "",
+   "blocked_reason": ""
   }
  ]
 }
