@@ -9,7 +9,6 @@
 //
 // Run:  node tests/plan-seal.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
@@ -22,9 +21,6 @@ const plan = await import(pathToFileURL(join(here, "..", "roomcad", "web", "plan
 
 const {
   WALL_THICKNESS,
-  SILL_HEIGHT,
-  GLASS_HEIGHT,
-  DOOR_HEIGHT,
   wallBuildPlan,
   wallLength,
   point,
@@ -67,9 +63,7 @@ function check(name, cond, detail = "") {
 {
   const wall = { id: uid(), start: point(0, 0), end: point(6, 0) };
   const height = 2.6;
-  const bp = wallBuildPlan(wall, [], [], height);
-  const sill = Math.min(SILL_HEIGHT, height);
-  const doorTop = Math.min(DOOR_HEIGHT, height);
+  const bp = wallBuildPlan(wall, [], []);
 
   check("plain wall: base spans full length", bp.baseSpans.length === 1 && bp.baseSpans[0].from === 0 && bp.baseSpans[0].to === wallLength(wall));
   check("plain wall: mid spans full length", bp.midSpans.length === 1 && bp.midSpans[0].from === 0 && bp.midSpans[0].to === wallLength(wall));
@@ -84,12 +78,8 @@ function check(name, cond, detail = "") {
 // ── 3. Wall with a window: solid parts seal, glass stays in place ───────
 {
   const wall = { id: uid(), start: point(0, 0), end: point(6, 0) };
-  const height = 2.6;
   const windows = [{ id: uid(), wallID: wall.id, offset: 2.0, width: 1.0 }];
-  const bp = wallBuildPlan(wall, [], windows, height);
-  const sill = Math.min(SILL_HEIGHT, height);
-  const glassTop = Math.min(sill + GLASS_HEIGHT, height);
-  const doorTop = Math.min(DOOR_HEIGHT, height);
+  const bp = wallBuildPlan(wall, [], windows);
 
   // The window hole exists exactly at [sill, glassTop]; glass is transparent
   // by design, so only the solid segments need to seal around it.
@@ -106,11 +96,9 @@ function check(name, cond, detail = "") {
 {
   const room = demoRoom();
   const height = room.height;
-  const sill = Math.min(SILL_HEIGHT, height);
-  const doorTop = Math.min(DOOR_HEIGHT, height);
 
   for (const wall of room.walls) {
-    const bp = wallBuildPlan(wall, room.doors, room.windows, height);
+    const bp = wallBuildPlan(wall, room.doors, room.windows);
 
     // Horizontal coverage: each band is solid across the whole wall except for
     // its own openings (base skips doors; mid skips doors + windows; header is
@@ -321,7 +309,7 @@ function check(name, cond, detail = "") {
     segs.every(s => (s.atWallStart || s.startSeal === 0) && (s.atWallEnd || s.endSeal === 0)));
 }
 
-function coverLength(spans, length) {
+function coverLength(spans) {
   // Total length covered by the given solid spans (assumes they are sorted and
   // non-overlapping, as produced by solidSpans).
   return spans.reduce((sum, s) => sum + (s.to - s.from), 0);

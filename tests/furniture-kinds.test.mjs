@@ -26,7 +26,6 @@
 //
 // Run:  node tests/furniture-kinds.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { registerHooks } from "node:module";
@@ -35,7 +34,6 @@ import { resolve, stubModule } from "./harness/three-resolver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "..", "roomcad", "web");
 const at = name => pathToFileURL(join(web, name)).href;
-const asDataUrl = src => "data:text/javascript;base64," + Buffer.from(src).toString("base64");
 
 // The real store, with its imports resolved inline, exactly as wall-lengths and
 // furniture-freedom do. plan.js re-exports roomcad/web/plan/*.js, so it is

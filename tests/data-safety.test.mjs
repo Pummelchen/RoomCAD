@@ -69,7 +69,7 @@ function bodyOf(src, name) {
   const re = /removeStoredRoom\(/g;
   let m;
   while ((m = re.exec(app)) !== null) {
-    const isDeclaration = /(async\s+)?function\s+$/.test(app.slice(Math.max(0, m.index - 20), m.index));
+    const isDeclaration = /function\s+$/.test(app.slice(Math.max(0, m.index - 20), m.index));
     if (isDeclaration) continue;
     callSites.push({
       index: m.index,

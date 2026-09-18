@@ -13,7 +13,6 @@
 //
 // Run:  node tests/wall-lengths.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { registerHooks } from "node:module";
@@ -22,7 +21,6 @@ import { resolve, stubModule } from "./harness/three-resolver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "..", "roomcad", "web");
 const at = name => pathToFileURL(join(web, name)).href;
-const asDataUrl = src => "data:text/javascript;base64," + Buffer.from(src).toString("base64");
 
 // The real store, with its imports resolved inline: plan.js as a nested data
 // URL and the Web Audio helper stubbed, exactly as furniture-freedom does.

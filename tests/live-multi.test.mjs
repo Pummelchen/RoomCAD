@@ -18,7 +18,7 @@
 // Run:  node tests/live-multi.test.mjs
 
 import { spawn } from "node:child_process";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,8 +42,8 @@ function check(name, condition, detail = "") {
 const work = mkdtempSync(join(tmpdir(), "roomcad-live-"));
 let server = null;
 const stop = () => {
-  if (server) { try { server.kill("SIGKILL"); } catch {} server = null; }
-  try { rmSync(work, { recursive: true, force: true }); } catch {}
+  if (server) { try { server.kill("SIGKILL"); } catch { /* already exited */ } server = null; }
+  try { rmSync(work, { recursive: true, force: true }); } catch { /* best effort */ }
 };
 process.on("exit", stop);
 
@@ -66,8 +66,8 @@ server.stderr.on("data", d => { serverLog += d; });
 const waitFor = async (test, ms = 8000) => {
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    try { if (await test()) return true; } catch {}
-    await new Promise(r => setTimeout(r, 60));
+    try { if (await test()) return true; } catch { /* not up yet */ }
+    await new Promise(r => { setTimeout(r, 60); });
   }
   return false;
 };
@@ -179,13 +179,13 @@ async function watch(client) {
   })();
 }
 for (const c of clients) await watch(c);
-await new Promise(r => setTimeout(r, 400));
+await new Promise(r => { setTimeout(r, 400); });
 
 const waitUntil = async (test, ms = 3000) => {
   const until = Date.now() + ms;
   while (Date.now() < until) {
     if (test()) return true;
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise(r => { setTimeout(r, 10); });
   }
   return false;
 };
@@ -202,7 +202,7 @@ const push = async (version, who = author) => {
   });
   const answer = await res.json();
   if (typeof answer.seq === "number") who.seq = answer.seq;
-  await new Promise(r => setTimeout(r, 250));
+  await new Promise(r => { setTimeout(r, 250); });
   return answer;
 };
 
@@ -236,7 +236,7 @@ const saved = await (await fetch(BASE + "/api/save", {
   }),
 })).json();
 author.store.serverRoomVersion = saved.version;
-await new Promise(r => setTimeout(r, 350));
+await new Promise(r => { setTimeout(r, 350); });
 check("saving moves the version on", saved.version === 1, JSON.stringify(saved));
 check("and the audience is told which version they are on",
   audience.every(c => c.store.serverRoomVersion === saved.version),
@@ -294,7 +294,7 @@ check("every one of the four received every update",
     const started = Date.now();
     while (Date.now() - started < ms) {
       if (clients.filter(c => c.store.live).every(c => c === author || has(c)) ) return Date.now() - started;
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => { setTimeout(r, 10); });
     }
     return Infinity;
   };
@@ -388,7 +388,7 @@ check("every one of the four received every update",
 {
   const lost = clients[3];
   lost.stop();                                   // its event stream is gone
-  await new Promise(r => setTimeout(r, 100));
+  await new Promise(r => { setTimeout(r, 100); });
 
   const before = P.serializeRoom(lost.store.room);
   author.store.room.walls.push({
@@ -454,7 +454,7 @@ check("every one of the four received every update",
   }
 
   await watch(lost);                             // reconnect it for what follows
-  await new Promise(r => setTimeout(r, 200));
+  await new Promise(r => { setTimeout(r, 200); });
 }
 
 // ── Somebody who joins mid-edit sees the work in progress ────────────────
@@ -473,7 +473,7 @@ check("every one of the four received every update",
   late.store.serverRoomVersion = created.version;
   late.store.live = true;
   await watch(late);
-  await new Promise(r => setTimeout(r, 400));
+  await new Promise(r => { setTimeout(r, 400); });
 
   check("a latecomer is handed the saved room", late.applied > 0, `applied ${late.applied}`);
   check("and the unsaved work on top of it, straight from the stream",
@@ -498,7 +498,7 @@ check("every one of the four received every update",
   const designer = clients[0];
 
   behind.stop();                                  // its stream is gone
-  await new Promise(r => setTimeout(r, 100));
+  await new Promise(r => { setTimeout(r, 100); });
   const staleSeq = behind.seq;                    // what it last saw
 
   for (let i = 0; i < 9; i++) {
@@ -557,7 +557,7 @@ check("every one of the four received every update",
     clients[1].store.room.walls.some(w => w.id === "w-design-8"));
 
   await watch(behind);
-  await new Promise(r => setTimeout(r, 200));
+  await new Promise(r => { setTimeout(r, 200); });
 }
 
 // ── A viewer who has not joined only holds the draft ─────────────────────

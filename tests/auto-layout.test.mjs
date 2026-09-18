@@ -13,7 +13,6 @@
 //
 // Run:  node tests/auto-layout.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -127,7 +126,9 @@ function areaOf(r) { return r.w * r.l; }
     new Set(runs).size >= 2, `${new Set(runs).size} distinct in 6 presses`);
   check("consecutive presses change the plan",
     runs.some((r, i) => i > 0 && r !== runs[i - 1]), "no press changed anything");
-  check("the same seed always reproduces its plan", shapeOf(3) === shapeOf(3));
+  const shapeOnce = shapeOf(3);
+  const shapeAgain = shapeOf(3);
+  check("the same seed always reproduces its plan", shapeOnce === shapeAgain);
 }
 
 // ── 5. Too many rooms for the space degrades gracefully ──────────────────

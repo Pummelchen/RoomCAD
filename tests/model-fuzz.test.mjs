@@ -13,7 +13,6 @@
 //
 // Run:  node tests/model-fuzz.test.mjs
 
-import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import { resolve, stubModule } from "./harness/three-resolver.mjs";
 

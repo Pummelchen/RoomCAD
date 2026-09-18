@@ -8,7 +8,6 @@
 //
 // Run:  node tests/furniture-freedom.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { registerHooks } from "node:module";
@@ -17,7 +16,6 @@ import { resolve, stubModule } from "./harness/three-resolver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "..", "roomcad", "web");
 const at = name => pathToFileURL(join(web, name)).href;
-const asDataUrl = src => "data:text/javascript;base64," + Buffer.from(src).toString("base64");
 
 // store.js is loaded for real, with its two imports resolved inline: plan.js as
 // a nested data URL, and the Web Audio helper stubbed out.
@@ -67,7 +65,7 @@ const isValid = item => P.isFurniturePlacementValid(store.room, item, new Set([i
 
 // ── A drag is never blocked ───────────────────────────────────────────────
 {
-  const room = scenario();
+  scenario();
   const before = { ...bedOf().center };
 
   // Straight onto the dividing wall.

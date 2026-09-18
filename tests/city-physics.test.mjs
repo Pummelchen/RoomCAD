@@ -13,7 +13,6 @@
 // Run:  node tests/city-physics.test.mjs
 
 import * as RAPIER from "../roomcad/web/lib/rapier.mjs";
-import { readFileSync } from "node:fs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
@@ -282,10 +281,8 @@ const insideABuilding = (x, z) => buildings.some(b =>
   // Where the city stopped paving, around the room's own plot.
   const plot = { x0: -9 / 2, x1: 9 / 2, z0: -7 / 2, z1: 7 / 2 };
   let bare = 0;
-  let tested = 0;
   for (let x = plot.x0 - 1; x <= plot.x1 + 1; x += 0.5) {
     for (let z = plot.z0 - 1; z <= plot.z1 + 1; z += 0.5) {
-      tested++;
       if (unpaved(x, z)) bare++;
     }
   }

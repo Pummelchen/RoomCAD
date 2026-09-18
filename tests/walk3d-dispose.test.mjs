@@ -41,10 +41,6 @@ const freed = {
   maps: 0, shadows: 0, removed: [], removedChildren: [],
 };
 
-const fakeResource = what => ({
-  dispose() { freed[what]++; },
-});
-
 function fakeMaterial() {
   const material = { dispose() { freed.materials++; } };
   material.map = { dispose() { freed.maps++; } };

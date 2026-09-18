@@ -13,7 +13,6 @@
 //
 // Run:  node tests/layout-fuzz.test.mjs
 
-import { readFileSync } from "node:fs";
 import { planSource as planSrc } from "./harness/plan-source.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";

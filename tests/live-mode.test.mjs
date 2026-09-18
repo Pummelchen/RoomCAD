@@ -287,13 +287,13 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
     const { api, store, pushes, answerPushWith } = build();
     answerPushWith({ ok: true, seq: 5 });
     api.pushLiveDraft();
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => { setTimeout(r, 0); });
     check("an edit is published against the copy it was made on",
       pushes.length === 1 && pushes[0].baseSeq === 0, JSON.stringify(pushes[0]));
     check("and the client moves on to what the server assigned", api.seq() === 5);
 
     api.pushLiveDraft();
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => { setTimeout(r, 0); });
     check("so the next edit is published against that",
       pushes.length === 2 && pushes[1].baseSeq === 5, JSON.stringify(pushes[1]));
     check("the room really is what gets sent",
@@ -309,7 +309,7 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
       json: JSON.stringify({ walls: [{ id: "w-theirs" }] }),
     });
     api.pushLiveDraft();
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => { setTimeout(r, 0); });
     check("a refused edit leaves the client on the shared state, not its own",
       store.room.walls.length === 1 && store.room.walls[0].id === "w-theirs");
     check("carrying the version that state is on", store.applied === 4);

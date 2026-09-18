@@ -25,8 +25,8 @@ export function vehiclesOverlap(a, b, shrink = 0.94) {
   });
   for (const box of boxes) {
     for (const axis of box.axes) {
-      let lo = [Infinity, Infinity];
-      let hi = [-Infinity, -Infinity];
+      const lo = [Infinity, Infinity];
+      const hi = [-Infinity, -Infinity];
       for (let i = 0; i < 2; i++) {
         const B = boxes[i];
         const centre = B.cx * axis.x + B.cz * axis.z;

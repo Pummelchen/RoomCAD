@@ -499,7 +499,7 @@ console.log(`  sweep left: ${r.walls.length} walls, ${r.doors.length} doors, `
   check("the plan still has its walls after everything", room.walls.length > 0,
     `${room.walls.length} walls`);
   let reopened = null;
-  try { reopened = P.parseRoom(P.serializeRoom(room)); } catch (err) { /* noted below */ }
+  try { reopened = P.parseRoom(P.serializeRoom(room)); } catch { /* noted below */ }
   check("the plan can still be saved and reopened at the end", !!reopened);
   if (reopened) {
     check("and comes back with the same walls",

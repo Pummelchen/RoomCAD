@@ -29,7 +29,6 @@ import { dirname, join } from "node:path";
 import { styleSheets } from "./harness/page-css.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..");
 
 let passed = 0;
 let failed = 0;
@@ -106,7 +105,7 @@ function selectors(css) {
   // links are reordered in index.html the headers will disagree with their
   // position, which is the moment to stop and check the cascade rather than
   // discover it as a control that shrank.
-  const declared = sheets.map((s, i) => {
+  const declared = sheets.map(s => {
     const m = /Part (\d+) of (\d+)/.exec(s.text);
     return m ? Number(m[1]) : null;
   });
