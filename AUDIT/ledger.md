@@ -4,7 +4,7 @@
 
 Branch: `main` · Base: `dbba4df`
 
-Totals: **65 tasks** — done:64 open:0 blocked:1
+Totals: **66 tasks** — done:65 open:0 blocked:1
 
 Open count (the number that ends the run) = **0**.
 
@@ -13,7 +13,7 @@ Open count (the number that ends the run) = **0**.
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 19 | 19 | 0 | 0 |
 | S2 | 23 | 23 | 0 | 0 |
-| S3 | 17 | 16 | 0 | 1 |
+| S3 | 18 | 17 | 0 | 1 |
 
 ## Tasks
 
@@ -737,3 +737,14 @@ Open count (the number that ends the run) = **0**.
 - **evidence (before)**: _writeCarMatrices() carried a comment saying 'Whether lamps should follow the time of day is a design question, not a lint one — it is reported, not silently fixed', while applyTimeOfDay() already sets the head, tail and cabin materials' emissiveIntensity as `0.x + night * y`, and tests/city-fuzz.test.mjs pins both that headlights exist in daylight and that they are brighter at night.
 - **fix**: Replaced the comment with one that states the split the code actually implements: this function decides which lamp INSTANCES exist (a running lamp is always written), and the time of day changes their BRIGHTNESS per material in applyTimeOfDay(), with a pointer to the test that pins it.
 - **evidence (after)**: city-fuzz's day/night headlight checks unchanged and green; the misleading sentence is gone.
+
+#### T0066 — RoomCAD had never been released: no tag, no archive, no notes, and no tooling to make one repeatable
+
+- **status**: DONE
+- **tier**: A · **project**: P6 release · **category**: release
+- **where**: `release.sh, docs/release-notes-v10.8.md, README-binaries.txt, RELEASE.md`
+- **host**: mac-local · **discovered by**: owner instruction ('build a new release') after RELEASE.md Part 2 stated that a source release would bring §1.2.5, §1.6, §1.7, §1.8 and §1.9 into force
+- **evidence (before)**: RELEASE.md Part 2 said 'There are no releases and no tags', and its gate line had drifted to '29 files, 1932 checks' against a suite of 41 files / 2405 checks. Nothing in the tree could cut a release: no script, no notes, no packaging, no digest.
+- **fix**: Added release.sh (dry run by default, --publish to tag and publish; it reads the version out of roomcad/web/version.js so the tag cannot disagree with the app, refuses a dirty tree or a branch that is not main, checks the archive for the files §1.6 requires by reading the ARCHIVE rather than the working tree, renders the notes with the real digest, publishes with --repo pinned, and re-downloads the asset to verify). Added docs/release-notes-v10.8.md (a section per user-visible change, each naming its backing check, ending in the §1.8 checksum block) and README-binaries.txt (§1.6's platform-floor file, written for a source archive). Updated RELEASE.md Part 2 and AGENTS.md. shellcheck now covers release.sh in gates.sh and phase-e.sh.
+- **evidence (after)**: Published v10.8 at 521b343 (the tag points at HEAD, §1.4): assets roomcad-10.8-src.tar.gz (2556506 bytes) and its .sha256, isLatest=true, not a draft and not a prerelease, and the Release body quotes the real digest with no placeholder left. §1.9 verified by re-downloading: `shasum -a 256 -c` OK. Every gate was proved able to fail in a scratch clone — the archive-contents check (a required file absent), the notes check (placeholder removed), the tag check (tag exists), the branch check (not main) — and the unmodified clone still passes. Gates at the release commit: gates.sh all green (41 files / 2405 checks), CI tests workflow success, CodeQL success. The archive is named -src rather than §1.6's -macos-arm64, stated in RELEASE.md Part 2, because a source tarball carrying a platform segment would be a false statement about the artifact.
+- **commit**: 521b343

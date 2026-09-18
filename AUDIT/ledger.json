@@ -1112,6 +1112,23 @@
    "evidence_after": "Raw-socket probe: Content-Length 12, exactly 12 bytes on the wire, connection stays open and the next request is intact. tests/server-live.test.py gained three checks (138 checks, was 134): the login body is the whole JSON object, the response body is exactly the length it declared (read on a raw socket, because http.client cannot see this), and a second request on the same keep-alive connection returns a parsable body. Both new framing checks were proved to fail on the old code (136 passed, 2 failed) and pass on the new. ruff check/format clean. (Verified by Phase E on ca9c2e6; bc3edc0 is the same tree after main was rebased onto the remote's badge commit \u2014 they differ only in .github/traffic.json.)",
    "commit": "bc3edc0",
    "blocked_reason": ""
+  },
+  {
+   "id": "T0066",
+   "severity": "S3",
+   "tier": "A",
+   "project": "P6 release",
+   "file": "release.sh, docs/release-notes-v10.8.md, README-binaries.txt, RELEASE.md",
+   "title": "RoomCAD had never been released: no tag, no archive, no notes, and no tooling to make one repeatable",
+   "category": "release",
+   "status": "DONE",
+   "host": "mac-local",
+   "discovered_by": "owner instruction ('build a new release') after RELEASE.md Part 2 stated that a source release would bring \u00a71.2.5, \u00a71.6, \u00a71.7, \u00a71.8 and \u00a71.9 into force",
+   "evidence_before": "RELEASE.md Part 2 said 'There are no releases and no tags', and its gate line had drifted to '29 files, 1932 checks' against a suite of 41 files / 2405 checks. Nothing in the tree could cut a release: no script, no notes, no packaging, no digest.",
+   "fix_summary": "Added release.sh (dry run by default, --publish to tag and publish; it reads the version out of roomcad/web/version.js so the tag cannot disagree with the app, refuses a dirty tree or a branch that is not main, checks the archive for the files \u00a71.6 requires by reading the ARCHIVE rather than the working tree, renders the notes with the real digest, publishes with --repo pinned, and re-downloads the asset to verify). Added docs/release-notes-v10.8.md (a section per user-visible change, each naming its backing check, ending in the \u00a71.8 checksum block) and README-binaries.txt (\u00a71.6's platform-floor file, written for a source archive). Updated RELEASE.md Part 2 and AGENTS.md. shellcheck now covers release.sh in gates.sh and phase-e.sh.",
+   "evidence_after": "Published v10.8 at 521b343 (the tag points at HEAD, \u00a71.4): assets roomcad-10.8-src.tar.gz (2556506 bytes) and its .sha256, isLatest=true, not a draft and not a prerelease, and the Release body quotes the real digest with no placeholder left. \u00a71.9 verified by re-downloading: `shasum -a 256 -c` OK. Every gate was proved able to fail in a scratch clone \u2014 the archive-contents check (a required file absent), the notes check (placeholder removed), the tag check (tag exists), the branch check (not main) \u2014 and the unmodified clone still passes. Gates at the release commit: gates.sh all green (41 files / 2405 checks), CI tests workflow success, CodeQL success. The archive is named -src rather than \u00a71.6's -macos-arm64, stated in RELEASE.md Part 2, because a source tarball carrying a platform segment would be a false statement about the artifact.",
+   "commit": "521b343",
+   "blocked_reason": ""
   }
  ]
 }

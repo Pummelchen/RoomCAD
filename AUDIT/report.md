@@ -6,15 +6,15 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 
 ## Headline
 
-- **65 tasks, 64 DONE, 1 BLOCKED, 0 open.**
-- Findings by severity: S0 6, S1 19, S2 23, S3 17.
+- **66 tasks, 65 DONE, 1 BLOCKED, 0 open.**
+- Findings by severity: S0 6, S1 19, S2 23, S3 18.
 
 | severity | total | done | open | blocked |
 | -------- | ----- | ---- | ---- | ------- |
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 19 | 19 | 0 | 0 |
 | S2 | 23 | 23 | 0 | 0 |
-| S3 | 17 | 16 | 1 | 0 |
+| S3 | 18 | 17 | 1 | 0 |
 
 ## The six S0 findings
 
@@ -96,6 +96,7 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0061 | S3 | B | `roomcad/web/city.js` | Tracker T-02a: split city.js (5301 lines) into the repo's prototype pattern | DONE | `bc3edc0` |
 | T0063 | S3 | B | `roomcad/web/plan/layout.js, layout-slice.js, layout-partition.js` | Tracker T-04: the auto-layout 'no frontage' decision is implemented and tested; remove the dead hallway vestige and the comments that promise a carve which does not exist | DONE | `bc3edc0` |
 | T0064 | S3 | B | `roomcad/web/city.js:4909` | Tracker T-05: the vehicle lamps already follow the time of day; correct the comment that said it was an open question | DONE | `-` |
+| T0066 | S3 | A | `release.sh, docs/release-notes-v10.8.md, README-binaries.txt, RELEASE.md` | RoomCAD had never been released: no tag, no archive, no notes, and no tooling to make one repeatable | DONE | `521b343` |
 
 # AUDIT — Phase E: the single final verification on the independent host (§11)
 

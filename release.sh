@@ -151,19 +151,44 @@ gh release create "$TAG" "$DIST/$ARCHIVE_NAME" "$DIST/$ARCHIVE_NAME.sha256" \
 echo "  published https://github.com/$REPO/releases/tag/$TAG"
 
 # ── §1.9 Verify the published Release ────────────────────────────────────────
+# This is the one step that cannot be rehearsed: everything above it runs before
+# anything exists, and this runs after. It went wrong the first time for exactly
+# that reason — `gh release view` has no `isLatest` field (it is on the list, not
+# the view), which the dry run could not have caught. So it is written to say
+# what it checked, and a failure here says the release IS published rather than
+# leaving a bare error that invites a second --publish against an existing tag.
 step "verify (§1.9)"
-gh release view "$TAG" --repo "$REPO" --json tagName,isLatest,assets \
-  -q '"  tag \(.tagName)  latest=\(.isLatest)  assets: \([.assets[].name] | join(", "))"'
+verify_failed() {
+  echo "release: §1.9 verification failed — $*" >&2
+  echo "release: $TAG IS PUBLISHED at https://github.com/$REPO/releases/tag/$TAG" >&2
+  echo "release: do NOT re-run --publish (the tag exists now); verify by hand." >&2
+  exit 1
+}
+
+gh release view "$TAG" --repo "$REPO" --json tagName,isDraft,isPrerelease,assets \
+  -q '"  tag \(.tagName)  draft=\(.isDraft)  prerelease=\(.isPrerelease)  assets: \([.assets[].name] | join(", "))"' \
+  || verify_failed "gh release view failed"
+LATEST="$(gh release list --repo "$REPO" --limit 20 --json tagName,isLatest \
+  -q '[.[] | select(.isLatest) | .tagName] | first')"
+[ "$LATEST" = "$TAG" ] || verify_failed "the latest release is '$LATEST', not '$TAG' (§1.7 --latest)"
+echo "  it is the latest release"
+
+# §1.9: the notes quote the digest in the .sha256 beside it.
+gh release view "$TAG" --repo "$REPO" --json body -q .body | grep -q "$DIGEST" \
+  || verify_failed "the published notes do not quote $DIGEST"
+echo "  the published notes quote the digest"
+
 DOWNLOADED="$(mktemp -d)"
-gh release download "$TAG" --repo "$REPO" --dir "$DOWNLOADED" --pattern "$ARCHIVE_NAME" >/dev/null
+gh release download "$TAG" --repo "$REPO" --dir "$DOWNLOADED" >/dev/null \
+  || verify_failed "gh release download failed"
 if command -v shasum >/dev/null 2>&1; then
-  ACTUAL="$(shasum -a 256 "$DOWNLOADED/$ARCHIVE_NAME" | awk '{print $1}')"
+  ( cd "$DOWNLOADED" && shasum -a 256 -c "$ARCHIVE_NAME.sha256" >/dev/null ) \
+    || verify_failed "the published archive does not match its published .sha256"
 else
-  ACTUAL="$(sha256sum "$DOWNLOADED/$ARCHIVE_NAME" | awk '{print $1}')"
+  ( cd "$DOWNLOADED" && sha256sum -c "$ARCHIVE_NAME.sha256" >/dev/null ) \
+    || verify_failed "the published archive does not match its published .sha256"
 fi
 rm -rf "$DOWNLOADED"
-[ "$ACTUAL" = "$DIGEST" ] \
-  || die "the published archive's digest is $ACTUAL, not $DIGEST — do not announce this release"
-echo "  the published archive re-downloads to the published digest"
+echo "  the published archive re-downloads and matches its published .sha256"
 echo
 echo "released $TAG — $BYTES bytes — sha256 $DIGEST"
