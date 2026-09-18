@@ -6,6 +6,7 @@ every save is kept as a new version. Also streams live updates to anyone
 watching a room (Server-Sent Events). Runs behind Caddy via a reverse proxy
 on /api/* (127.0.0.1:8078).
 """
+
 import hashlib
 import json
 import os
@@ -20,7 +21,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB_PATH = os.environ.get("ROOMCAD_DB_PATH", "/var/roomcad/rooms.db")
-LEGACY_DIR = os.environ.get("ROOMCAD_LEGACY_DIR", "/var/roomcad/rooms")  # old .rcad files, migrated once
+LEGACY_DIR = os.environ.get(
+    "ROOMCAD_LEGACY_DIR", "/var/roomcad/rooms"
+)  # old .rcad files, migrated once
 PREFIX = "ternak_room"
 HOST = "127.0.0.1"
 # Overridable so a test can run a throwaway server beside the real one.
@@ -38,13 +41,13 @@ SESSION_TTL_SECONDS = 31536000
 # A request body is read into memory, so it has to be bounded: without this a
 # client could announce a huge Content-Length and exhaust the process. Rooms
 # are JSON documents of a few hundred kB at most.
-MAX_CHUNK_LINE = 65536      # longest chunk-size or trailer line accepted
+MAX_CHUNK_LINE = 65536  # longest chunk-size or trailer line accepted
 MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # Failed-login throttle. One shared password is brute-forceable otherwise.
 LOGIN_MAX_FAILURES = 10
 LOGIN_WINDOW_SECONDS = 300
-LOGIN_FAILURES = {}          # client key -> [failures, window_started_at]
+LOGIN_FAILURES = {}  # client key -> [failures, window_started_at]
 LOGIN_LOCK = threading.Lock()
 
 # How many entries at the END of X-Forwarded-For were appended by our own
@@ -164,7 +167,9 @@ def init_db(conn):
             expires_at INTEGER NOT NULL
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_sessions_expiry ON browser_sessions(expires_at)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_sessions_expiry ON browser_sessions(expires_at)"
+    )
     conn.commit()
     migrate(conn)
 
@@ -244,9 +249,7 @@ def password_matches(candidate):
     if not PASSWORD:
         return False
     try:
-        return secrets.compare_digest(
-            str(candidate).encode("utf-8"), PASSWORD.encode("utf-8")
-        )
+        return secrets.compare_digest(str(candidate).encode("utf-8"), PASSWORD.encode("utf-8"))
     except Exception:
         return False
 
@@ -270,8 +273,9 @@ def note_login_failure(key):
     with LOGIN_LOCK:
         # Opportunistically forget windows that have aged out, so a long-lived
         # process does not accumulate an entry per address seen.
-        for k in [k for k, (_, started) in LOGIN_FAILURES.items()
-                  if now - started > LOGIN_WINDOW_SECONDS]:
+        for k in [
+            k for k, (_, started) in LOGIN_FAILURES.items() if now - started > LOGIN_WINDOW_SECONDS
+        ]:
             del LOGIN_FAILURES[k]
         failures, started = LOGIN_FAILURES.get(key, (0, now))
         LOGIN_FAILURES[key] = (failures + 1, started)
@@ -486,8 +490,9 @@ def publish(q, payload):
 
 
 def notify(name, room_json, client_id, version, seq=None):
-    payload = json.dumps({"name": name, "json": room_json, "clientId": client_id,
-                          "version": version, "seq": seq})
+    payload = json.dumps(
+        {"name": name, "json": room_json, "clientId": client_id, "version": version, "seq": seq}
+    )
     with WATCH_LOCK:
         queues = list(WATCHERS.get(name, set()))
     for q in queues:
@@ -503,14 +508,16 @@ def digest_of(room_json):
 
 def notify_live(name, draft):
     """Broadcast an unsaved live draft to every watcher of a room."""
-    payload = json.dumps({
-        "name": name,
-        "json": draft["json"],
-        "clientId": draft["clientId"],
-        "version": draft["version"],
-        "seq": draft.get("seq"),
-        "live": True,
-    })
+    payload = json.dumps(
+        {
+            "name": name,
+            "json": draft["json"],
+            "clientId": draft["clientId"],
+            "version": draft["version"],
+            "seq": draft.get("seq"),
+            "live": True,
+        }
+    )
     with WATCH_LOCK:
         queues = list(WATCHERS.get(name, set()))
     for q in queues:
@@ -539,8 +546,8 @@ def _split_authority(authority):
         end = authority.find("]")
         if end < 0:
             return authority.lower(), None
-        host = authority[:end + 1].lower()
-        rest = authority[end + 1:]
+        host = authority[: end + 1].lower()
+        rest = authority[end + 1 :]
         if rest.startswith(":") and rest[1:].isdigit():
             return host, int(rest[1:])
         return host, None
@@ -628,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(chunk) != size:
                     return ("bad", None)
                 data.extend(chunk)
-                self.rfile.read(2)          # the CRLF that closes the chunk
+                self.rfile.read(2)  # the CRLF that closes the chunk
         try:
             length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
@@ -685,7 +692,7 @@ class Handler(BaseHTTPRequestHandler):
         for part in header.split(";"):
             part = part.strip()
             if part.startswith(name + "="):
-                return part[len(name) + 1:]
+                return part[len(name) + 1 :]
         return None
 
     def _client_key(self):
@@ -835,7 +842,9 @@ class Handler(BaseHTTPRequestHandler):
             # "the server is full" rather than blaming this client's tab.
             if len(WATCHER_SESSIONS) >= MAX_WATCHERS_TOTAL:
                 refusal = "too many watchers"
-            elif sum(1 for t in WATCHER_SESSIONS.values() if t == token) >= MAX_WATCHERS_PER_SESSION:
+            elif (
+                sum(1 for t in WATCHER_SESSIONS.values() if t == token) >= MAX_WATCHERS_PER_SESSION
+            ):
                 refusal = "too many streams"
             else:
                 refusal = None
@@ -855,20 +864,33 @@ class Handler(BaseHTTPRequestHandler):
                 seq = LIVE_SEQ.get(name, 0)
             cur = load_room(name)
             if cur:
-                self._sse_write(json.dumps({"name": name, "json": cur["json"], "clientId": "",
-                                            "version": cur["version"], "seq": seq}))
+                self._sse_write(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "json": cur["json"],
+                            "clientId": "",
+                            "version": cur["version"],
+                            "seq": seq,
+                        }
+                    )
+                )
             with LIVE_LOCK:
                 draft = LIVE.get(name)
             if draft:
                 # Join mid-edit: hand over the latest unsaved draft too.
-                self._sse_write(json.dumps({
-                    "name": name,
-                    "json": draft["json"],
-                    "clientId": draft["clientId"],
-                    "version": draft["version"],
-                    "seq": draft.get("seq"),
-                    "live": True,
-                }))
+                self._sse_write(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "json": draft["json"],
+                            "clientId": draft["clientId"],
+                            "version": draft["version"],
+                            "seq": draft.get("seq"),
+                            "live": True,
+                        }
+                    )
+                )
             while True:
                 # Waiting with a timeout is what keeps this thread mortal. A
                 # blocking get() never returns for a client that disconnected
@@ -901,7 +923,7 @@ class Handler(BaseHTTPRequestHandler):
                 if watchers is not None:
                     watchers.discard(q)
                     if not watchers:
-                        del WATCHERS[name]   # do not keep an empty set per room
+                        del WATCHERS[name]  # do not keep an empty set per room
 
     def do_GET(self):
         if not self._require_auth():
@@ -916,19 +938,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             self._send({"count": active_count()})
         elif path.startswith("/api/watch/"):
-            name = sanitize(urllib.parse.unquote(path[len("/api/watch/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/watch/") :]))
             if name:
                 self._sse(name)
             else:
                 self._send({"error": "bad name"}, 400)
         elif path.startswith("/api/versions/"):
-            name = sanitize(urllib.parse.unquote(path[len("/api/versions/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/versions/") :]))
             if name:
                 self._send(versions(name))
             else:
                 self._send({"error": "bad name"}, 400)
         elif path.startswith("/api/load/"):
-            name = sanitize(urllib.parse.unquote(path[len("/api/load/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/load/") :]))
             version = None
             if "version" in qs and qs["version"] and qs["version"][0].isdigit():
                 version = int(qs["version"][0])
@@ -1037,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             # This never takes work AWAY from a client: it answers with what the
             # room currently is, and a client only asks when it has nothing
             # unpublished of its own.
-            name = sanitize(urllib.parse.unquote(path[len("/api/live-check/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/live-check/") :]))
             if not name:
                 self._send({"error": "bad name"}, 400)
                 return
@@ -1061,11 +1083,12 @@ class Handler(BaseHTTPRequestHandler):
             if digest_of(current) == digest:
                 self._send({"inSync": True, "version": version, "seq": seq})
             else:
-                self._send({"inSync": False, "json": current, "version": version,
-                            "seq": seq, "live": live})
+                self._send(
+                    {"inSync": False, "json": current, "version": version, "seq": seq, "live": live}
+                )
             return
         if path.startswith("/api/live/"):
-            name = sanitize(urllib.parse.unquote(path[len("/api/live/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/live/") :]))
             if not name:
                 self._send({"error": "bad name"}, 400)
                 return
@@ -1096,8 +1119,13 @@ class Handler(BaseHTTPRequestHandler):
                     behind = False
                     current += 1
                     LIVE_SEQ[name] = current
-                    draft = {"json": room_json, "clientId": client_id,
-                             "version": version, "at": time.time(), "seq": current}
+                    draft = {
+                        "json": room_json,
+                        "clientId": client_id,
+                        "version": version,
+                        "at": time.time(),
+                        "seq": current,
+                    }
                     LIVE[name] = draft
             if behind:
                 if stale_draft:
@@ -1108,8 +1136,15 @@ class Handler(BaseHTTPRequestHandler):
                         self._send({"error": "not found"}, 404)
                         return
                     current_json, current_version = row["json"], row["version"]
-                self._send({"ok": False, "stale": True, "seq": current,
-                            "json": current_json, "version": current_version})
+                self._send(
+                    {
+                        "ok": False,
+                        "stale": True,
+                        "seq": current,
+                        "json": current_json,
+                        "version": current_version,
+                    }
+                )
                 return
             notify_live(name, draft)
             self._send({"ok": True, "seq": current})
@@ -1160,7 +1195,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/api/rooms/"):
-            name = sanitize(urllib.parse.unquote(path[len("/api/rooms/"):]))
+            name = sanitize(urllib.parse.unquote(path[len("/api/rooms/") :]))
             if name and delete_room(name):
                 self._send({"ok": True})
             else:
@@ -1192,7 +1227,9 @@ class RoomCADServer(ThreadingHTTPServer):
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
-        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+        if isinstance(
+            exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)
+        ):
             return
         super().handle_error(request, client_address)
 
