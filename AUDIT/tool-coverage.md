@@ -106,15 +106,13 @@ One rule proved silent and was therefore **removed** rather than left as dead
 cover: `roomcad-python-bare-except` (the pattern did not match a bare `except:`
 block; bare `except` is covered by Ruff `E722`, proved above).
 
-`AUDIT/gates.sh` runs the pack with `--severity ERROR --error`, so the two
-WARNING-severity rules do not gate: `roomcad-innerhtml-dynamic` (the 12 known
-`esc()`-mitigated sites — ledger T0049, the same limitation eslint's
-`no-unsanitized/property` has) and `roomcad-insertadjacenthtml-dynamic`. They are
-still reported, still proved to fire above, and are compensated by
-`tests/audit-xss.test.mjs`; a rule that cannot see per-interpolation escaping
-would otherwise gate forever on a verified false positive. The ERROR-severity
-rules (SQL injection, eval, weak randomness, subprocess-without-check,
-open-without-encoding) do gate, and none of them fires on this tree.
+`AUDIT/gates.sh` runs the pack with `--severity ERROR --error`, and the pack has
+**no findings on this tree at all**: `roomcad-innerhtml-dynamic` is now WARNING
+severity and reports nothing, because every `innerHTML` assignment goes through
+the `safeHtml` tag (T0054) — it is kept at WARNING rather than removed so that a
+future hand-written template still shows up in a plain `semgrep scan`. The
+ERROR-severity rules (SQL injection, eval, weak randomness,
+subprocess-without-check, open-without-encoding) gate and are silent.
 
 ### 1.3 eslint 10 + plugins — `AUDIT/eslint.config.mjs`
 
@@ -148,9 +146,21 @@ eslint exit=1
 ```
 
 `no-undef` is the rule that found T0001/T0008 (the imports the prototype split
-dropped). `no-unsanitized/property` is configured with the codebase's `esc()` as
-an accepted escape function, so a mitigated site is not a false positive and an
-unmitigated one still fails.
+dropped). `no-unsanitized/property` accepts two real escapers from `app/ui.js`:
+`esc(value)` for a directly assigned value and the `safeHtml` tagged template,
+which escapes every interpolation itself. Nothing else is trusted — an untagged
+template, a bare variable and a call other than `esc()` all still fail.
+
+**There is no severity waiver left in the eslint config.** `roomcad/web tests`
+reports **0 problems**. The four rule dispositions this audit originally
+recorded (`T0048`–`T0051`) were removed at the owner's request by fixing what
+they hid (`T0054`–`T0058`): the 12 `innerHTML` sites use the escaping tag, the
+DOM stub's three nested-quantifier regexes became linear scanners, the ten
+post-await singleton writes became one atomic `Object.assign` each, the eight
+`new Function` lifts became real module imports, and `no-unsanitized/method`'s
+`import()` pseudo-sink is scoped to the browser block only (every real DOM sink
+stays at `error` in tests). `no-await-in-loop` is at `error` for `roomcad/web`
+and off for the suite, where every use is a poll-until-condition loop.
 
 ### 1.4 Bandit (Python SAST)
 
@@ -219,6 +229,14 @@ in `baseline.md`; the command is in `AUDIT/gates.sh`'s coverage mode.
 | Python → basic only: one pinned version, Ruff format + lint, importable scripts, `pip-audit` only if a lock file exists | **Yes** | Python 3.14.7 pinned; `ruff.toml` committed; the bare-`except` proof above; `ruff check roomcad tests` and `python3 -m compileall -q roomcad tests` both clean after T0045; `pip-audit` is N/A because there is no `requirements.txt`, lockfile, `pyproject.toml` or `setup.py` (the API is stdlib-only). |
 
 ## 3. Risks accepted and recorded (not waivers of a check)
+
+**Update (follow-up work T0054–T0058):** the eslint and semgrep dispositions
+described in the paragraphs below were **removed** — the findings were fixed
+rather than waived, the rules are back at `error`, and `roomcad/web tests`
+reports 0 problems. The paragraphs are kept because they record how the
+dispositions were reasoned about at the time and what replaced them. The two
+items that remain genuinely accepted are the last two bullets (Prettier and the
+vendored tree).
 
 - **Prettier is not run as a whole-tree rewrite.** `prettier --check` reports 115
   files with style differences. This repository's own gate contains *source
