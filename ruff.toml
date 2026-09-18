@@ -1,0 +1,54 @@
+# RoomCAD audit — Ruff configuration (§1: one pinned formatter + linter for Python).
+#
+# This is the audit's Python gate. It is committed so the check is reproducible
+# rather than assembled by hand on each run. `AUDIT/gates.sh` runs
+# `ruff format --check` and `ruff check` with this file.
+#
+# Rule choice, and why each family is here:
+#   E4/E7/E9, F, W  pycodestyle errors + Pyflakes + warnings: real defects.
+#   B               flake8-bugbear: mutable default arguments, blind excepts,
+#                   loop-variable closures, `assert` misuse in some forms.
+#   E722            bare `except:` (also in E7, named explicitly for the record).
+#   S101            `assert` used for validation, which `python -O` strips.
+#   PT              flake8-pytest-style.
+#   F632            `is` compared against a literal (ints/strings) — §1 pitfall.
+#   S110/S112       `except: pass` / `except: continue` swallowing a real
+#                   failure — §1 pitfall.
+#   DTZ             naive `datetime.now()`/`utcnow()` — §1 pitfall.
+#   S108/S301/S307/S310  Bandit rules that overlap the SAST pass (hardcoded temp
+#                   paths, pickle, eval/exec, urlopen of a dynamic URL).
+#
+# Line length is set to the repository's own style rather than Ruff's 88: the
+# code is written to ~100 columns and reformatting to 88 would churn every file
+# for no defect. Formatting is still enforced, at this width.
+
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = [
+  "E4", "E7", "E9", "F", "W",
+  "B",
+  "S101",
+  "PT",
+  "F632",
+  "DTZ",
+  "S108", "S110", "S112", "S301", "S307", "S310",
+]
+ignore = [
+  # Nothing is ignored. Two pitfalls have no stable Ruff rule and are covered by
+  # the pinned semgrep pack instead, proved in AUDIT/tool-coverage.md:
+  #   - subprocess without check=True  -> roomcad-python-subprocess-no-check
+  #   - open() without encoding=       -> roomcad-python-open-no-encoding
+  #     (Ruff's PLW1514 exists but is preview-only, and enabling preview would
+  #      silently turn on every other unstable rule.)
+]
+
+# No per-file ignores. Every rule above applies to every Python file, including
+# the test file: an `assert` there is fixed as its own numbered task rather than
+# exempted, because `assert` is exactly the pitfall this rule exists to catch.
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

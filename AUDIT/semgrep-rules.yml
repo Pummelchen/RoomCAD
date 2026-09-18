@@ -1,0 +1,130 @@
+# RoomCAD audit — pinned semgrep rule pack.
+#
+# The semgrep registry packs are not versioned, so the rules this audit relies on
+# are committed here and run with the pinned semgrep binary recorded in
+# environment.md. Registry packs may be run as an extra sweep, but a check is
+# only "covered by a tool" when a rule below (or the pinned eslint/bandit/ruff
+# config) is what catches it. Every rule here is proved to fire on a deliberate
+# violation in AUDIT/tool-coverage.md.
+rules:
+  - id: roomcad-innerhtml-dynamic
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      innerHTML assigned from a non-literal. Untrusted room text (a room name,
+      a label) reaching innerHTML is DOM XSS; use textContent or the codebase's
+      esc() before interpolating.
+    patterns:
+      - pattern: $EL.innerHTML = $X
+      - pattern-not: $EL.innerHTML = "..."
+    metadata:
+      category: security
+      cwe: ["CWE-79"]
+
+  - id: roomcad-insertadjacenthtml-dynamic
+    languages: [javascript]
+    severity: WARNING
+    message: insertAdjacentHTML with a dynamic string is the same sink as innerHTML.
+    pattern: $EL.insertAdjacentHTML($POS, $X)
+    metadata:
+      category: security
+      cwe: ["CWE-79"]
+
+  - id: roomcad-document-write
+    languages: [javascript]
+    severity: ERROR
+    message: document.write() with a dynamic argument can inject markup.
+    pattern: document.write($X)
+    metadata:
+      category: security
+      cwe: ["CWE-79"]
+
+  - id: roomcad-weak-random-token
+    languages: [javascript]
+    severity: ERROR
+    message: >-
+      Math.random() must not build a session token, secret, nonce or key; use
+      crypto.randomUUID()/crypto.getRandomValues().
+    patterns:
+      - pattern: Math.random()
+      - pattern-inside: |
+          function $F(...) { ... }
+      - metavariable-regex:
+          metavariable: $F
+          regex: (.*[Tt]oken.*|.*[Ss]ecret.*|.*[Ss]ession.*|.*[Nn]once.*|.*[Kk]ey.*)
+    metadata:
+      category: security
+      cwe: ["CWE-330", "CWE-338"]
+
+  - id: roomcad-python-subprocess-no-check
+    languages: [python]
+    severity: ERROR
+    message: >-
+      subprocess without check=True: a non-zero exit code vanishes. §1 names
+      this pitfall explicitly.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.call(...)
+      - pattern-not: subprocess.run(..., check=True, ...)
+      - pattern-not: subprocess.call(..., check=True, ...)
+    metadata:
+      category: correctness
+
+  - id: roomcad-python-open-no-encoding
+    languages: [python]
+    severity: ERROR
+    message: >-
+      open() without an explicit encoding= reads in the platform's locale
+      encoding. §1 names this pitfall; Ruff's PLW1514 is preview-only.
+    patterns:
+      - pattern-either:
+          - pattern: open($PATH)
+          - pattern: open($PATH, $MODE)
+          - pattern: open($PATH, mode=$MODE)
+      - pattern-not: open(..., encoding=..., ...)
+    metadata:
+      category: correctness
+
+  - id: roomcad-python-sql-fstring
+    languages: [python]
+    severity: ERROR
+    message: SQL built by f-string/format/% is an injection sink; use a parameterised statement.
+    patterns:
+      - pattern-either:
+          - pattern: $CONN.execute(f"...", ...)
+          - pattern: $CONN.execute("..." % ..., ...)
+          - pattern: $CONN.execute("...".format(...), ...)
+    metadata:
+      category: security
+      cwe: ["CWE-89"]
+
+  - id: roomcad-python-assert-validation
+    languages: [python]
+    severity: WARNING
+    message: >-
+      assert used for validation disappears under `python -O`. §1 names this
+      pitfall; use an explicit raise/return in production code.
+    pattern: assert $X, $Y
+    metadata:
+      category: correctness
+
+  - id: roomcad-javascript-eval
+    languages: [javascript]
+    severity: ERROR
+    message: eval()/new Function() of a dynamic value is a code-injection sink.
+    pattern-either:
+      - pattern: eval($X)
+      - pattern: new Function(...)
+    metadata:
+      category: security
+      cwe: ["CWE-95"]
+
+  - id: roomcad-javascript-fetch-http
+    languages: [javascript]
+    severity: WARNING
+    message: fetch() over plain http:// sends data in the clear.
+    pattern: fetch("http://...", ...)
+    metadata:
+      category: security
+      cwe: ["CWE-319"]
