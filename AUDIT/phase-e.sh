@@ -81,7 +81,7 @@ else
 fi
 if [ -x AUDIT/node_modules/.bin/eslint ]; then
   AUDIT/node_modules/.bin/eslint --config AUDIT/eslint.config.mjs roomcad/web tests \
-    && pass "eslint (0 errors; documented warnings)" || fail "eslint"
+    && pass "eslint (0 errors, 0 warnings)" || fail "eslint"
 fi
 
 step "zero production placeholders / facades"
