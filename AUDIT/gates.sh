@@ -58,7 +58,7 @@ fi
 
 # ── Shell ────────────────────────────────────────────────────────────────────
 step "shellcheck"
-if shellcheck --severity=warning tests/run.sh roomcad/server/deploy.sh roomcad/server/install-caddy.sh roomcad/web/serve.sh; then
+if shellcheck --severity=warning tests/run.sh roomcad/server/deploy.sh roomcad/server/install-caddy.sh roomcad/web/serve.sh release.sh; then
   ok "shellcheck"; else bad "shellcheck"; fi
 
 # ── Caddy configs ────────────────────────────────────────────────────────────

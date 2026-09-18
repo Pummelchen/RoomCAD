@@ -19,7 +19,8 @@ bundler, no `package.json`** — served by Caddy; the API is stdlib-only Python 
 stores versioned rooms in SQLite and streams live edits over SSE. It is complete and
 in production: the deployed entry point is
 `https://roomcad.91.99.176.243.nip.io/`, and `roomcad/server/` mirrors the VPS so it
-can be rebuilt from git. There are no releases and no tags.
+can be rebuilt from git. The first release is `v10.8`, cut from `main` with
+`./release.sh`.
 
 **There is no Swift, Xcode or native code anywhere in the tree.** An earlier native
 edition was removed, and the comments that still described it as the counterpart
@@ -78,6 +79,11 @@ too.
   BUTTONS testable: they are static markup, and `app.js` binds their clicks by
   querying for them as it loads.
 - `.github/workflows/tests.yml` — CI. `.github/traffic.json` is badge data.
+- `release.sh` — cuts a release: a dry run by default, and it tags and publishes
+  only with `--publish`. It reads the version out of `roomcad/web/version.js`, so
+  the tag cannot disagree with the app, and it refuses a dirty tree or a branch
+  that is not `main`. `docs/release-notes-vX.Y.md` is the notes it publishes;
+  `RELEASE.md` is the standard it implements.
 - `THIRD_PARTY_NOTICES.md` — the licences for everything vendored under `lib/`, plus
   a SHA-256 for every file there and the version of each. Required by `RELEASE.md`
   §1.6, and **enforced** by `tests/vendored-pins.test.mjs`: update the file in the
@@ -363,10 +369,12 @@ own release standard — edited here, not deployed from anywhere — and it carr
 the general rules and this repository's own section (**Part 2 wins** where the two
 disagree). Do not improvise a release.
 
-There is no compiled artifact today, so the packaging and publishing sections do not
-apply yet; **Part 2 names which sections already bind** (identity, the gate) and which
-wait for a real release (packaging, notes, publishing). The non-negotiables below are
-the ones that bind now or bind the moment anything compiles:
+There is no compiled artifact, so §1.2.1–§1.2.4 (an `arm64` build and a `lipo`
+check) have no input. Everything else applies: a release is a **source archive**
+with a digest beside it, notes in `docs/`, and a published GitHub Release — cut
+with **`./release.sh`**, which is a dry run until it is given `--publish`. Part 2
+has the naming and the packaging details. The non-negotiables below are the ones
+that bind:
 
 - **Apple Silicon only** — build native `arm64` (M1–M6). Never `--arch x86_64`,
   never `ARCHS=arm64 x86_64`, and never `lipo -create`, which is how a universal

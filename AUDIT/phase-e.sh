@@ -74,7 +74,7 @@ else
 fi
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck --severity=warning tests/run.sh roomcad/server/deploy.sh \
-    roomcad/server/install-caddy.sh roomcad/web/serve.sh \
+    roomcad/server/install-caddy.sh roomcad/web/serve.sh release.sh \
     && pass "shellcheck" || fail "shellcheck"
 else
   echo "SKIP  shellcheck not installed"

@@ -184,7 +184,7 @@ Leave previous releases' notes and performance tables alone.
 
 # Part 2 — This repository
 
-## RoomCAD — a browser app and a Python API, no release yet
+## RoomCAD — a browser app and a Python API
 
 - **Identity: established.** `roomcad/web/version.js` is the single source —
   `export const APP_VERSION = "10.8";` — and `tests/version.test.mjs` enforces it:
@@ -198,12 +198,20 @@ Leave previous releases' notes and performance tables alone.
   after — one authoritative value, mirrors that fail when they disagree, no second
   declaration in a test — is all in place, which is why this is a spelling
   difference and not an exception.
-- **No compiled artifact.** Nothing here is built, linked, lipo-checked, archived
-  or published, so §1.2.1–1.2.4, §1.6 and §1.7 do not apply. If a release is ever
-  wanted it would ship a source archive, and then §1.2.5 (a digest beside the
-  artifact), §1.6 (notices and a `README-binaries.txt` stating the platform floor)
-  and §1.7 would apply in full.
-- **The gate is the release check.** `./tests/run.sh` — 29 files, 1932 checks — is
+- **No compiled artifact.** Nothing here is built, linked or lipo-checked, so
+  §1.2.1–1.2.4 have no input and there is no architecture to assert. A release
+  ships a **source archive**, and §1.2.5 (a digest beside the artifact), §1.6
+  (notices, and a `README-binaries.txt` stating the platform floor) and §1.7 apply
+  in full — which is what `release.sh` implements.
+- **The archive is named `roomcad-<version>-src.tar.gz`, a stated deviation from
+  §1.6's `<project>-<version>-macos-arm64.tar.gz`.** The platform segment exists to
+  say which platform a binary was built for. There is no binary and no `arm64` build
+  here, so putting `-macos-arm64` in the name of a source tarball would be a false
+  statement about the artifact, and §1.3 wants the name to be a true answer to "what
+  am I running". `src` is that answer. `README-binaries.txt` carries the platform
+  floor instead: a WebGPU browser for the 3D view, any current browser for the
+  planner, and Python 3 with the standard library for the API.
+- **The gate is the release check.** `./tests/run.sh` — 41 files, 2405 checks — is
   run by CI on every push and pull request, and it must be green. Its §1.5 traps
   are already honoured: the runner has been seen to fail both on an injected
   assertion and on a timeout, and it reports the count that passed rather than
@@ -214,8 +222,16 @@ Leave previous releases' notes and performance tables alone.
   with the server's own Caddy before installing it, and refuses to report success
   until the live URL answers. That is a deploy, not a versioned release: no tag, no
   archive, no notes.
-- **There are no releases and no tags.** The version number tracks completed work,
-  not published artifacts. When the first real release happens, §1.2.3 (a tag alone
-  is not a release), §1.8 (notes in `docs/`, ending in a checksum block) and §1.9
-  (verify the published Release) start applying from that moment.
+- **Releases are cut with `./release.sh`.** Dry run by default, and it tags and
+  publishes only with `--publish` (§1.2.6). It reads the version out of
+  `roomcad/web/version.js`, so the tag cannot disagree with the app; it refuses a
+  dirty tree or a branch that is not `main`; it checks the archive for the files
+  §1.6 requires by reading the archive rather than the working tree; and after
+  publishing it re-downloads the asset and compares the digest (§1.9).
+- **§1.2.3 and §1.8 have applied since the first release, `v10.8`.** The tag alone
+  is not the release — the assets are — and the notes live in
+  `docs/release-notes-v10.8.md`, ending in the checksum block that `release.sh`
+  substitutes at publish time. The version number still tracks completed work and
+  not published artifacts, so cutting `v10.8` did not bump it: a release of what
+  the tree already says it is, rather than a reason to invent a new number.
 
