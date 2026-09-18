@@ -1054,9 +1054,10 @@ for (const name of EXPECTED) {
 // ── Public floor is the user's ───────────────────────────────────────────
 //
 // The generator used to add the hallways it carved as public areas, so running
-// it painted grey floor over the plan that nobody had asked for. It still
-// carves hallways — that is the floor the rooms open onto — it just does not
-// mark them as shared space, which is the user's to decide.
+// it painted grey floor over the plan that nobody had asked for. It no longer
+// carves anything: the green floor the user marked is the walking space, and the
+// floor the planner cannot use as a room comes back as open floor, unmarked.
+// Marking shared space stays the user's decision.
 {
   store.room = P.freshRoom("Bare", 10, 8, 2.6);
   P.centerRoom(store.room);

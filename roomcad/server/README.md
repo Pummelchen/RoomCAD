@@ -8,7 +8,8 @@ from scratch if the VPS is ever lost. The web app itself lives in
 
 | File | Purpose |
 | --- | --- |
-| `server.py` | Python (stdlib) save + live-collaboration API, SQLite-backed |
+| `server.py` | the runnable entry point for the API: Python (stdlib), SQLite-backed save + live-collaboration. It re-exports the implementation from `roomcad_api/` |
+| `roomcad_api/` | the API implementation as a package. `state.py` holds every configuration value and mutable global (and is where a caller or test must rebind them); `db.py`, `auth.py` and `live.py` hold storage, authentication and live drafts; `http.py` and `app.py` hold the HTTP handler and server |
 | `roomcad.service` | systemd unit that runs `server.py` on `127.0.0.1:8078`, as the unprivileged `roomcadapp` user in a systemd sandbox |
 | `Caddyfile` | RoomCAD's **own** Caddy config — serves the web app and proxies `/api/*` to the API. It does **not** terminate TLS: it listens on plain HTTP on loopback, and the host's master Caddy owns 80/443 |
 | `roomcad-caddy.service` | systemd unit for RoomCAD's own Caddy instance, under its own user |
@@ -22,7 +23,8 @@ from scratch if the VPS is ever lost. The web app itself lives in
 
 ```
 /var/roomcad/
-  server.py        # the API
+  server.py        # the API entry point
+  roomcad_api/     # the API implementation (state.py holds the configuration)
   rooms.db         # SQLite database (WAL mode)
   web/             # static web app
   rooms/           # legacy .rcad files (migrated once, now empty)
@@ -216,7 +218,13 @@ stream per tab can produce.
    mkdir -p /var/roomcad/web
    cp server.py /var/roomcad/server.py
    chmod 755 /var/roomcad/server.py
+   cp -R roomcad_api /var/roomcad/roomcad_api
+   chmod -R u+rwX,go+rX /var/roomcad/roomcad_api
    ```
+
+   The service runs as `roomcadapp`, so the package must be readable by it even
+   though root owns it — `go+rX` is what makes the directory traversable and
+   the modules readable.
 
 3. Restore the database **structure** from the dump:
 
@@ -268,7 +276,8 @@ stream per tab can produce.
 ## Deploying
 
 Run `./deploy.sh` from this directory (uses your SSH key). It synchronizes the
-web app with deletion enabled, uploads the API, installs the service units, the
+web app with deletion enabled, uploads the API entry point and its
+`roomcad_api/` package, installs the service units, the
 Caddy config and RoomCAD's route in the master, ensures the `roomcadapp` account
 and its file ownership, and restarts the services. It never rewrites
 `rooms.db` **contents** or `roomcad.env`, so live data and the password are

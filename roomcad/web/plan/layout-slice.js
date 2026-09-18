@@ -31,7 +31,7 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
   /// across the corpus could only be entered through the room next door.
   ///
   /// Not "does it touch the circulation" — touching is not enough. A room whose
-  /// only contact with the hallway is the 35 cm where a walkway ends cannot
+  /// only contact with the circulation is the 35 cm where a walkway ends cannot
   /// have a door onto it, and the door step, finding nowhere to put one, put it
   /// in the outside wall instead: a bedroom opening onto the street. So this
   /// asks for a door's worth of frontage, which is what the room actually
@@ -64,13 +64,12 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
   // to put one but the outside wall or a neighbour's.
   //
   // The floor is not carved, because carving is not what this module does any
-  // more: the hallway the comment above describes was removed when generating
-  // stopped making public space of its own (see `const hallway = []` in
-  // layout.js — the user's green floor is the circulation, and the planner
-  // builds against it rather than adding to it). What a piece with no frontage
-  // becomes is what every other piece the partition cannot use becomes: open
-  // floor. partitionFloor() sends it to `spare`, which is reachable, rather
-  // than walling it in as a room nobody can enter.
+  // more: generating stopped making public space of its own. The user's green
+  // floor is the circulation, and the planner builds against it rather than
+  // adding to it. What a piece with no frontage becomes is what every other
+  // piece the partition cannot use becomes: open floor. partitionFloor() sends
+  // it to `spare`, which is reachable, rather than walling it in as a room
+  // nobody can enter.
   if (weights.length <= 1) {
     if (fronting(cells)) return [cells];
     const parts = connectedParts(grid, cells);
@@ -124,8 +123,8 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
       // Shorter cuts mean shorter walls, so use that to break ties.
       const cutLength = axis === "x" ? (maxJ - minJ + 1) : (maxI - minI + 1);
       const err = Math.abs(areaA - want) / total;
-      // A piece that closes around a walkway becomes a U-shaped room with a
-      // corridor running through the middle of it. Prefer the cut that puts the
+      // A piece that closes around a walkway becomes a U-shaped room with the
+      // walkway running through the middle of it. Prefer the cut that puts the
       // walkway on a boundary instead — which is also the cut that makes rooms
       // line up with the circulation already drawn.
       const wrap = wrapping(grid, a) + wrapping(grid, b);
@@ -134,15 +133,17 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
       if (!best || score < best.score) best = candidates[candidates.length - 1];
     }
   }
-  // Every cut would have left one side with no way in. That is a reason to run
-  // the hallway further, not a reason to give up and hand the whole piece to
-  // one room: giving up is what turned six rooms into three. Carve on through
-  // the piece and cut again — both halves then front the new stretch.
+  // Every cut here would have left one side with no way in. The old engine's
+  // answer was to run the hallway further through the piece and cut again, so
+  // both halves fronted the new stretch — giving up instead is what once turned
+  // six rooms into three. Generating does not create public space now, so there
+  // is no stretch to cut to: the cut is refused, and the floor that would have
+  // been the corridor stays with the rooms.
   // Nothing can be cut cleanly. Hand the piece over as it is — but a piece is
-  // not always in one lump: carving a hallway through it, or a wall the user
-  // drew, can leave it in two. Handing that over whole makes ONE room out of
-  // two separate spaces, and only one of them gets the door. So it is handed
-  // over in the pieces it actually falls into, biggest first.
+  // not always in one lump: a wall the user drew can leave it in two. Handing
+  // that over whole makes ONE room out of two separate spaces, and only one of
+  // them gets the door. So it is handed over in the pieces it actually falls
+  // into, biggest first.
   if (!best) {
     const parts = connectedParts(grid, cells);
     if (parts.length > 1) {
@@ -178,8 +179,7 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
 }
 
 /// The pieces a set of cells falls into once you can no longer walk between
-/// them — around a walkway, across a wall the user drew, or either side of a
-/// hallway just carved through the middle of it.
+/// them — around a walkway or across a wall the user drew.
 ///
 /// Cells arrive in two shapes: the layout engine passes an array of `[i, j]`
 /// pairs, and detectRooms() passes the flat Int32Array of cell indices it

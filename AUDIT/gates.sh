@@ -29,7 +29,10 @@ step "python importability"
 if python3 -m compileall -q roomcad tests >/dev/null; then ok "compileall"; else bad "compileall"; fi
 
 step "bandit (Python SAST)"
-if bandit -q -r roomcad/server/server.py; then ok "bandit"; else bad "bandit"; fi
+# The whole server tree, not just server.py: server.py is a facade now and the
+# implementation lives in roomcad_api/, so scanning the entry point alone would
+# silently scan almost nothing.
+if bandit -q -r roomcad/server; then ok "bandit"; else bad "bandit"; fi
 
 # ── JavaScript: lint + SAST + SAST rules (pinned in AUDIT/) ──────────────────
 ESLINT="AUDIT/node_modules/.bin/eslint"

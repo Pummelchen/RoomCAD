@@ -11,15 +11,25 @@ SERVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOMCAD_DIR="$(cd "$SERVER_DIR/.." && pwd)"
 WEB_DIR="$ROOMCAD_DIR/web"
 REMOTE_ROOT="/var/roomcad"
-echo "Synchronizing web/ and server.py to $HOST …"
+echo "Synchronizing web/ and the API to $HOST …"
 # --delete makes source removals real on the VPS too. The excluded development
 # helpers are deliberately preserved if a host has them.
 rsync -az --delete --exclude='bin' --exclude='photos' "$WEB_DIR/" "$HOST:$REMOTE_ROOT/web/"
+# The API is a package: server.py is the runnable entry point and roomcad_api/
+# holds the implementation. Sync the package too — otherwise the entry point
+# arrives on the VPS with nothing to import — and let --delete remove a module
+# that was dropped here, so the two never drift.
+rsync -az --delete --exclude='__pycache__' "$SERVER_DIR/roomcad_api/" \
+  "$HOST:$REMOTE_ROOT/roomcad_api/"
 scp "$SERVER_DIR/server.py" "$HOST:$REMOTE_ROOT/server.py"
 
 echo "Setting deployed file permissions …"
-ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/server.py' && \
-  chmod -R u+rwX,go+rX '$REMOTE_ROOT/web' && \
+# The service runs as roomcadapp (see roomcad.service), so it must be able to
+# READ the package even though root owns it: directories traversable and files
+# world-readable is exactly `u+rwX,go+rX`. /var/roomcad itself stays owned by
+# roomcadapp so SQLite can write its WAL sidecars beside the database.
+ssh "$HOST" "chown -R root:root '$REMOTE_ROOT/web' '$REMOTE_ROOT/roomcad_api' '$REMOTE_ROOT/server.py' && \
+  chmod -R u+rwX,go+rX '$REMOTE_ROOT/web' '$REMOTE_ROOT/roomcad_api' && \
   chmod 755 '$REMOTE_ROOT/server.py' && \
   find '$REMOTE_ROOT/web' -name '._*' -delete"
 

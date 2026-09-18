@@ -164,10 +164,10 @@ export function autoLayoutRooms(room, opts = {}) {
   // ── Something for every room to open onto ───────────────────────────────
   //
   // A room reached only by walking through another room is not a room with a
-  // way in. So before the floor is divided up, the circulation is settled:
-  // whatever the user marked counts as it, and any stretch of free floor with
-  // none of its own has a hallway cut through it. The partition below then
-  // refuses any cut that would leave a piece with no frontage onto it.
+  // way in. So before the floor is divided up, the circulation is settled: the
+  // floor the user marked green is it, and nothing is added to it. The
+  // partition below then refuses any cut that would leave a piece with no
+  // frontage onto it.
   const cellCount = grid.nx * grid.nz;
   const circulation = new Uint8Array(cellCount);
   for (let i = 0; i < grid.nx; i++) {
@@ -179,13 +179,11 @@ export function autoLayoutRooms(room, opts = {}) {
       }
     }
   }
-  // A piece is given a hallway when what it already fronts onto cannot serve
-  // the rooms it has to hold. Carving only where there is NO circulation at all
-  // is not enough: a piece touching a walkway at one corner has somewhere to
-  // open onto, but only enough of it for a single room, and the rest of the
-  // rooms asked for simply never get built. Each room needs a room's width of
-  // frontage to put its own door in.
-  // No hallway is cut where the user marked none.
+  // No hallway is cut when a piece's own frontage cannot serve the rooms asked
+  // of it. Touching a walkway at one corner is not enough for more than one
+  // room: each room needs a room's width of frontage to put its own door in,
+  // and the partition refuses a cut it cannot give that frontage to rather than
+  // cutting a path through the piece to reach it.
   //
   // "The green public space is where people walk and doors swing into. So the
   // auto layout planner does not create public space — it is the area it needs
@@ -194,30 +192,18 @@ export function autoLayoutRooms(room, opts = {}) {
   // do it. Where the user has marked the walking space the rooms are laid
   // against it; where they have not, the rooms fill the plate and open to the
   // outside, and the app says what to draw to do better.
-  const hallway = [];
 
-  // The free cells that touch circulation. A piece of the partition has to keep
-  // at least one of these, or the rooms cut from it have no frontage.
+  // Is there any circulation at all? Null when there is none, and then the
+  // partition has no frontage to respect — the rooms simply fill the plate.
   let anyCirculation = false;
   for (let c = 0; c < cellCount; c++) if (circulation[c]) { anyCirculation = true; break; }
-  const fronts = new Uint8Array(cellCount);
-  if (anyCirculation) {
-    for (let i = 0; i < grid.nx; i++) {
-      for (let j = 0; j < grid.nz; j++) {
-        const c = grid.at(i, j);
-        if (grid.blocked[c]) continue;
-        for (const [ni, nj] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]]) {
-          if (ni < 0 || nj < 0 || ni >= grid.nx || nj >= grid.nz) continue;
-          if (circulation[grid.at(ni, nj)]) { fronts[c] = 1; break; }
-        }
-      }
-    }
-  }
 
-  // What the rooms are laid against: the floor the user marked, and which free
-  // cells touch it. Null when nothing is marked, and then the partition has no
-  // frontage to respect — the rooms simply fill the plate.
-  const circ = anyCirculation ? { circulation, fronts, hallway } : null;
+  // What the rooms are laid against: the floor the user marked. `fronting()` in
+  // layout-slice.js recomputes which cells touch it, so the partition is handed
+  // the circulation itself and nothing else. (A precomputed `fronts` mask used
+  // to be passed here as well; nothing ever read it, and it went with the
+  // hallway machinery.)
+  const circ = anyCirculation ? { circulation } : null;
   const { rooms: pieces, spare } = partitionFloor(grid, roomCount, rng, circ);
   if (pieces.length === 0) return null;
   const owner = new Int32Array(grid.nx * grid.nz).fill(-1);
@@ -231,15 +217,10 @@ export function autoLayoutRooms(room, opts = {}) {
   // that was not needed.
   const SPARE = -5;
   for (const cells of spare) for (const [i, j] of cells) owner[grid.at(i, j)] = SPARE;
-  // A carved hallway IS circulation, and is treated exactly like floor that was
-  // left over: it shows on the plan as open space, the rooms along it open onto
-  // it, and the next run lays out against it rather than cutting another one.
-  for (const [i, j] of hallway) owner[grid.at(i, j)] = SPARE;
   // Deliberately built AFTER the rooms are settled, from everything that ended
-  // up as open floor: the leftover shares, the carved hallway, and any piece
-  // the partition could not use. Building it from the shares alone left the
-  // discarded pieces out, and they are exactly the floor that must not be
-  // walled in.
+  // up as open floor: the leftover shares and any piece the partition could not
+  // use. Building it from the shares alone left the discarded pieces out, and
+  // they are exactly the floor that must not be walled in.
   const spareRectsOf = () => {
     const tmp = new Int32Array(owner.length).fill(-1);
     let any = false;
@@ -250,14 +231,14 @@ export function autoLayoutRooms(room, opts = {}) {
   // ── Leftover floor that leads nowhere becomes part of the room it sits in
   //
   // The floor not needed for rooms is open floor, and open floor is fine when
-  // it is the hallway. But it does not come out in one piece: a corner left
+  // it can be walked to. But it does not come out in one piece: a corner left
   // over behind a room is its own little enclosure, walled in by the rooms
   // around it, with no door and no way in — floor you can see on the plan and
   // never stand on. Every such pocket is given to the room beside it, which is
   // what it looks like anyway.
   absorbStrandedFloor(grid, owner, SPARE, circulation);
 
-  // ── Anything still cut off gets the hallway run to it ──────────────────
+  // ── Anything that cannot be a room becomes open floor ──────────────────
   //
   // The partition refuses to make a room without frontage, but it can only
   // refuse a CUT: a room can still end up walled in by the pieces around it,
@@ -265,10 +246,13 @@ export function autoLayoutRooms(room, opts = {}) {
   // wall — which is the "walk through someone else's room" this is supposed to
   // rule out — or the outside wall, which is a bedroom door onto the street.
   //
-  // So the hallway is run to it: the shortest way from the circulation to that
-  // room, widened to a corridor, taken out of whatever it crosses. That costs
-  // the rooms it passes through some floor, which is what a corridor costs in
-  // a real building too.
+  // The old engine answered that by running a hallway to the room: the shortest
+  // way from the circulation to it, widened to a corridor, taken out of
+  // whatever it crossed, which cost the rooms it passed through some floor. The
+  // planner does not create public space, so there is no hallway to run: the
+  // floor that would have been the corridor stays with the rooms, and a piece
+  // that has no door frontage is handed back as open floor rather than built
+  // into a room nobody can enter.
 
   // Drop anything too small or too thin to be a room, then renumber so the ids
   // that survive are contiguous.
@@ -588,7 +572,7 @@ export function autoLayoutRooms(room, opts = {}) {
   // ── One plan, not several ───────────────────────────────────────────────
   //
   // Every room has a door onto the floor outside it, and that is still not
-  // enough to be able to walk around: a room and the pocket of hallway it
+  // enough to be able to walk around: a room and the pocket of open floor it
   // opens onto can be an island, closed off from the rest by the rooms in
   // between. 121 rooms across 660 plans were on one, each with a door that
   // led only to its own private scrap of floor.
@@ -616,8 +600,9 @@ export function autoLayoutRooms(room, opts = {}) {
     doors: finalDoors,
     windows: finalWindows,
     rooms,
-    // Only floor that was genuinely left over once every room had its area —
-    // never a path cut to reach somewhere. The old engine carved a corridor for
+    // Only floor that was genuinely left over once every room had its area.
+    // Despite the name this is leftover open floor, never a path cut to reach
+    // somewhere: nothing is carved here. The old engine carved a corridor for
     // every band it filled, which on a plan that already had walkways drawn
     // doubled the walking space and took the difference out of the rooms.
     corridors: spareRectsOf(),

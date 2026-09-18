@@ -249,12 +249,12 @@ export const editing = {
       room.doors = result.doors;
       room.windows = result.windows;
       // Public floor is the user's to mark, and only the user's. The generator
-      // used to add its own hallways as public areas, so running it painted
-      // grey floor over a plan nobody had asked it to paint. The hallways it
-      // carves are still there — they are the floor between the rooms, and
-      // every room opens onto them — they are simply not marked as shared
-      // space. Anything a previous run marked is cleared out, since the
-      // generator had no business putting it there either.
+      // used to add hallways of its own as public areas, so running it painted
+      // grey floor over a plan nobody had asked it to paint. Generating no
+      // longer invents circulation at all: the green floor the user marked is
+      // the walking space, and the floor the planner could not use as a room
+      // comes back as open floor, unmarked. Anything a previous run marked is
+      // cleared out, since the generator had no business putting it there.
       room.publicAreas = (room.publicAreas || []).filter(a => !a.generated);
     });
     // The walking space is the planner's input, not its output. Say so when
@@ -272,8 +272,11 @@ export const editing = {
   describeLayout(result) {
     const asked = result.requested || {};
     const actual = result.areaPerRoom;
-    // Floor that ended up as hallway rather than as a room. Reported so the
-    // count adds up to the space; NOT marked on the plan as public floor.
+    // Floor the planner could not use as a room: leftover open floor, which the
+    // rooms open onto. Reported so the count adds up to the space; NOT marked on
+    // the plan as public floor. It is called "hallway" in the status line below
+    // because that is what a person calls the floor between rooms — nothing was
+    // carved to make it.
     const walk = result.corridors.reduce((s, c) => s + c.w * c.l, 0);
 
     // Say so when the space would not take as many rooms as were asked for,
