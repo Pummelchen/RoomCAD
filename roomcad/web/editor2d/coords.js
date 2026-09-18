@@ -211,8 +211,20 @@ export const coords = {
   beginZoomEdit() {
     if (this.zoomEditing) return;
     this.zoomEditing = true;
-    this.zoomEl.innerHTML = `<input type="number" id="zoom-input" value="${this.zoomPercent()}" min="20" max="400" step="5">`;
-    const input = this.zoomEl.querySelector("input");
+    // Built with DOM APIs rather than an interpolated innerHTML. The editor must
+    // not import app/ui.js for an escaper — that is the wrong dependency
+    // direction — and the only value here is this editor's own numeric zoom, so
+    // there is nothing to interpolate in the first place. The clear uses a
+    // literal, which is the one innerHTML form that needs no escaping.
+    this.zoomEl.innerHTML = "";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.id = "zoom-input";
+    input.value = String(this.zoomPercent());
+    input.min = "20";
+    input.max = "400";
+    input.step = "5";
+    this.zoomEl.appendChild(input);
     input.focus();
     input.select();
     const finish = () => {

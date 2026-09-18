@@ -8,12 +8,22 @@
 // Now the pool follows the viewer, and a plan holding more fixtures than the
 // renderer will light is reported rather than left to be discovered.
 //
-// Walk3D cannot be instantiated here — it needs WebGPU — so the real methods are
-// lifted out of the source and driven with fakes, as mode-switch.test.mjs and
-// live-state.test.mjs do with app.js.
+// Walk3D cannot be instantiated here — it needs WebGPU — so the object under
+// test is built from the REAL Walk3D.prototype with fake resources, the way
+// tests/walk3d-dispose.test.mjs does. The methods driven below are the ones the
+// app ships, not a copy lifted out of the source.
 
+import { register } from "node:module";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
+// walk3d.js imports the bare "three" specifier, so it is resolved through the
+// page's own import map before it is imported.
+register("./harness/three-resolver.mjs", import.meta.url);
+const { Walk3D } = await import("../roomcad/web/walk3d.js");
+
+// The source is still read for the contracts at the bottom of this file (the
+// named budget, the removed plan-order gate) — those are assertions about the
+// shipped source, and the package-wide helper reads walk3d.js plus walk3d/.
 const walk = walk3dSource();
 
 let passed = 0;
@@ -24,18 +34,13 @@ function check(name, cond, detail = "") {
   console.error("FAIL: " + name + (detail ? " — " + detail : ""));
 }
 
-// ── The two methods, lifted whole ─────────────────────────────────────────
+// ── The two methods, on the real prototype ────────────────────────────────
 const start = walk.indexOf("  updateRoomLights() {");
 // start..end covers updateRoomLights AND assignRoomLight, which it calls — the
 // boundary is roomLightReport's doc comment, as it always was. The methods are
 // still adjacent after the split, so the marker still lands in the right place.
 const end = walk.indexOf("  /// How the room's fixtures are lit");
 check("the light-pool code can be located", start > 0 && end > start);
-
-// The fragment is lifted out of an object literal, where each method ends with a
-// comma; inside a class body that comma is a syntax error.
-const asClassBody = s => s.replace(/^  \},$/gm, "  }");
-const Probe = new Function(`return class { ${asClassBody(walk.slice(start, end))} };`)();
 
 function fakeLight() {
   return {
@@ -46,9 +51,11 @@ function fakeLight() {
   };
 }
 
-/// Builds a probe with `poolSize` lights and fixtures at the given x positions.
+/// Builds a viewer from the real prototype with `poolSize` lights and fixtures
+/// at the given x positions. Everything the methods touch is a fake; the
+/// methods themselves are the ones walk3d.js puts on the prototype.
 function probe(poolSize, slotXs, cameraX = 0) {
-  const p = new Probe();
+  const p = Object.create(Walk3D.prototype);
   p.pointLights = Array.from({ length: poolSize }, fakeLight);
   p.roomLightSlots = slotXs.map(x => ({ x, y: 2.4, z: 0, color: 0xffffff, intensity: 40, distance: 10 }));
   p.camera = { position: { x: cameraX, z: 0 } };
@@ -114,11 +121,7 @@ const litAt = p => p.pointLights.map(l => (l.intensity > 0 ? l.position.x : null
 {
   const p = probe(2, [1, 2, 3, 4]);
   p.updateRoomLights();
-  const reportStart = walk.indexOf("  roomLightReport() {");
-  const reportEnd = walk.indexOf("\n  }", reportStart) + 4;
-  const reportFn = new Function(`return class { ${asClassBody(walk.slice(reportStart, reportEnd))} };`)();
-  const r = Object.assign(new reportFn(), p);
-  const report = r.roomLightReport();
+  const report = p.roomLightReport();
   check("the report counts every fixture",
     report.fixtures === 4, `${report.fixtures}`);
   check("and how many of them are actually lit",

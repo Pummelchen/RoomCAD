@@ -7,7 +7,7 @@
 
 import { appState, STATUS_INTERVAL_MS } from "./state.js";
 
-import { appVersion, toast } from "./ui.js";
+import { appVersion, safeHtml, toast } from "./ui.js";
 import { apiLiveDraft } from "./api.js";
 import { CLIENT_ID, LIVE_SYNC_MS } from "./watch.js";
 import { renderLiveButton } from "./live.js";
@@ -16,15 +16,18 @@ import { APP_VERSION } from "../version.js";
 import { store } from "../store.js";
 
 export function updateVersionBadge() {
-  let html = "v" + APP_VERSION;
+  // The markup is built by `safeHtml`, which escapes every raw interpolation
+  // itself — so the dot class, the version and the millisecond reading are all
+  // safe by construction rather than by a hand-written `esc()` per value.
   if (store.serverLatency != null) {
     const ms = store.serverLatency;
     const cls = ms < 150 ? "lat-green" : ms < 400 ? "lat-orange" : "lat-red";
-    html += ` · <span class="latency-dot ${cls}"></span> Server ${ms}ms`;
+    appVersion.innerHTML = safeHtml`v${APP_VERSION} · <span class="latency-dot ${cls}"></span> Server ${ms}ms`;
   } else if (store.serverOffline) {
-    html += ` · <span class="latency-dot lat-red"></span> offline`;
+    appVersion.innerHTML = safeHtml`v${APP_VERSION} · <span class="latency-dot lat-red"></span> offline`;
+  } else {
+    appVersion.innerHTML = safeHtml`v${APP_VERSION}`;
   }
-  appVersion.innerHTML = html;
 }
 
 // The status poll reschedules itself from the moment the previous one FINISHES.
@@ -170,7 +173,13 @@ function pushLiveDraft() {
 }
 
 /// A fingerprint of the room, computed the way the server computes it.
-async function roomDigest(json) {
+///
+/// Exported for the test that pins the digest contract: it drives this real
+/// function with literal strings, which `checkLiveSync` — the only caller —
+/// never does, because it always hashes `P.serializeRoom(store.room)`. The
+/// function is pure over its argument, so exporting it opens no path that did
+/// not already exist.
+export async function roomDigest(json) {
   const bytes = new TextEncoder().encode(json);
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -212,7 +221,7 @@ async function checkLiveSync() {
     // Nothing is applied — the local room already matches — but the server's
     // sequence is authoritative here, so it is safe to adopt.
     if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
-    if (data.version != null) store.serverRoomVersion = data.version;
+    if (data.version != null) Object.assign(store, { serverRoomVersion: data.version });
     return;
   }
   // Drifted. Take the shared state — but not on top of an edit made while

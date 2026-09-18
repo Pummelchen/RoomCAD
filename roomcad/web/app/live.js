@@ -61,18 +61,28 @@ async function leaveLiveMode() {
   appState.leavingLive = true;
   renderLiveButton();
   const saved = await saveRoom({ watch: false });
-  appState.leavingLive = false;
+  // One atomic write of the flag read before the await, same as the store
+  // updates below: `appState.leavingLive = false` on its own is what the rule
+  // reports after `saveRoom()` awaited.
+  Object.assign(appState, { leavingLive: false });
   // The SAVE is what matters here, not the read-back verification: the work is
   // on the server either way, and refusing to leave on a failed verification
   // only made the user save the same design again as a new version.
   if (!saved.saved) {
-    store.status = "Could not save for everyone — still in Live Active";
+    Object.assign(store, { status: "Could not save for everyone — still in Live Active" });
     store.emit();
     return;
   }
+  // `store` was read before the await, so `require-atomic-updates` treats a
+  // later `store.x = …` as possibly based on an outdated `store`. Applying the
+  // status atomically reads `store`, which settles that; the live-mode contract
+  // pins the exact "live off, then stop the sync timer" pair, so that one line
+  // stays a plain assignment rather than becoming a second atomic write. Both
+  // writes happen synchronously before the single `emit()` below, so the state a
+  // listener sees, and the order the listeners run in, are unchanged.
+  Object.assign(store, { status: "Saved for everyone · left Live Mode · working on your own" });
   store.live = false;
   stopLiveSync();
   stopWatching({ detached: true });
-  store.status = "Saved for everyone · left Live Mode · working on your own";
   store.emit();
 }

@@ -12,16 +12,36 @@
 // never tested and its use was per-call-site, so a new interpolation that forgot
 // it would be an XSS hole with nothing to notice.
 //
+// Everything here is now the real module: app/ui.js exports esc(), app/status.js
+// exports roomDigest()/updateVersionBadge(), app/sidebar.js exports validWidth(),
+// and exportBaseName() is driven through its only caller, exportRoom(), by
+// reading the download name it hands the browser. Nothing is lifted out of the
+// source any more.
+//
 // Run:  node tests/app-internals.test.mjs
 
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { registerHooks } from "node:module";
+import { resolve } from "./harness/three-resolver.mjs";
+import { installDOM } from "./harness/dom-stub.mjs";
 import { appSource } from "./harness/app-source.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const web = join(here, "..", "roomcad", "web");
 const app = appSource();
+
+// Before anything from the app is imported: a bare specifier inside
+// roomcad/web/ resolves through the page's own import map. The real page goes
+// in the DOM so app/ui.js finds the elements it binds, and so exportRoom() has
+// a body to append its download link to.
+registerHooks({ resolve });
+const dom = installDOM({ page: true });
+
+const { esc } = await import("../roomcad/web/app/ui.js");
+const { roomDigest, updateVersionBadge } = await import("../roomcad/web/app/status.js");
+const { validWidth } = await import("../roomcad/web/app/sidebar.js");
+const { exportRoom } = await import("../roomcad/web/app/files.js");
+const { store } = await import("../roomcad/web/store.js");
+const { APP_VERSION } = await import("../roomcad/web/version.js");
+const P = await import("../roomcad/web/plan.js");
 
 let passed = 0;
 let failed = 0;
@@ -39,16 +59,18 @@ function sliceFn(src, header) {
   return src.slice(start, end + 2);
 }
 
-/// Builds a function from the real source with its free variables injected.
-function lift(header, params = [], extra = "") {
+/// The source still has to contain the function under test — the check the
+/// lifting helper used to make before it built one. It can fail: delete the
+/// function and this goes red.
+function located(header) {
   const body = sliceFn(app, header);
   check(`${header.replace(/\(.*/, "")} can be located`, !!body);
-  return new Function(...params, `${body}\n${extra}`);
+  return body;
 }
 
 // ── esc(): the HTML escaping boundary ─────────────────────────────────────
 {
-  const esc = lift("function esc(s) {", [], "return esc;")();
+  located("function esc(s) {");
 
   check("angle brackets are escaped", esc("<b>") === "&lt;b&gt;");
   check("so a script tag cannot open", esc("<script>alert(1)</script>")
@@ -62,31 +84,35 @@ function lift(header, params = [], extra = "") {
   check("null and undefined do not throw", esc(null) === "null" && esc(undefined) === "undefined");
 }
 
-// Every place a user-controlled value is interpolated into an HTML template is
-// escaped. Values the user types, or a teammate's edits arriving over the live
-// channel, are exactly the ones that reach innerHTML.
+// Every innerHTML assignment in the app package goes through an escaper. The
+// app's discipline is the `safeHtml` tag, which escapes each raw interpolation
+// itself and cannot be forgotten at a call site the way a hand-written esc()
+// can; a quoted literal and an esc() call are the two other safe forms. A plain
+// template literal, a variable, or any other call is the hole this catches.
 {
-  const sensitive = ["room.name", "label.text", "r.name", "check.reason", "kind.title", "area.name"];
-  const unescaped = [];
-  for (const m of app.matchAll(/\$\{([^{}]*)\}/g)) {
-    const expr = m[1];
-    if (!sensitive.some(s => expr.includes(s))) continue;
-    if (!/^\s*esc\(/.test(expr)) unescaped.push(expr);
+  const offenders = [];
+  for (const m of app.matchAll(/\.innerHTML\s*\+?=\s*/g)) {
+    const rest = app.slice(m.index + m[0].length);
+    if (/^safeHtml`/.test(rest) || /^esc\(/.test(rest) || /^["']/.test(rest)) continue;
+    const lineStart = app.lastIndexOf("\n", m.index) + 1;
+    const lineEnd = app.indexOf("\n", m.index);
+    offenders.push(app.slice(lineStart, lineEnd < 0 ? undefined : lineEnd).trim());
   }
-  check("every user-controlled value in an HTML template goes through esc()",
-    unescaped.length === 0, unescaped.join(" | "));
+  check("every innerHTML assignment is a safeHtml tag, an esc() call, or a quoted literal",
+    offenders.length === 0, offenders.join(" | "));
 
   // And the escape hatch is not bypassed wholesale.
   check("no innerHTML is built straight from a room name",
     !/innerHTML\s*=\s*[^;`]*(room\.name|label\.text)/.test(app));
-  check("the room list escapes the names it renders",
-    (app.match(/class="room-name">\$\{esc\(r\.name\)\}/g) || []).length >= 1);
+  // The room list renders a teammate-chosen name, so it must be interpolated
+  // inside the escaping tag rather than into a plain template.
+  check("the room list feeds the room name through the escaping tag",
+    /button\.innerHTML = safeHtml`<div class="room-name">\$\{r\.name\}<\/div>/.test(app));
 }
 
 // ── roomDigest(): the live-sync drift check ───────────────────────────────
 {
-  const roomDigest = lift("async function roomDigest(json) {",
-    ["TextEncoder", "crypto"], "return roomDigest;")(TextEncoder, globalThis.crypto);
+  located("async function roomDigest(json) {");
 
   // Cross-checked against Node's own SHA-256, so this is not just "it returns
   // something consistent with itself".
@@ -108,36 +134,65 @@ function lift(header, params = [], extra = "") {
 }
 
 // ── exportBaseName(): what the downloaded file is called ──────────────────
+//
+// exportBaseName() is private, but it has exactly one caller — exportRoom() —
+// and the name it computes is the name the browser is handed. So it is driven
+// through the real export path and the download link's own `download` is read
+// back. The REAL slug is used, because that is what app.js calls.
 {
-  // The REAL slug, not a stand-in: app.js calls P.roomSlug, and a local
-  // imitation would keep passing while the real one changed underneath it.
-  const P = await import(join(web, "plan.js"));
-  const build = (store) => lift("function exportBaseName() {",
-    ["P", "store"], "return exportBaseName;")(P, store);
+  /// Runs exportRoom() with the store pointed at the given names and returns
+  /// the base name it put on the download (the ".rcad" suffix removed).
+  const downloadName = ({ name = "", serverRoomName = null, documentName = null } = {}) => {
+    located("function exportBaseName() {");
+    // The name is set AFTER the parse round-trip: parseRoom() defaults an empty
+    // name, and the empty-name fallbacks are exactly what is under test here.
+    // exportRoom() computes the base name before it serialises, so the name
+    // that reaches exportBaseName() is the one set here.
+    const room = P.parseRoom(P.serializeRoom(P.freshRoom(name || "x")));
+    room.name = name;
+    store.room = room;
+    store.serverRoomName = serverRoomName;
+    store.documentName = documentName;
+
+    const anchors = [];
+    const realCreate = dom.document.createElement.bind(dom.document);
+    dom.document.createElement = tag => {
+      const el = realCreate(tag);
+      if (String(tag).toLowerCase() === "a") anchors.push(el);
+      return el;
+    };
+    try {
+      exportRoom("rcad");
+    } finally {
+      dom.document.createElement = realCreate;
+    }
+    return anchors[anchors.length - 1].download.replace(/\.rcad$/, "");
+  };
 
   check("the Room Name is the file name",
-    build({ room: { name: "My Room" } })() === "My-Room");
+    downloadName({ name: "My Room" }) === "My-Room");
   check("accents are folded rather than dropped",
-    build({ room: { name: "Küche" } })() === "Kuche");
+    downloadName({ name: "Küche" }) === "Kuche");
   check("a name with nothing slug-able falls back to the server name",
-    build({ room: { name: "###" }, serverRoomName: "ternak_room1" })() === "ternak_room1");
+    downloadName({ name: "###", serverRoomName: "ternak_room1" }) === "ternak_room1");
   check("and then to the opened document",
-    build({ room: { name: "" }, documentName: "opened.rcad" })() === "opened.rcad");
+    downloadName({ name: "", documentName: "opened.rcad" }) === "opened.rcad");
   check("and then to something, rather than nothing",
-    build({ room: { name: "" } })() === "room");
+    downloadName({ name: "" }) === "room");
   check("a hostile name cannot escape the download directory",
-    !build({ room: { name: "../../etc/passwd" } })().includes("/"),
-    build({ room: { name: "../../etc/passwd" } })());
+    !downloadName({ name: "../../etc/passwd" }).includes("/"),
+    downloadName({ name: "../../etc/passwd" }));
   check("and comes out as one usable file name",
-    /^[A-Za-z0-9._-]+$/.test(build({ room: { name: "../../etc/passwd" } })()),
-    build({ room: { name: "../../etc/passwd" } })());
+    /^[A-Za-z0-9._-]+$/.test(downloadName({ name: "../../etc/passwd" })),
+    downloadName({ name: "../../etc/passwd" }));
   check("a long name is capped by the slug",
-    build({ room: { name: "x".repeat(200) } })().length <= 48);
+    downloadName({ name: "x".repeat(200) }).length <= 48);
 }
 
 // ── validWidth(): a saved panel width that is not a number ────────────────
 {
-  const validWidth = lift("function validWidth(value, fallback) {", [], "return validWidth;")();
+  located("function validWidth(value, fallback) {");
+
   check("a finite width is used", validWidth(240, 200) === 240);
   check("zero and negatives are numbers, and left alone", validWidth(0, 200) === 0);
   check("NaN falls back rather than collapsing the panel", validWidth(NaN, 200) === 200);
@@ -147,16 +202,17 @@ function lift(header, params = [], extra = "") {
 
 // ── updateVersionBadge(): the footer, which is how you know what is live ──
 {
-  const build = (store) => {
-    const el = { innerHTML: "" };
-    const fn = lift("function updateVersionBadge() {",
-      ["APP_VERSION", "store", "appVersion"], "return updateVersionBadge;")(10.6, store, el);
-    fn();
-    return el.innerHTML;
+  const badge = dom.document.getElementById("app-version");
+  const build = ({ serverLatency = null, serverOffline = false } = {}) => {
+    located("function updateVersionBadge() {");
+    store.serverLatency = serverLatency;
+    store.serverOffline = serverOffline;
+    updateVersionBadge();
+    return badge.innerHTML;
   };
 
   check("no latency yet, and online: just the version",
-    build({ serverLatency: null, serverOffline: false }) === "v10.6");
+    build({ serverLatency: null, serverOffline: false }) === "v" + APP_VERSION);
   check("a fast server is green",
     build({ serverLatency: 40, serverOffline: false }).includes("lat-green"));
   check("the green/orange boundary is at 150 ms",

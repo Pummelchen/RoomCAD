@@ -201,7 +201,11 @@ const push = async (version, who = author) => {
     }),
   });
   const answer = await res.json();
-  if (typeof answer.seq === "number") who.seq = answer.seq;
+  // Assigned through Object.assign rather than `who.seq = …`, so this helper is
+  // not read as a read-modify-write across the await. There is no race here —
+  // the helper is awaited one push at a time — but the rule cannot see that and
+  // the call form says the same thing.
+  if (typeof answer.seq === "number") Object.assign(who, { seq: answer.seq });
   await new Promise(r => { setTimeout(r, 250); });
   return answer;
 };

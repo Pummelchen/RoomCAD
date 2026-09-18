@@ -96,11 +96,186 @@ function makeStyle() {
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input",
   "link", "meta", "param", "source", "track", "wbr"]);
 
+// The selector and markup readers below are hand-written scanners rather than
+// regular expressions. A regex that nests one repetition inside another — which
+// both of these did — is reported by eslint-plugin-security as a catastrophic
+// backtracking risk; these two were in fact linear, but the analysis cannot tell,
+// and a rule that has to be waived is a rule nobody re-checks. A scanner is
+// linear by construction and says exactly what it accepts. The scanners were
+// proved equivalent to the regexes they replaced on index.html and on a corpus of
+// adversarial inputs (unterminated quotes, `>` inside quoted values, `<` inside
+// attribute text, empty and malformed selectors) before replacing them.
+
+const isNameStart = c => c !== undefined && /[a-zA-Z]/.test(c);
+const isNameChar = c => c !== undefined && /[\w-]/.test(c);
+const isAttrNameChar = c => c !== undefined && /[\w:.-]/.test(c);
+const isSpaceChar = c => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "\v";
+
+/// A simple selector: an optional tag, then any run of `.class`, `#id` and
+/// `[attr]`/`[attr="value"]`. Returns `{ tag, pieces }` or null when the whole
+/// string is not one of those.
+function parseSimpleSelector(part) {
+  let i = 0;
+  let tag = null;
+  if (isNameStart(part[i])) {
+    const start = i;
+    i++;
+    while (isNameChar(part[i])) i++;
+    tag = part.slice(start, i);
+  }
+  const pieces = [];
+  while (i < part.length) {
+    const c = part[i];
+    if (c === "." || c === "#") {
+      const start = i;
+      i++;
+      const body = i;
+      while (isNameChar(part[i])) i++;
+      if (i === body) return null;               // ".", "#" and "..x" name nothing
+      pieces.push(part.slice(start, i));
+    } else if (c === "[") {
+      const end = part.indexOf("]", i + 1);
+      if (end < 0 || end === i + 1) return null; // "[", "[]" and "[a" are not selectors
+      pieces.push(part.slice(i, end + 1));
+      i = end + 1;
+    } else {
+      return null;
+    }
+  }
+  return { tag, pieces };
+}
+
+/// The attributes in a `<tag …>`'s raw text, in order, as `[name, value]`.
+///
+/// A name with no `=` gets the empty string, exactly as the DOM does for a
+/// boolean attribute (`<input disabled>`), and an unterminated quoted value is
+/// left unconsumed rather than swallowing the rest of the tag.
+function parseAttributes(raw) {
+  const out = [];
+  let i = 0;
+  while (i < raw.length) {
+    if (!isAttrNameChar(raw[i])) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < raw.length && isAttrNameChar(raw[i])) i++;
+    const name = raw.slice(start, i);
+    let j = i;
+    while (j < raw.length && isSpaceChar(raw[j])) j++;
+    let value = null;
+    if (raw[j] === "=") {
+      j++;
+      while (j < raw.length && isSpaceChar(raw[j])) j++;
+      const quote = raw[j];
+      if (quote === '"' || quote === "'") {
+        const end = raw.indexOf(quote, j + 1);
+        if (end >= 0) {
+          value = raw.slice(j + 1, end);
+          j = end + 1;
+        }
+      } else {
+        let k = j;
+        while (k < raw.length && !isSpaceChar(raw[k]) && raw[k] !== '"' && raw[k] !== "'" && raw[k] !== ">") k++;
+        if (k > j) {
+          value = raw.slice(j, k);
+          j = k;
+        }
+      }
+    }
+    if (value === null) {
+      out.push([name, ""]);
+      i = start + name.length;                   // leave the stray "=" to be skipped
+    } else {
+      out.push([name, value]);
+      i = j;
+    }
+  }
+  return out;
+}
+
+/// Splits markup into comment / close / open / text tokens.
+///
+/// A `<` that begins none of those is dropped, which is what a browser does with
+/// stray `<` in text and what the tokenizer this replaced did too.
+function tokenizeHTML(html) {
+  const out = [];
+  const n = html.length;
+  let i = 0;
+  while (i < n) {
+    if (html[i] !== "<") {
+      const start = i;
+      while (i < n && html[i] !== "<") i++;
+      out.push({ type: "text", value: html.slice(start, i) });
+      continue;
+    }
+    if (html.startsWith("<!--", i)) {
+      const end = html.indexOf("-->", i + 4);
+      if (end >= 0) {
+        out.push({ type: "comment" });
+        i = end + 3;
+        continue;
+      }
+      i++;                                       // an unclosed comment is just text
+      continue;
+    }
+    if (html[i + 1] === "/" && isNameStart(html[i + 2])) {
+      let j = i + 2;
+      const start = j;
+      while (j < n && isNameChar(html[j])) j++;
+      let k = j;
+      while (k < n && isSpaceChar(html[k])) k++;
+      if (html[k] === ">") {
+        out.push({ type: "close", name: html.slice(start, j) });
+        i = k + 1;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (isNameStart(html[i + 1])) {
+      let j = i + 1;
+      const start = j;
+      while (j < n && isNameChar(html[j])) j++;
+      // The attribute text ends at the first `>` that is not inside quotes.
+      let k = j;
+      let closed = true;
+      while (k < n) {
+        const ch = html[k];
+        if (ch === ">") break;
+        if (ch === '"' || ch === "'") {
+          const end = html.indexOf(ch, k + 1);
+          if (end < 0) { closed = false; break; }
+          k = end + 1;
+          continue;
+        }
+        k++;
+      }
+      if (closed && k < n && html[k] === ">") {
+        const selfClosing = k > j && html[k - 1] === "/";
+        const attrsRaw = html.slice(j, selfClosing ? k - 1 : k);
+        out.push({
+          type: "open",
+          name: html.slice(start, j),
+          attrs: parseAttributes(attrsRaw),
+          selfClosing,
+        });
+        i = k + 1;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    i++;                                         // a `<` that starts nothing
+  }
+  return out;
+}
+
 function matchSimple(el, part) {
-  const m = /^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]+\])*)$/.exec(part);
-  if (!m) return false;
-  if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
-  for (const piece of (m[2] || "").match(/[.#][\w-]+|\[[^\]]+\]/g) || []) {
+  const parsed = parseSimpleSelector(part);
+  if (!parsed) return false;
+  if (parsed.tag && el.tagName !== parsed.tag.toUpperCase()) return false;
+  for (const piece of parsed.pieces) {
     if (piece[0] === ".") {
       if (!el.classList.contains(piece.slice(1))) return false;
     } else if (piece[0] === "#") {
@@ -136,30 +311,24 @@ function matchesSelector(el, selector) {
 function parseHTML(html, doc) {
   const roots = [];
   const stack = [];
-  const TOKEN_RE = /<!--[\s\S]*?-->|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
-  let m;
-  while ((m = TOKEN_RE.exec(html))) {
-    if (m[0].startsWith("<!--")) continue;
-    if (m[1]) {                                    // </tag>
+  for (const token of tokenizeHTML(html)) {
+    if (token.type === "comment") continue;
+    if (token.type === "close") {                  // </tag>
       for (let i = stack.length - 1; i >= 0; i--) {
-        if (stack[i].tagName === m[1].toUpperCase()) { stack.length = i; break; }
+        if (stack[i].tagName === token.name.toUpperCase()) { stack.length = i; break; }
       }
       continue;
     }
-    if (m[2]) {                                    // <tag …>
-      const el = makeElement(m[2], doc);
-      const ATTR_RE = /([\w:.-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
-      let a;
-      while ((a = ATTR_RE.exec(m[3] || ""))) {
-        el.setAttribute(a[1], a[2] ?? a[3] ?? a[4] ?? "");
-      }
+    if (token.type === "open") {                   // <tag …>
+      const el = makeElement(token.name, doc);
+      for (const [name, value] of token.attrs) el.setAttribute(name, value);
       const parent = stack[stack.length - 1];
       if (parent) parent.appendChild(el); else roots.push(el);
-      if (m[4] !== "/" && !VOID_TAGS.has(m[2].toLowerCase())) stack.push(el);
+      if (!token.selfClosing && !VOID_TAGS.has(token.name.toLowerCase())) stack.push(el);
       continue;
     }
-    if (m[5] && stack.length) {                    // text
-      stack[stack.length - 1].textContent += m[5];
+    if (token.type === "text" && stack.length) {   // text
+      stack[stack.length - 1].textContent += token.value;
     }
   }
   return roots;

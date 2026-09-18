@@ -41,23 +41,24 @@ setTransportRandom(() => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 });
 
-// The player, as walk3d builds them — read OUT of walk3d rather than written
-// down again here. A replica with its own copy of the numbers keeps passing
-// when the real ones change, which is the one thing a replica must not do.
-const walkSource = walk3dSource();
-const walkConst = (name) => {
-  const m = new RegExp(`const ${name} = ([-0-9./ *]+);`).exec(walkSource);
-  if (!m) throw new Error(`walk3d has no constant ${name}`);
-  return Function(`"use strict"; return (${m[1]});`)();
-};
+// The player, as walk3d builds them — the REAL constants module, not a replica
+// and not a copy of the numbers pasted here. A replica with its own copy keeps
+// passing when the real values change, which is the one thing a replica must not
+// do. This used to scrape the numbers out of the concatenated source and
+// evaluate them with `Function()`, which is the same values by a much worse
+// route: it compiled repository text to get at data the module already exports.
+const {
+  STAND_HALF_HEIGHT,
+  PLAYER_RADIUS,
+  GRAVITY,
+  CROUCH_HALF_HEIGHT,
+  PLAYER_MASS,
+  PLAYER_FRICTION,
+  VEHICLE_BODY_POOL,
+  VEHICLE_SOLID_RANGE,
+  VEHICLE_FRICTION,
+} = await loadWebModule("walk3d/constants.js");
 
-// The player, as walk3d builds them.
-const STAND_HALF_HEIGHT = walkConst("STAND_HALF_HEIGHT");
-const PLAYER_RADIUS = walkConst("PLAYER_RADIUS");
-const GRAVITY = walkConst("GRAVITY");
-const CROUCH_HALF_HEIGHT = walkConst("CROUCH_HALF_HEIGHT");
-const PLAYER_MASS = walkConst("PLAYER_MASS");
-const PLAYER_FRICTION = walkConst("PLAYER_FRICTION");
 const ROAD_Y = -KERB_HEIGHT;
 const PAVEMENT_Y = 0;
 
@@ -512,14 +513,14 @@ const insideABuilding = (x, z) => buildings.some(b =>
   }
 
   // The pool, as walk3d builds it.
-  const POOL = walkConst("VEHICLE_BODY_POOL");
-  const RANGE = walkConst("VEHICLE_SOLID_RANGE");
+  const POOL = VEHICLE_BODY_POOL;
+  const RANGE = VEHICLE_SOLID_RANGE;
   const pool = [];
   for (let i = 0; i < POOL; i++) {
     const body = world.createRigidBody(
       RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -400, 0));
     const collider = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(1, 1, 1).setFriction(walkConst("VEHICLE_FRICTION")), body);
+      RAPIER.ColliderDesc.cuboid(1, 1, 1).setFriction(VEHICLE_FRICTION), body);
     pool.push({ body, collider, vehicle: null });
   }
   const lendBodies = (at) => {

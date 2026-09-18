@@ -8,13 +8,27 @@
 // the local edit discarded, and the person told to make the change again. Every
 // newly-opened room silently ate its first edit.
 //
-// app.js cannot be imported (it pulls in the bare `three` specifier through
-// walk3d.js), so the real function is lifted out of the source, as
-// sidebar-panels.test.mjs and mode-switch.test.mjs do.
+// app.js is importable now, and so is the module that owns this state:
+// roomcad/web/app/status.js. `resetLiveSequence` is imported and called for
+// real; the flags it clears are private, so they are observed through the
+// exported `liveEditPending()` and through the timers the module schedules.
 
-import { appLiftable } from "./harness/app-source.mjs";
+import { registerHooks } from "node:module";
+import { resolve } from "./harness/three-resolver.mjs";
+import { installDOM } from "./harness/dom-stub.mjs";
+import { appSource } from "./harness/app-source.mjs";
 
-const app = appLiftable();
+// Before anything from the app is imported: a bare specifier inside
+// roomcad/web/ resolves through the page's own import map.
+registerHooks({ resolve });
+installDOM({ page: true });
+
+const { resetLiveSequence, scheduleLivePush, liveEditPending } =
+  await import("../roomcad/web/app/status.js");
+const { appState } = await import("../roomcad/web/app/state.js");
+
+// The source, for the contracts at the bottom that are about the source.
+const app = appSource();
 
 let failed = 0;
 let passed = 0;
@@ -33,29 +47,33 @@ function check(name, condition) {
   const end = app.indexOf("\n}", start);
   check("the reset can be located", start > 0 && end > start);
 
-  const code = app.slice(start, end + 2);
+  // The module schedules its push through the global timer functions, so they
+  // are handed in here: a real id back, and every cancel recorded.
+  const realTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
   const cleared = [];
-  // The live-channel counters are shared mutable state on appState now, so the
-  // lifted function writes THOSE rather than locals declared here.
-  const api = new Function("clearTimeout", "appState", `
-    let liveUnpublished = true;
-    let livePushTimer = 7;
-    ${code}
-    return {
-      resetLiveSequence,
-      state: () => ({ liveSeq: appState.liveSeq, liveUnpublished, livePushTimer }),
-    };
-  `)((t) => cleared.push(t), { liveSeq: 42 });
+  const timers = new Map();
+  let nextTimer = 7;
+  globalThis.setTimeout = (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id; };
+  globalThis.clearTimeout = id => { cleared.push(id); timers.delete(id); };
 
+  // The live-channel counters are module-private now, so the dirty state is
+  // established the way the app establishes it — a scheduled push — and read
+  // back through liveEditPending(), which is the module's own answer to "is
+  // one of ours still on its way?".
+  appState.liveSeq = 42;
+  scheduleLivePush();
   check("before the reset the state is dirty",
-    api.state().liveSeq === 42 && api.state().liveUnpublished === true);
+    appState.liveSeq === 42 && liveEditPending() === true);
 
-  api.resetLiveSequence();
-  const after = api.state();
-  check("the sequence is forgotten", after.liveSeq === 0);
-  check("an unpublished push is forgotten", after.liveUnpublished === false);
+  resetLiveSequence();
+  check("the sequence is forgotten", appState.liveSeq === 0);
+  check("an unpublished push is forgotten", liveEditPending() === false);
   check("a pending push timer is cancelled", cleared.length === 1 && cleared[0] === 7);
-  check("and cleared, not left dangling", after.livePushTimer === null);
+  check("and cleared, not left dangling", !timers.has(7));
+
+  globalThis.setTimeout = realTimeout;
+  globalThis.clearTimeout = realClearTimeout;
 
   // The un-wedge half: a FAILED push used to leave liveUnpublished set, and the
   // drift check early-returns while it is set — one dropped request and the

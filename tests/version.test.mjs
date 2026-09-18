@@ -29,7 +29,13 @@ check("version source uses a numeric major.minor release", !!match);
 // particular file does.
 check("app imports the shared version", appSrc.includes("import { APP_VERSION } from \"../version.js\";"));
 check("footer renders the shared version", appSrc.includes('appVersion.textContent = "v" + APP_VERSION;'));
-check("server-status footer also uses the shared version", appSrc.includes('let html = "v" + APP_VERSION;'));
+// The badge is built by the escaping tag (`safeHtml`) rather than by string
+// concatenation, so the contract is "this module renders APP_VERSION through
+// safeHtml", not the exact wording of one line. A regex, not `includes`: the
+// latency and offline branches wrap the same version in spans, and a legitimate
+// edit to that wording must not fail a check that is about identity.
+check("server-status footer also uses the shared version",
+  /appVersion\.innerHTML\s*=\s*safeHtml`[^`]*\$\{APP_VERSION\}/.test(appSrc));
 check("app has no hard-coded release tag", !/\bv\d+\.\d+\b/.test(appSrc));
 check("HTML does not hard-code an old visible version", !/id="app-version"[^>]*>v\d/.test(html));
 

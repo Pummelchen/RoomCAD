@@ -36,7 +36,15 @@ function chromeWidth() {
 const sidebarWidths = loadSidebarWidths();
 const panelsShown = loadPanelsShown();
 
-function validWidth(value, fallback) {
+/// A stored panel width, or the fallback when the stored value is not a finite
+/// number.
+///
+/// Exported for the test that drives it directly: the only caller inside the app
+/// clamps the result into the sidebar's own range, so from the outside a NaN and
+/// a legitimately tiny width are indistinguishable, and the point of the check is
+/// the NaN. The function is pure, so exporting it adds no reachability that did
+/// not already exist.
+export function validWidth(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
