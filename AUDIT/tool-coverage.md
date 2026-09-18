@@ -106,6 +106,16 @@ One rule proved silent and was therefore **removed** rather than left as dead
 cover: `roomcad-python-bare-except` (the pattern did not match a bare `except:`
 block; bare `except` is covered by Ruff `E722`, proved above).
 
+`AUDIT/gates.sh` runs the pack with `--severity ERROR --error`, so the two
+WARNING-severity rules do not gate: `roomcad-innerhtml-dynamic` (the 12 known
+`esc()`-mitigated sites — ledger T0049, the same limitation eslint's
+`no-unsanitized/property` has) and `roomcad-insertadjacenthtml-dynamic`. They are
+still reported, still proved to fire above, and are compensated by
+`tests/audit-xss.test.mjs`; a rule that cannot see per-interpolation escaping
+would otherwise gate forever on a verified false positive. The ERROR-severity
+rules (SQL injection, eval, weak randomness, subprocess-without-check,
+open-without-encoding) do gate, and none of them fires on this tree.
+
 ### 1.3 eslint 10 + plugins — `AUDIT/eslint.config.mjs`
 
 Scratch file `roomcad/web/__proof_bad.js` (created and deleted by the same
