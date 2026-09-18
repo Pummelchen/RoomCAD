@@ -3,7 +3,7 @@
 // Part of the plan model; the public entry point is ../plan.js, which re-exports
 // every module here.
 
-import { GRID_STEPS, WALL_ATTACH_TOLERANCE, clamp, clean, distance, point } from "./core.js";
+import { WALL_ATTACH_TOLERANCE, clamp, clean, distance, gridStep, point } from "./core.js";
 import { canvasOf } from "./room.js";
 import { attachAlongAxis, wallAttachPoint, wallMidpoint } from "./walls.js";
 
@@ -11,7 +11,7 @@ import { attachAlongAxis, wallAttachPoint, wallMidpoint } from "./walls.js";
 // MARK: - Grid and snapping
 
 export function gridSnap(room, p) {
-  const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
+  const step = Math.max(gridStep(room.grid).meters, 0.001);
   const snap = v => clean(Math.round(v / step) * step);
   const canvas = canvasOf(room);
   return { x: clamp(snap(p.x), 0, canvas.width), z: clamp(snap(p.z), 0, canvas.length) };
@@ -20,7 +20,7 @@ export function gridSnap(room, p) {
 export function snapPoint(room, raw, excludeWallID = null) {
   const canvas = canvasOf(room);
   const p = { x: clamp(raw.x, 0, canvas.width), z: clamp(raw.z, 0, canvas.length) };
-  const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
+  const tolerance = Math.max(0.12, gridStep(room.grid).meters * 1.5);
   let best = null;
   const consider = candidate => {
     const d = distance(candidate, p);
@@ -55,9 +55,9 @@ export function axisAligned(p, anchor) {
 
 /// Snaps the free end of a wall while keeping it axis-aligned with `start`.
 export function snapWallEnd(room, rawEnd, start) {
-  let end = axisAligned(rawEnd, start);
+  const end = axisAligned(rawEnd, start);
   const canvas = canvasOf(room);
-  const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
+  const tolerance = Math.max(0.12, gridStep(room.grid).meters * 1.5);
   let best = null;
   const consider = candidate => {
     // Only accept candidates that share a line with the start, so the wall
@@ -97,7 +97,7 @@ export function snapWallEndpoint(room, raw, fixed, excludeWallID = null) {
     { x: clamp(raw.x, 0, canvas.width), z: clamp(raw.z, 0, canvas.length) },
     fixed
   );
-  const tolerance = Math.max(0.12, GRID_STEPS[room.grid].meters * 1.5);
+  const tolerance = Math.max(0.12, gridStep(room.grid).meters * 1.5);
   let best = null;
   const consider = candidate => {
     const d = distance(candidate, end);

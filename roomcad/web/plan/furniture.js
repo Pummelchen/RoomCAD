@@ -3,7 +3,7 @@
 // Part of the plan model; the public entry point is ../plan.js, which re-exports
 // every module here.
 
-import { FURNITURE_KINDS, GRID_STEPS, WALL_THICKNESS, clamp, clean, unknownFurnitureKind } from "./core.js";
+import { WALL_THICKNESS, clamp, clean, furnitureKind, gridStep, unknownFurnitureKind } from "./core.js";
 import { furnitureFootprint } from "./hit.js";
 import { solidSpans } from "./openings.js";
 import { canvasOf } from "./room.js";
@@ -95,8 +95,9 @@ export function isFurniturePlacementValid(room, item, excluded = new Set()) {
   // A kind with no palette entry has no footprint to test, and a document that
   // names one cannot be loaded at all: sanitize() drops those items, and this is
   // the same rule one step earlier, so a caller holding an un-repaired item gets
-  // "that cannot go here" instead of a TypeError.
-  const itemKind = FURNITURE_KINDS[item.kind];
+  // "that cannot go here" instead of a TypeError. An own key only — see
+  // furnitureKind().
+  const itemKind = furnitureKind(item.kind);
   if (!itemKind) return false;
   const f = furnitureFootprint(item);
   const canvas = canvasOf(room);
@@ -105,7 +106,7 @@ export function isFurniturePlacementValid(room, item, excluded = new Set()) {
   const itemIsFixture = itemKind.category === "fixture";
   return !room.furniture.some(other => {
     if (excluded.has(other.id)) return false;
-    const otherKind = FURNITURE_KINDS[other.kind];
+    const otherKind = furnitureKind(other.kind);
     // An item this build cannot measure is not something a placement can be
     // said to collide with; sanitize() would have dropped it on load anyway.
     if (!otherKind) return false;
@@ -146,7 +147,7 @@ function furnitureSnapLines(room, item, axis) {
 }
 
 export function furnitureCenter(room, raw, item) {
-  const kind = FURNITURE_KINDS[item.kind];
+  const kind = furnitureKind(item.kind);
   // As in furnitureFootprint(): no entry means no size, and no size can be
   // guessed. sanitize() is what keeps this unreachable for a loaded document.
   if (!kind) throw unknownFurnitureKind(item.kind);
@@ -154,7 +155,7 @@ export function furnitureCenter(room, raw, item) {
   const w = swaps ? kind.d : kind.w;
   const d = swaps ? kind.w : kind.d;
   const canvas = canvasOf(room);
-  const step = Math.max(GRID_STEPS[room.grid].meters, 0.001);
+  const step = Math.max(gridStep(room.grid).meters, 0.001);
 
   const place = (want, size, limit, lines) => {
     /// Steps are counted from the near edge, not the centre. Half a chair is

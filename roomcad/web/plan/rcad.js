@@ -3,7 +3,7 @@
 // Part of the plan model; the public entry point is ../plan.js, which re-exports
 // every module here.
 
-import { GRID_STEPS, ROOM_FILE_FORMAT, ROOM_FILE_VERSION, uid } from "./core.js";
+import { ROOM_FILE_FORMAT, ROOM_FILE_VERSION, gridStep, uid } from "./core.js";
 import { sanitize } from "./sanitize.js";
 
 
@@ -62,7 +62,10 @@ export function parseRoom(text, report = null) {
   room.width = Number(room.width) || 6;
   room.length = Number(room.length) || 4;
   room.height = Number(room.height) || 2.6;
-  room.grid = GRID_STEPS[room.grid] ? room.grid : "fiveCentimeters";
+  // An own key only. `GRID_STEPS["constructor"]` is truthy — every member of
+  // Object.prototype is — so those names used to load, and every snap then read
+  // `.meters` off a function, got undefined, and returned {0,0}.
+  room.grid = gridStep(room.grid) ? room.grid : "fiveCentimeters";
   room.walls = Array.isArray(room.walls) ? room.walls : [];
   room.doors = Array.isArray(room.doors) ? room.doors : [];
   room.windows = Array.isArray(room.windows) ? room.windows : [];
