@@ -55,7 +55,7 @@ export function solidSpans(length, cuts) {
   return spans;
 }
 
-export function wallBuildPlan(wall, doors, windows, height) {
+export function wallBuildPlan(wall, doors, windows) {
   const doorSpans = doors
     .filter(d => d.wallID === wall.id)
     .sort((a, b) => a.offset - b.offset)

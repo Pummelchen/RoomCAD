@@ -50,8 +50,18 @@ export function roomOrigin(room) {
   return { x: 0, z: 0 };
 }
 
-/// Shifts the room's walls and furniture so the room footprint is centred on
-/// the canvas, and records the resulting origin.
+/// Shifts the room's walls, furniture, labels and public areas so the room
+/// footprint is centred on the canvas, and records the resulting origin.
+///
+/// Labels and public areas are canvas-absolute, not room-relative, so they have
+/// to travel with the walls. They did not: resizing the plate — which goes
+/// through here — moved the building and the furniture and left the user's own
+/// text and green circulation floor at their old coordinates, sitting off the
+/// room they were written about.
+///
+/// Openings are deliberately NOT moved. A door's `offset` is measured along its
+/// wall, and a window's likewise, so moving the wall moves the opening with it.
+/// Shifting an offset by dx would take it off the wall it belongs to.
 export function centerRoom(room) {
   const canvas = canvasOf(room);
   const marginX = (canvas.width - room.width) / 2;
@@ -69,6 +79,15 @@ export function centerRoom(room) {
     room.furniture = room.furniture.map(f => ({
       ...f,
       center: { x: f.center.x + dx, z: f.center.z + dz },
+    }));
+    room.labels = (room.labels || []).map(l => ({
+      ...l,
+      center: { x: l.center.x + dx, z: l.center.z + dz },
+    }));
+    room.publicAreas = (room.publicAreas || []).map(a => ({
+      ...a,
+      x: a.x + dx,
+      z: a.z + dz,
     }));
   }
   return room;

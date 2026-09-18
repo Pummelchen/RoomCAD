@@ -14,6 +14,26 @@ export const GRID_STEPS = {
   fiveCentimeters: { label: "5 cm", meters: 0.05 },
 };
 
+/// The palette entry for a kind, or `undefined` when this build has no such
+/// kind.
+///
+/// `Object.hasOwn` rather than a bare `FURNITURE_KINDS[kind]`. Both tables are
+/// plain object literals, so a bare lookup answers truthily for every member of
+/// `Object.prototype`: `kind:"constructor"` passed the unknown-kind drop in
+/// sanitize(), and then `kind.w` and `kind.d` were undefined and the piece's
+/// centre came out NaN. Only a key the table actually declares is a kind.
+export function furnitureKind(kind) {
+  return Object.hasOwn(FURNITURE_KINDS, kind) ? FURNITURE_KINDS[kind] : undefined;
+}
+
+/// The palette entry for a grid step, or `undefined` when this build has no
+/// such step. Same rule as furnitureKind(), and the same failure: a bare
+/// `GRID_STEPS["constructor"]` is truthy, so the name was accepted on load and
+/// every snap read `.meters` off a function — undefined — and returned {0,0}.
+export function gridStep(name) {
+  return Object.hasOwn(GRID_STEPS, name) ? GRID_STEPS[name] : undefined;
+}
+
 export const FURNITURE_KINDS = {
   bed:      { title: "Bed",       category: "furniture", w: 0.90, d: 2.00, h: 0.90, color: [0.30, 0.65, 0.85], label: "BED", standHeight: 0.44 },
   table:    { title: "Table",     category: "furniture", w: 0.70, d: 0.70, h: 0.75, color: [0.95, 0.72, 0.22], label: "TABLE", standHeight: 0.75 },
@@ -125,4 +145,16 @@ export function distance(a, b) {
 
 export function cm(v) {
   return Math.round(v * 100) + " cm";
+}
+
+/// True when `v` is a plain object — a document record rather than a primitive
+/// or a list.
+///
+/// sanitize() is the one door every document comes through, and it has to be
+/// total: a `canvas` written as a number or an `origin` written as a string is
+/// not an object to read, it is a bad field to default. Assignment to a property
+/// of a primitive throws in strict mode — which is what an ES module always is —
+/// so the guard has to come before the write, not after it.
+export function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

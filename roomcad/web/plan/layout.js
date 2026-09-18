@@ -160,11 +160,6 @@ export function autoLayoutRooms(room, opts = {}) {
   //
   // The way to get a small room in a large space is to mark the rest green,
   // which is what green is for.
-  //
-  // Only kept for the report at the end, which says what was asked for beside
-  // what the floor gave. The partition works in ratios, so an area in metres
-  // would mean nothing to it.
-  const requestedArea = wantedArea > 0 ? wantedArea : freeArea / roomCount;
 
   // ── Something for every room to open onto ───────────────────────────────
   //

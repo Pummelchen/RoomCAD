@@ -21,7 +21,6 @@ import { isConnected, stepBlocked, tooThin, wrapping } from "./layout-grid.js";
 /// complex shapes come out of the geometry rather than being sought after.
 export function sliceByWeights(grid, cells, weights, rng, circ = null) {
   const { at, area } = grid;
-  const fronts = circ && circ.fronts;
 
   /// Does this piece have somewhere to put its door?
   ///
@@ -56,10 +55,33 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
     return false;
   };
 
-  // One room's worth: no cut to make, but it still has to have a way in. If it
-  // has none, run the hallway through it — the piece then falls either side of
-  // the new stretch, and partitionFloor keeps the larger half as the room.
-  if (weights.length <= 1) return [cells];
+  // One room's worth: no cut to make, but it still has to have a way in. The
+  // comment above `fronting` promises it is asked of a piece about to become
+  // ONE room as well as of the two halves of a cut, and this is where that was
+  // missing: a one-room piece was handed back unconditionally, so the bottom of
+  // the recursion — the common case once the rooms filled the floor — became a
+  // room with nobody checking it had a door. The door step then found nowhere
+  // to put one but the outside wall or a neighbour's.
+  //
+  // The floor is not carved, because carving is not what this module does any
+  // more: the hallway the comment above describes was removed when generating
+  // stopped making public space of its own (see `const hallway = []` in
+  // layout.js — the user's green floor is the circulation, and the planner
+  // builds against it rather than adding to it). What a piece with no frontage
+  // becomes is what every other piece the partition cannot use becomes: open
+  // floor. partitionFloor() sends it to `spare`, which is reachable, rather
+  // than walling it in as a room nobody can enter.
+  if (weights.length <= 1) {
+    if (fronting(cells)) return [cells];
+    const parts = connectedParts(grid, cells);
+    if (parts.length > 1) {
+      parts.sort((p, q) =>
+        q.reduce((s, [i, j]) => s + area[at(i, j)], 0)
+        - p.reduce((s, [i, j]) => s + area[at(i, j)], 0));
+      return weights.map((_, k) => parts[k] || []);
+    }
+    return [[]];
+  }
 
   const half = Math.max(1, Math.round(weights.length / 2));
   const left = weights.slice(0, half);
@@ -77,7 +99,6 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
   }
 
   let best = null;
-  let stranded = false;
   const candidates = [];
   for (const axis of ["x", "z"]) {
     const lo = axis === "x" ? minI : minJ;
@@ -99,7 +120,7 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
       // asked for more rooms than the space can hold.
       if (tooThin(grid, a) || tooThin(grid, b)) continue;
       // Nor is a cut that walls a piece off from the circulation.
-      if (!fronting(a) || !fronting(b)) { stranded = true; continue; }
+      if (!fronting(a) || !fronting(b)) continue;
       // Shorter cuts mean shorter walls, so use that to break ties.
       const cutLength = axis === "x" ? (maxJ - minJ + 1) : (maxI - minI + 1);
       const err = Math.abs(areaA - want) / total;
@@ -159,10 +180,29 @@ export function sliceByWeights(grid, cells, weights, rng, circ = null) {
 /// The pieces a set of cells falls into once you can no longer walk between
 /// them — around a walkway, across a wall the user drew, or either side of a
 /// hallway just carved through the middle of it.
+///
+/// Cells arrive in two shapes: the layout engine passes an array of `[i, j]`
+/// pairs, and detectRooms() passes the flat Int32Array of cell indices it
+/// holds a region in. Both are read through `cellAt`, so neither caller has to
+/// convert — a conversion per region would be the allocation the flat form
+/// exists to avoid.
 export function connectedParts(grid, cells) {
   const { at, nx, nz } = grid;
-  const left = new Set(cells.map(([i, j]) => at(i, j)));
-  const byIndex = new Map(cells.map(c => [at(c[0], c[1]), c]));
+  const flat = cells instanceof Int32Array;
+  const cellAt = k => {
+    if (!flat) return cells[k];
+    const c = cells[k];
+    const i = (c / nz) | 0;
+    return [i, c - i * nz];
+  };
+  const left = new Set();
+  const byIndex = new Map();
+  for (let k = 0; k < cells.length; k++) {
+    const [i, j] = cellAt(k);
+    const n = at(i, j);
+    left.add(n);
+    byIndex.set(n, [i, j]);
+  }
   const parts = [];
   while (left.size) {
     const first = left.values().next().value;

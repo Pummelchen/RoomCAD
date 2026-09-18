@@ -5,8 +5,8 @@ import { sliceByWeights, connectedParts } from "./layout-slice.js";
 // every module here.
 
 import { clean, point } from "./core.js";
-import { DOOR_FRONTAGE, apportion } from "./layout.js";
-import { freeComponents, isConnected, stepBlocked, tooThin, wrapping } from "./layout-grid.js";
+import { apportion } from "./layout.js";
+import { freeComponents, stepBlocked } from "./layout-grid.js";
 import { detectRooms } from "./rooms.js";
 import { wallLength, wallPerp, wallPointAt } from "./walls.js";
 
@@ -197,7 +197,6 @@ export function partitionFloor(grid, count, rng, circ = null) {
   const areaOf = cells => cells.reduce((s, [i, j]) => s + area[at(i, j)], 0);
 
   const sizes = components.map(areaOf);
-  const totalFree = sizes.reduce((a, b) => a + b, 0);
   const shares = apportion(count, sizes);
 
   const rooms = [];
@@ -229,7 +228,14 @@ export function partitionFloor(grid, count, rng, circ = null) {
     // floor. Open floor is reachable; floor that belongs to a room you cannot
     // get to is not.
     for (let k = 0; k < pieces.length; k++) {
-      if (!pieces[k].length) continue;
+      if (!pieces[k].length) {
+        // sliceByWeights() refused this piece because it has no frontage onto
+        // the circulation — a room nobody could enter is not a room. The floor
+        // is not left unclaimed either: unclaimed floor is walled in by the
+        // rooms around it and becomes a void. It joins the open floor.
+        if (k === 0) spare.push(cells);
+        continue;
+      }
       // Floor that was turned into hallway while this piece was being divided
       // is still listed among its cells. It is not the room's any more, and
       // leaving it in makes the lobes either side of it look joined.

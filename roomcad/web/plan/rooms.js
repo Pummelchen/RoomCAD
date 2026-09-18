@@ -11,15 +11,18 @@ import { wallLength } from "./walls.js";
 
 /// How many grid cells the room decomposition may allocate.
 ///
-/// A memory guard, not a policy: the owner map is one Int32 per cell, so this
-/// bounds the largest array at about 4 MB. It used to be 60 000 — roughly
-/// 240 kB — which a plan of a couple of hundred walls at 1 cm resolution could
-/// exceed. When it did, the detector returned NO rooms, and everything that
-/// reads rooms went quietly wrong: every m² caption vanished, floorArea fell
-/// back to the bounding box, and because no region was recognisable as the
-/// outside, no wall was an outside wall and every wall became draggable. Nothing
-/// said a word. The cap is now generous enough not to be reached by real plans,
-/// and `roomDetectionSkipped()` reports it if it ever is.
+/// A memory guard, not a policy: the owner map is one Int32 per cell and the
+/// cells of every region are held in flat Int32Arrays, so this bounds the
+/// detector's own allocation at about 8 MB — 4 MB of owner map and 4 MB of
+/// region cells — rather than the ~140 MB it reached when each cell was a
+/// two-element array. It used to be 60 000 — roughly 240 kB — which a plan of a
+/// couple of hundred walls at 1 cm resolution could exceed. When it did, the
+/// detector returned NO rooms, and everything that reads rooms went quietly
+/// wrong: every m² caption vanished, floorArea fell back to the bounding box,
+/// and because no region was recognisable as the outside, no wall was an
+/// outside wall and every wall became draggable. Nothing said a word. The cap
+/// is now generous enough not to be reached by real plans, and
+/// `roomDetectionSkipped()` reports it if it ever is.
 const MAX_ROOM_CELLS = 1000000;
 let _roomCache = { key: null, rooms: null, outsideWalls: null };
 /// True when the last detectRooms() gave up on the cell cap rather than
@@ -33,11 +36,21 @@ export function roomDetectionSkipped() {
 }
 
 function roomSignature(room) {
+  // The cached `outsideWalls` is a set of wall IDS, so the key has to name
+  // those ids or a cache hit can hand one room's ids to another. It did: two
+  // door-less rooms with identical geometry — exactly two freshRoom()s — share
+  // every coordinate, so the second room was given the FIRST room's outside
+  // walls, none of its own walls were recognised, and every one of them was
+  // draggable. ids come first because they are the identity; the coordinates
+  // and door wallIDs stay, so a move still invalidates the cache.
+  //
   // Exported and callable on a half-built room (an import mid-parse, a caller
-  // outside the app), so neither list is assumed to exist.
-  const w = (room.walls || []).map(x => `${x.start.x},${x.start.z},${x.end.x},${x.end.z}`).join(";");
+  // outside the app), so no list is assumed to exist.
+  const ids = (room.walls || []).map(x => (x && x.id) || "").join(",");
+  const w = (room.walls || []).map(x =>
+    `${x.start.x},${x.start.z},${x.end.x},${x.end.z}`).join(";");
   const d = (room.doors || []).map(x => `${x.wallID}`).join(";");
-  return w + "|" + d;
+  return ids + "|" + w + "|" + d;
 }
 
 /// The enclosed rooms of the plan.
@@ -122,31 +135,56 @@ export function detectRooms(room) {
   let regionCount = 0;
   const regions = [];
 
+  // Two passes: `fill` floods the region, assigning `owner` from `id` and
+  // counting the cells; the second pass floods it again writing the cell
+  // indices into an Int32Array sized exactly to the region. Nothing is built
+  // per cell on the way through — a queue of indices is the only working set —
+  // so the allocation for a grid of N cells is the 4-byte owner map, the
+  // 4-byte per-region cell list and a small stack, rather than an object per
+  // cell. The stack is a LIFO ring reused between regions: every push is
+  // immediately followed by a pop, so a reused slot is always free.
+  const visits = new Uint8Array(nx * nz);
+  const stack = new Int32Array(nx * nz);
+  const fill = (i0, j0, id, wallIDs, put) => {
+    stack[0] = at(i0, j0);
+    visits[at(i0, j0)] = 1;
+    let top = 0;
+    let count = 0;
+    while (top >= 0) {
+      const c = stack[top--];
+      owner[c] = id;
+      if (put) put(c, count);
+      count++;
+      const i = (c / nz) | 0;
+      const j = c - i * nz;
+      const midZ = (zs[j] + zs[j + 1]) / 2;
+      const midX = (xs[i] + xs[i + 1]) / 2;
+      const step = (ni, nj, blockedBy) => {
+        if (blockedBy) { wallIDs.add(blockedBy); return; }
+        if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) return;
+        const n = at(ni, nj);
+        if (visits[n]) return;
+        visits[n] = 1;
+        stack[++top] = n;
+      };
+      step(i - 1, j, blocker(vertical, xs[i], midZ));
+      step(i + 1, j, blocker(vertical, xs[i + 1], midZ));
+      step(i, j - 1, blocker(horizontal, zs[j], midX));
+      step(i, j + 1, blocker(horizontal, zs[j + 1], midX));
+    }
+    return count;
+  };
   for (let i0 = 0; i0 < nx; i0++) {
     for (let j0 = 0; j0 < nz; j0++) {
       if (owner[at(i0, j0)] !== -1) continue;
       const id = regionCount++;
-      const cells = [];
+      // The wall contacts are collected by the first pass; the second pass
+      // reuses the same Set, which dedupes, so seeing them twice costs nothing.
       const wallIDs = new Set();
-      const stack = [[i0, j0]];
-      owner[at(i0, j0)] = id;
-      while (stack.length) {
-        const [i, j] = stack.pop();
-        cells.push([i, j]);
-        const midZ = (zs[j] + zs[j + 1]) / 2;
-        const midX = (xs[i] + xs[i + 1]) / 2;
-        const step = (ni, nj, blockedBy) => {
-          if (blockedBy) { wallIDs.add(blockedBy); return; }
-          if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) return;
-          if (owner[at(ni, nj)] !== -1) return;
-          owner[at(ni, nj)] = id;
-          stack.push([ni, nj]);
-        };
-        step(i - 1, j, blocker(vertical, xs[i], midZ));
-        step(i + 1, j, blocker(vertical, xs[i + 1], midZ));
-        step(i, j - 1, blocker(horizontal, zs[j], midX));
-        step(i, j + 1, blocker(horizontal, zs[j + 1], midX));
-      }
+      const size = fill(i0, j0, id, wallIDs, null);
+      visits.fill(0);
+      const cells = new Int32Array(size);
+      fill(i0, j0, id, wallIDs, (c, k) => { cells[k] = c; });
       regions.push({ id, cells, wallIDs });
     }
   }
@@ -165,7 +203,10 @@ export function detectRooms(room) {
     let area = 0;
     let rMinX = Infinity, rMaxX = -Infinity, rMinZ = Infinity, rMaxZ = -Infinity;
     const rects = [];
-    for (const [i, j] of region.cells) {
+    for (let n = 0; n < region.cells.length; n++) {
+      const c = region.cells[n];
+      const i = (c / nz) | 0;
+      const j = c - i * nz;
       const r = { x: xs[i], z: zs[j], w: xs[i + 1] - xs[i], l: zs[j + 1] - zs[j] };
       area += r.w * r.l;
       rects.push(r);
