@@ -16,10 +16,16 @@
 //
 // Run:  node tests/city-fuzz.test.mjs
 
-import { loadWebModule } from "./harness/load-web-module.mjs";
+import { register } from "node:module";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
 import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
+
+// city.js is a facade over roomcad/web/city/*.js now, and those modules import
+// the bare "three" the page's import map names. The resolver applies that map to
+// the whole graph, the same way the walk3d tests do — and, unlike a rewritten
+// copy, it keeps one instance of the class the section modules import.
+register("./harness/three-resolver.mjs", import.meta.url);
 
 // The same Three.js the city itself builds with, so a matrix composed here is
 // composed the way the renderer will compose it.
@@ -32,7 +38,7 @@ const {
   FLEET_SIZE,
   REVERSE_ANGLE, REVERSE_RUN,
   RESERVE_TTL, setTransportRandom,
-} = await loadWebModule("city.js");
+} = await import("../roomcad/web/city.js");
 
 // The traffic is driven by real `Math.random()` in production, on purpose — no
 // two reloads move identically. That makes it a coin toss in a GATE: this file

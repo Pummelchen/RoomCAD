@@ -23,12 +23,14 @@ Run:  python3 tests/server-live.test.py
 import http.client
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "roomcad", "server"))
+import roomcad_api.state as state  # noqa: E402
 import server  # noqa: E402
 
 
@@ -141,13 +143,23 @@ def wait_for(predicate, timeout=2.0):
 
 def main():
     tmp = tempfile.TemporaryDirectory()
-    server.DB_PATH = os.path.join(tmp.name, "rooms.db")
-    server.LEGACY_DIR = os.path.join(tmp.name, "legacy")
-    server.PASSWORD = "testpass"
+    state.DB_PATH = os.path.join(tmp.name, "rooms.db")
+    state.LEGACY_DIR = os.path.join(tmp.name, "legacy")
+    state.PASSWORD = "testpass"
     # A dead watcher is only noticed when the next keep-alive fails to write,
     # so shorten the heartbeat to keep the test quick.
-    server.SSE_HEARTBEAT_SECONDS = 0.3
-    os.makedirs(server.LEGACY_DIR)
+    state.SSE_HEARTBEAT_SECONDS = 0.3
+    os.makedirs(state.LEGACY_DIR)
+
+    # Configuration and mutable state live on roomcad_api.state, and every
+    # module reads them as state.NAME at call time. A rebind that silently
+    # missed (for instance one written on the `server` facade, which re-exports
+    # functions rather than state) would leave the server pointed at the real
+    # /var/roomcad/rooms.db — so refuse to run against anything outside tmp
+    # before a single connection is made.
+    for path in (state.DB_PATH, state.LEGACY_DIR):
+        if os.path.commonpath([os.path.abspath(path), tmp.name]) != tmp.name:
+            raise SystemExit(f"refusing to test against {path}: not inside {tmp.name}")
 
     httpd = server.RoomCADServer(("127.0.0.1", 0), server.Handler)
     port = httpd.server_address[1]
@@ -201,7 +213,7 @@ def main():
     draft1 = {"json": '{"room":{"width":6}}', "clientId": "A", "version": 1, "baseSeq": 0}
     status, resp, _ = request(port, "POST", "/api/live/room1", draft1, cookie)
     check("live POST returns ok", status == 200 and resp.get("ok") is True, f"{status} {resp}")
-    check("draft stored in memory", server.LIVE.get("room1", {}).get("json") == draft1["json"])
+    check("draft stored in memory", state.LIVE.get("room1", {}).get("json") == draft1["json"])
     check("draft not saved to DB", server.load_room("room1") is None)
 
     # An edit built on a copy that has since moved on is refused rather than
@@ -227,8 +239,8 @@ def main():
     )
     check(
         "and the room still holds what was really published",
-        server.LIVE.get("room1", {}).get("json") == draft1["json"],
-        server.LIVE.get("room1", {}).get("json"),
+        state.LIVE.get("room1", {}).get("json") == draft1["json"],
+        state.LIVE.get("room1", {}).get("json"),
     )
     check(
         "the refusal hands back the current room to catch up on", resp.get("json") == draft1["json"]
@@ -262,7 +274,7 @@ def main():
         status == 200 and resp.get("version") == 0,
         f"{status} {resp}",
     )
-    check("save clears the live draft", "room1" not in server.LIVE)
+    check("save clears the live draft", "room1" not in state.LIVE)
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check(
         "save marks exact room/version for resume",
@@ -314,8 +326,8 @@ def main():
         and resp.get("json") == '{"room":{"width":7}}',
         f"{status} {resp}",
     )
-    server._conn.close()
-    server._conn = None
+    state._conn.close()
+    state._conn = None
     status, resp, _ = request(port, "GET", "/api/session/last", cookie=cookie)
     check(
         "resume target survives a database reconnect",
@@ -428,13 +440,13 @@ def main():
     )
     check(
         "an over-long room name is truncated, not stored whole",
-        status == 200 and len(resp.get("name", "")) <= server.MAX_ROOM_NAME,
+        status == 200 and len(resp.get("name", "")) <= state.MAX_ROOM_NAME,
         f"{status} {len(resp.get('name', ''))}",
     )
     status, resp, _ = request(port, "GET", "/api/rooms", cookie=cookie)
     check(
         "no listing entry exceeds the name limit",
-        all(len(r["name"]) <= server.MAX_ROOM_NAME for r in resp),
+        all(len(r["name"]) <= state.MAX_ROOM_NAME for r in resp),
     )
 
     # ---- 5. Hardening ------------------------------------------------------
@@ -448,7 +460,7 @@ def main():
         big,
         {
             "Content-Type": "application/json",
-            "Content-Length": str(server.MAX_BODY_BYTES + 1),
+            "Content-Length": str(state.MAX_BODY_BYTES + 1),
             "Cookie": cookie,
         },
     )
@@ -516,9 +528,9 @@ def main():
     )
 
     # A deployment whose proxy appends its own hop sets ROOMCAD_PROXY_HOPS.
-    saved_hops = server.PROXY_HOPS
+    saved_hops = state.PROXY_HOPS
     try:
-        server.PROXY_HOPS = 1
+        state.PROXY_HOPS = 1
         check(
             "an extra proxy hop can be configured away",
             client_key_for("1.2.3.4, 203.0.113.9, 127.0.0.1") == "203.0.113.9",
@@ -529,7 +541,7 @@ def main():
             client_key_for("203.0.113.9") == "203.0.113.9",
         )
     finally:
-        server.PROXY_HOPS = saved_hops
+        state.PROXY_HOPS = saved_hops
 
     def is_https_for(headers):
         h = server.Handler.__new__(server.Handler)
@@ -558,9 +570,9 @@ def main():
     )
 
     # One shared password has to be protected from brute force.
-    server.LOGIN_FAILURES.clear()
+    state.LOGIN_FAILURES.clear()
     codes = []
-    for _ in range(server.LOGIN_MAX_FAILURES + 2):
+    for _ in range(state.LOGIN_MAX_FAILURES + 2):
         st, _, _ = request(port, "POST", "/api/login", {"password": "nope"})
         codes.append(st)
     check(
@@ -568,10 +580,10 @@ def main():
     )
     check(
         "throttling only kicks in after the budget",
-        codes[: server.LOGIN_MAX_FAILURES] == [401] * server.LOGIN_MAX_FAILURES,
+        codes[: state.LOGIN_MAX_FAILURES] == [401] * state.LOGIN_MAX_FAILURES,
         f"{codes}",
     )
-    server.LOGIN_FAILURES.clear()
+    state.LOGIN_FAILURES.clear()
     status, _, _ = request(port, "POST", "/api/login", {"password": "testpass"})
     check("a correct password still works once the window is cleared", status == 200, f"{status}")
 
@@ -595,27 +607,27 @@ def main():
     # A password containing a non-ASCII character used to raise TypeError inside
     # secrets.compare_digest, before the failure was counted — so those attempts
     # escaped the throttle and the connection was dropped with no response.
-    server.LOGIN_FAILURES.clear()
+    state.LOGIN_FAILURES.clear()
     st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd"})
     check("a non-ASCII password is rejected rather than crashing", st == 401, f"{st}")
     st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd"})
     check("a non-ASCII attempt is answered again, not dropped", st == 401, f"{st}")
     check(
         "non-ASCII attempts are counted by the throttle",
-        sum(f[0] for f in server.LOGIN_FAILURES.values()) >= 1,
-        str(server.LOGIN_FAILURES),
+        sum(f[0] for f in state.LOGIN_FAILURES.values()) >= 1,
+        str(state.LOGIN_FAILURES),
     )
 
     # The configured password itself may be non-ASCII; signing in must still work.
-    server.LOGIN_FAILURES.clear()
-    original_password = server.PASSWORD
-    server.PASSWORD = "pässwörd1A$"
+    state.LOGIN_FAILURES.clear()
+    original_password = state.PASSWORD
+    state.PASSWORD = "pässwörd1A$"
     st, _, _ = request(port, "POST", "/api/login", {"password": "pässwörd1A$"})
     check("a non-ASCII configured password can be used to sign in", st == 200, f"{st}")
     st, _, _ = request(port, "POST", "/api/login", {"password": "passwörd1A$"})
     check("a near-miss non-ASCII password is rejected", st == 401, f"{st}")
-    server.PASSWORD = original_password
-    server.LOGIN_FAILURES.clear()
+    state.PASSWORD = original_password
+    state.LOGIN_FAILURES.clear()
 
     # Deleting a room has to drop its live sequence counter too, or the map keeps
     # an entry for every room name the process has ever seen.
@@ -627,21 +639,19 @@ def main():
         port, "POST", "/api/live/seqprune", {"json": "{}", "clientId": "c"}, cookie=cookie
     )
     check("a draft can be published to it", st == 200, f"{st}")
-    check(
-        "its sequence counter exists", "seqprune" in server.LIVE_SEQ, str(sorted(server.LIVE_SEQ))
-    )
+    check("its sequence counter exists", "seqprune" in state.LIVE_SEQ, str(sorted(state.LIVE_SEQ)))
     st, _, _ = request(port, "DELETE", "/api/rooms/seqprune", cookie=cookie)
     check("the room is deleted", st == 200, f"{st}")
     check(
         "deleting the room drops its sequence counter",
-        "seqprune" not in server.LIVE_SEQ,
-        str(sorted(server.LIVE_SEQ)),
+        "seqprune" not in state.LIVE_SEQ,
+        str(sorted(state.LIVE_SEQ)),
     )
 
     # A watcher that stops reading must not grow an unbounded queue.
-    check("watcher queues are bounded", server.WATCH_QUEUE_LIMIT > 0)
+    check("watcher queues are bounded", state.WATCH_QUEUE_LIMIT > 0)
     check(
-        "watchers wait with a timeout so dead streams are reaped", server.SSE_HEARTBEAT_SECONDS > 0
+        "watchers wait with a timeout so dead streams are reaped", state.SSE_HEARTBEAT_SECONDS > 0
     )
     check(
         "a client going away is not logged as a server error",
@@ -840,7 +850,7 @@ def main():
         cookie,
     )
     request(port, "POST", "/api/session/last", {"name": bulk, "version": 0}, cookie)
-    check("the draft is there before the delete", bulk in server.LIVE)
+    check("the draft is there before the delete", bulk in state.LIVE)
 
     started = time.time()
     status, _, _ = request(port, "DELETE", "/api/rooms/" + bulk, None, cookie)
@@ -861,7 +871,7 @@ def main():
     )
     # A draft left in memory outlives the file and would be handed to the next
     # watcher of a room created with the same name.
-    check("the unsaved draft does not outlive the file", bulk not in server.LIVE)
+    check("the unsaved draft does not outlive the file", bulk not in state.LIVE)
     status, listing, _ = request(port, "GET", "/api/rooms", None, cookie)
     names = [r.get("name") for r in listing] if isinstance(listing, list) else []
     check("the room listing comes back as a list", isinstance(listing, list), repr(listing)[:120])
@@ -876,9 +886,9 @@ def main():
     reader2.stop()
     check(
         "no watcher entry leaks once every stream for a room has gone",
-        wait_for(lambda: "room1" not in server.WATCHERS, timeout=3.0)
-        or not server.WATCHERS.get("room1"),
-        f"{list(server.WATCHERS)}",
+        wait_for(lambda: "room1" not in state.WATCHERS, timeout=3.0)
+        or not state.WATCHERS.get("room1"),
+        f"{list(state.WATCHERS)}",
     )
 
     # ---- 5. Bounding live streams ------------------------------------------
@@ -886,12 +896,12 @@ def main():
     # client must not be able to open unlimited ones. The caps are exercised
     # with small values so the test does not have to open 256 connections; the
     # code under test is the same either way.
-    wait_for(lambda: not server.WATCHERS, timeout=3.0)  # start from a clean pool
+    wait_for(lambda: not state.WATCHERS, timeout=3.0)  # start from a clean pool
     # getattr, not attribute access: a missing cap is one of the things this
     # section is here to catch, and it has to be reported as a failed check
     # rather than aborting the file before the counts are printed.
-    saved_per_session = getattr(server, "MAX_WATCHERS_PER_SESSION", 0)
-    saved_total = getattr(server, "MAX_WATCHERS_TOTAL", 0)
+    saved_per_session = getattr(state, "MAX_WATCHERS_PER_SESSION", 0)
+    saved_total = getattr(state, "MAX_WATCHERS_TOTAL", 0)
     check(
         "there are named caps on live streams",
         saved_per_session > 0 and saved_total > 0,
@@ -904,20 +914,20 @@ def main():
     )
     cap_cookie = login(port)
     try:
-        server.MAX_WATCHERS_PER_SESSION = 2
+        state.MAX_WATCHERS_PER_SESSION = 2
         r1 = SseReader(port, "caproom", cap_cookie)
         r1.start()
         check(
             "a stream within the per-session cap is served",
-            wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 1),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: len(state.WATCHERS.get("caproom", ())) == 1),
+            f"{list(state.WATCHERS)}",
         )
         r2 = SseReader(port, "caproom", cap_cookie)
         r2.start()
         check(
             "a second stream within the per-session cap is served",
-            wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 2),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: len(state.WATCHERS.get("caproom", ())) == 2),
+            f"{list(state.WATCHERS)}",
         )
 
         status, body = stream_status(port, "caproom", cap_cookie)
@@ -937,46 +947,46 @@ def main():
         )
         check(
             "the refused stream registered no queue",
-            len(server.WATCHERS.get("caproom", ())) == 2,
-            f"{len(server.WATCHERS.get('caproom', ()))}",
+            len(state.WATCHERS.get("caproom", ())) == 2,
+            f"{len(state.WATCHERS.get('caproom', ()))}",
         )
 
         r1.stop()
         r2.stop()
         check(
             "streams deregister so their slots are freed",
-            wait_for(lambda: not server.WATCHERS.get("caproom"), timeout=3.0),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: not state.WATCHERS.get("caproom"), timeout=3.0),
+            f"{list(state.WATCHERS)}",
         )
         r3 = SseReader(port, "caproom", cap_cookie)
         r3.start()
         check(
             "a later legitimate stream is served after a refusal",
-            wait_for(lambda: len(server.WATCHERS.get("caproom", ())) == 1),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: len(state.WATCHERS.get("caproom", ())) == 1),
+            f"{list(state.WATCHERS)}",
         )
         r3.stop()
-        wait_for(lambda: not server.WATCHERS, timeout=3.0)
+        wait_for(lambda: not state.WATCHERS, timeout=3.0)
 
         # The global cap is the one that protects the process, so it is
         # exercised on its own with the per-session cap out of the way: the
         # same session opens both streams and is refused by the total, not by
         # its own share.
-        server.MAX_WATCHERS_PER_SESSION = 100
-        server.MAX_WATCHERS_TOTAL = 2
+        state.MAX_WATCHERS_PER_SESSION = 100
+        state.MAX_WATCHERS_TOTAL = 2
         g1 = SseReader(port, "caproom2", cap_cookie)
         g1.start()
         check(
             "a stream within the global cap is served",
-            wait_for(lambda: len(server.WATCHERS.get("caproom2", ())) == 1),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: len(state.WATCHERS.get("caproom2", ())) == 1),
+            f"{list(state.WATCHERS)}",
         )
         g2 = SseReader(port, "caproom2", cap_cookie)
         g2.start()
         check(
             "streams up to the global cap are served",
-            wait_for(lambda: len(server.WATCHERS.get("caproom2", ())) == 2),
-            f"{list(server.WATCHERS)}",
+            wait_for(lambda: len(state.WATCHERS.get("caproom2", ())) == 2),
+            f"{list(state.WATCHERS)}",
         )
         status, body = stream_status(port, "caproom2", cap_cookie)
         try:
@@ -990,24 +1000,24 @@ def main():
         )
         check(
             "the globally refused stream registered no queue",
-            len(server.WATCHERS.get("caproom2", ())) == 2,
-            f"{len(server.WATCHERS.get('caproom2', ()))}",
+            len(state.WATCHERS.get("caproom2", ())) == 2,
+            f"{len(state.WATCHERS.get('caproom2', ()))}",
         )
         g1.stop()
         g2.stop()
-        wait_for(lambda: not server.WATCHERS, timeout=3.0)
+        wait_for(lambda: not state.WATCHERS, timeout=3.0)
     finally:
-        server.MAX_WATCHERS_PER_SESSION = saved_per_session
-        server.MAX_WATCHERS_TOTAL = saved_total
+        state.MAX_WATCHERS_PER_SESSION = saved_per_session
+        state.MAX_WATCHERS_TOTAL = saved_total
 
     # The per-session bookkeeping has to empty out with the streams themselves,
     # or a long-lived process slowly refuses sessions that have no stream left.
     # getattr so the old code reports this as a failure instead of an abort.
-    sessions_left = getattr(server, "WATCHER_SESSIONS", None)
+    sessions_left = getattr(state, "WATCHER_SESSIONS", None)
     check(
         "no watcher bookkeeping is left behind once every stream has gone",
-        sessions_left == {} and not server.WATCHERS,
-        f"sessions={sessions_left} watchers={list(server.WATCHERS)}",
+        sessions_left == {} and not state.WATCHERS,
+        f"sessions={sessions_left} watchers={list(state.WATCHERS)}",
     )
 
     # The listen backlog bounds the connections the kernel holds unaccepted;
@@ -1150,6 +1160,92 @@ def main():
         cookie,
     )
     check("a save whose json IS a string is accepted", status == 200, f"{status} {resp!r:.80}")
+
+    # ---- Every response declares the length it actually sends ---------------
+    # A response whose Content-Length is one short leaves a byte in the socket,
+    # and with HTTP/1.1 keep-alive on (protocol_version is set) the NEXT
+    # response on that connection starts with that stray byte, which
+    # desynchronises any client that trusts the header — Caddy and browsers do.
+    # login and logout hand-wrote `Content-Length: 11` for the 12-byte body
+    # `{"ok": true}` and both wrote the body separately. Every response now goes
+    # through `_send`, so the body and its length come from the same call.
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    login_body = json.dumps({"password": "testpass"}).encode()
+    conn.request(
+        "POST",
+        "/api/login",
+        login_body,
+        {"Content-Type": "application/json"},
+    )
+    first = conn.getresponse()
+    first_body = first.read()
+    declared = first.getheader("Content-Length")
+    check(
+        "the login response declares the length it sends",
+        declared is not None and int(declared) == len(first_body),
+        f"{declared} declared, {len(first_body)} sent: {first_body!r}",
+    )
+    try:
+        check(
+            "the login body is the whole JSON object",
+            json.loads(first_body) == {"ok": True},
+            repr(first_body),
+        )
+    except ValueError as err:
+        check("the login body is the whole JSON object", False, f"{err}: {first_body!r}")
+    keep_cookie = (first.getheader("Set-Cookie") or "").split(";")[0]
+    # Deliberately the SAME connection: the framing is what is under test, so a
+    # fresh socket per request would hide exactly this defect.
+    try:
+        conn.request("GET", "/api/rooms", headers={"Cookie": keep_cookie})
+        second = conn.getresponse()
+        second_body = second.read()
+        # Not an emptiness check — other checks have saved rooms by now. What is
+        # under test is that the response is framed correctly: before the fix the
+        # body began with the stray `}` and did not parse at all.
+        check(
+            "a second request on the same keep-alive connection is intact",
+            isinstance(json.loads(second_body), list),
+            repr(second_body[:60]),
+        )
+    except Exception as err:  # noqa: BLE001 — reported as a failed check
+        check(
+            "a second request on the same keep-alive connection is intact",
+            False,
+            f"{type(err).__name__}: {err}",
+        )
+    conn.close()
+
+    # And the framing itself, on the wire. http.client reads the declared length
+    # and drops whatever follows, so it recovers from one extra byte and cannot
+    # see this — a proxy holding the connection open does not. Count the bytes
+    # rather than trusting the library: a response must put exactly the number
+    # it declared on the wire, and one more is the start of the next response.
+    raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+    raw.sendall(
+        b"POST /api/login HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(login_body)).encode() + b"\r\n\r\n" + login_body
+    )
+    raw_buf = b""
+    while b"\r\n\r\n" not in raw_buf:
+        raw_buf += raw.recv(4096)
+    raw_head, _, raw_rest = raw_buf.partition(b"\r\n\r\n")
+    raw_length = int(
+        [
+            line
+            for line in raw_head.decode().split("\r\n")
+            if line.lower().startswith("content-length")
+        ][0].split(":")[1]
+    )
+    while len(raw_rest) < raw_length:
+        raw_rest += raw.recv(4096)
+    raw.close()
+    check(
+        "the response body is exactly the length it declared",
+        len(raw_rest) == raw_length,
+        f"{raw_length} declared, at least {len(raw_rest)} arrived: {raw_rest!r}",
+    )
 
     httpd.shutdown()
     tmp.cleanup()

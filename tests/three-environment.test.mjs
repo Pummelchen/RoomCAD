@@ -4,21 +4,19 @@
 // decoupling is the contract this file protects, along with the performance
 // and correctness rules that keep the city from degrading the room itself.
 
-import { readFileSync } from "node:fs";
 import { register } from "node:module";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { citySource } from "./harness/city-source.mjs";
 import { storeSource } from "./harness/store-source.mjs";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..");
 const walk = walk3dSource();
 // Comments discuss the very calls being checked for, so anything that asserts
 // a call HAPPENS has to look at code only — commenting a line out otherwise
 // leaves the text in place and the check still passes.
 const walkCode = walk.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
+// The whole city package: city.js is a facade over roomcad/web/city/*.js, so
+// grepping the facade alone would look for a rule in a file that only composes.
+const city = citySource();
 // The whole store package: store.js is a facade over roomcad/web/store/*.js, so
 // grepping the facade alone would look for a rule in a file that only composes.
 const store = storeSource();
@@ -113,8 +111,16 @@ check("the city itself is built from the seed, not from chance",
     && /transportRandom = typeof fn === "function" \? fn : Math\.random;/.test(city));
   const buildPath = city.slice(city.indexOf("build(bounds, seed, floorLift) {"),
     city.indexOf("// MARK: - Traffic"));
+  // The city now lives in roomcad/web/city/, so the helper module that DEFINES
+  // the seam sorts into the range this single file used to own. Its
+  // `function trueRandom() {` is a definition, not a use, so that one line is
+  // dropped; every line that could USE it still counts, and the range is
+  // unchanged. Without this the check fails on the definition alone, which says
+  // nothing about what builds the city.
+  const buildUses = buildPath.split("\n")
+    .filter(l => !/^\s*(export )?function trueRandom\(\) \{/.test(l)).join("\n");
   check("nothing that builds the city uses it",
-    !buildPath.includes("trueRandom"),
+    !buildUses.includes("trueRandom"),
     "the same room would stop looking the same");
   check("but the turn a vehicle takes does",
     /const r = trueRandom\(\);/.test(city));
@@ -173,7 +179,7 @@ check("and stops inside the camera's far plane, so clipped corners never show",
 check("nearby buildings are hollow, with rooms behind the windows",
   city.includes("_hollowBuilding(") && city.includes("ROOM_DEPTH"));
 check("a room is seen from the inside, which is what gives the window depth",
-  /roomsDark[\s\S]{0,400}side: THREE\.BackSide/.test(city));
+  /roomsDark: new InstanceSet\([\s\S]{0,400}side: THREE\.BackSide/.test(city));
 // The bulbs are per brightness band now, one set each, because a material has a
 // single emissive intensity and the rooms no longer all burn at the same one.
 check("lit rooms have a bulb in them rather than a glowing pane",

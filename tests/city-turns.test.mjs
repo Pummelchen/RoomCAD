@@ -26,9 +26,15 @@
 //
 // Run:  node tests/city-turns.test.mjs
 
-import { loadWebModule } from "./harness/load-web-module.mjs";
+import { register } from "node:module";
 
-const { City, seedFromString, setTransportRandom } = await loadWebModule("city.js");
+// city.js is a facade over roomcad/web/city/*.js now, and those modules import
+// the bare "three" the page's import map names. The resolver applies that map to
+// the whole graph, the same way the walk3d tests do — and, unlike a rewritten
+// copy, it keeps one instance of the class the section modules import.
+register("./harness/three-resolver.mjs", import.meta.url);
+
+const { City, seedFromString, setTransportRandom } = await import("../roomcad/web/city.js");
 
 let passed = 0;
 let failed = 0;

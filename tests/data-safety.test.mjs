@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { appSource } from "./harness/app-source.mjs";
+import { serverSource } from "./harness/server-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const appRaw = appSource();
@@ -25,7 +26,9 @@ const appRaw = appSource();
 // look at code only. Whole-line comments are dropped; trailing ones are left
 // alone so a string containing "//" (a URL) survives intact.
 const app = appRaw.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-const server = readFileSync(join(root, "roomcad", "server", "server.py"), "utf8");
+// The server is a package now: server.py is only the facade, so the contracts
+// below read server.py plus every roomcad_api/ module (see the harness).
+const server = serverSource();
 
 let passed = 0;
 let failed = 0;

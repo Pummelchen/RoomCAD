@@ -118,11 +118,12 @@ export function joinSeparatePieces(plan, doorList, openingAt) {
 
 /// Gives away pockets of open floor that lead nowhere.
 ///
-/// The largest run of open floor is the hallway — that is what the rooms open
-/// onto. Anything else is a piece cut off from it by the rooms in between, and
-/// on the finished plan it is a space with walls all round and no door. It
-/// becomes part of whichever room it borders most, so it is floor somebody can
-/// actually stand on rather than a hole in the middle of the drawing.
+/// The run of open floor that touches the circulation is the walking space —
+/// that is what the rooms open onto. Anything else is a piece cut off from it
+/// by the rooms in between, and on the finished plan it is a space with walls
+/// all round and no door. It becomes part of whichever room it borders most, so
+/// it is floor somebody can actually stand on rather than a hole in the middle
+/// of the drawing.
 export function absorbStrandedFloor(grid, owner, SPARE, circulation = null) {
   const { nx, nz, at, xs, zs } = grid;
   const open = [];
@@ -135,12 +136,12 @@ export function absorbStrandedFloor(grid, owner, SPARE, circulation = null) {
 
   /// Is this run of floor the walking space, or is it merely floor?
   ///
-  /// The walking space is what was deliberately made: the hallway carved for
-  /// the rooms to open onto, and the floor the user marked green. Keeping the
-  /// LARGEST run instead was wrong in exactly the case that matters — carve a
-  /// hallway across a bare plate for one room and the far side of it is bigger
-  /// than the hallway, so the far side was kept as walking space and the
-  /// hallway was given away.
+  /// The walking space is what was deliberately made: the floor the user marked
+  /// green, which is the only circulation the plan has. Keeping the LARGEST run
+  /// instead was wrong in exactly the case that matters — mark a strip across a
+  /// bare plate for one room and the far side of it can be bigger than the
+  /// strip, so the far side was kept as walking space and the marked floor was
+  /// given away.
   const isWalkingSpace = part => part.some(([i, j]) => {
     if (circulation && circulation[at(i, j)]) return true;
     if (!circulation) return false;
@@ -185,11 +186,12 @@ export function absorbStrandedFloor(grid, owner, SPARE, circulation = null) {
   }
 }
 
-/// Shares `count` rooms of `targetArea` out over the free floor.
+/// Shares `count` rooms out over the free floor, one share per free component.
 ///
-/// Any floor left over once every room has its area becomes one more share,
-/// which is then dropped — that is what keeps the leftover as a single clean
-/// open area instead of padding every room past the size that was asked for.
+/// The rooms in a component divide all of it between them, so there is no
+/// leftover share carried for the recursion to cut a small room against. A
+/// component that gets no room is not padded with one: it comes back as open
+/// floor, which keeps the leftover a single clean area.
 export function partitionFloor(grid, count, rng, circ = null) {
   const components = freeComponents(grid).filter(c => c.length > 0);
   if (components.length === 0) return { rooms: [], spare: [] };
@@ -217,12 +219,12 @@ export function partitionFloor(grid, count, rng, circ = null) {
     const pieces = sliceByWeights(grid, cells, weights, rng, circ);
     // Pieces come back in weight order, so the first n are the rooms.
     //
-    // A piece is not always in one lump. A hallway carved through it while the
-    // floor was being divided leaves it in two or three, and a piece asked for
-    // as a single room is handed back whole without anything ever checking —
-    // there is nothing to check when there is only one way to divide it. Handed
-    // on as it is, those lobes become ONE room: one door goes in one of them
-    // and the others are walled in with no way in at all.
+    // A piece is not always in one lump: a wall the user drew can leave it in
+    // two, and a piece asked for as a single room is handed back whole without
+    // anything ever checking — there is nothing to check when there is only one
+    // way to divide it. Handed on as it is, those lobes become ONE room: one
+    // door goes in one of them and the others are walled in with no way in at
+    // all.
     //
     // So a room keeps the largest lump it was given and the rest becomes open
     // floor. Open floor is reachable; floor that belongs to a room you cannot
@@ -236,9 +238,9 @@ export function partitionFloor(grid, count, rng, circ = null) {
         if (k === 0) spare.push(cells);
         continue;
       }
-      // Floor that was turned into hallway while this piece was being divided
-      // is still listed among its cells. It is not the room's any more, and
-      // leaving it in makes the lobes either side of it look joined.
+      // A blocked cell is not part of any room — it is a walkway or a room that
+      // was already walled off. It can still be listed among a piece's cells,
+      // and leaving it in makes the lobes either side of it look joined.
       const own = pieces[k].filter(([i, j]) => !grid.blocked[at(i, j)]);
       if (!own.length) continue;
       if (k >= n) { spare.push(own); continue; }

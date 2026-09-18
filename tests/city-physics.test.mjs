@@ -12,13 +12,20 @@
 //
 // Run:  node tests/city-physics.test.mjs
 
+import { register } from "node:module";
 import * as RAPIER from "../roomcad/web/lib/rapier.mjs";
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
+// city.js is a facade over roomcad/web/city/*.js now, and those modules import
+// the bare "three" the page's import map names. The resolver applies that map to
+// the whole graph, the same way the walk3d tests do — and, unlike a rewritten
+// copy, it keeps one instance of the class the section modules import.
+register("./harness/three-resolver.mjs", import.meta.url);
+
 const {
   City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS, SIDEWALK, setTransportRandom,
-} = await loadWebModule("city.js");
+} = await import("../roomcad/web/city.js");
 
 // Make the traffic's runtime randomness reproducible for this file.
 //

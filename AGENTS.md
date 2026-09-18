@@ -58,8 +58,11 @@ too.
   `layout-grid`, `layout-slice`, `layout-partition`, `layout`, `demo`, `rcad`.
   **Import from `plan.js`, never from these** — it re-exports every one of them, and
   five modules plus every test import it as a namespace.
-- `roomcad/server/` — the API and the production mirror: `server.py`, `schema.sql`
-  (documentation; `server.py` builds the schema itself at boot), `rooms.db.sql`
+- `roomcad/server/` — the API and the production mirror: `server.py` (the runnable
+  entry point and facade), `roomcad_api/` (the implementation as a package — `state.py`
+  owns every configuration value and mutable global and is where a caller must rebind
+  them), `schema.sql`
+  (documentation; the API builds the schema itself at boot), `rooms.db.sql`
   (**structure only** — it carries no room content), `Caddyfile`, the two systemd
   units, `roomcad.caddy`, `install-caddy.sh`, `deploy.sh`.
 - `tests/` — the suite, plus `tests/run.sh` (the runner) and `tests/harness/` with the
@@ -67,8 +70,9 @@ too.
   the page's import map resolves, and loads everything else from its real path),
   `three-resolver.mjs` (a `registerHooks` resolver that applies that same map to the
   whole graph, which is what makes `app.js` and `walk3d.js` importable at all),
-  `plan-source.mjs` and `store-source.mjs` (a package's source as one string, for
-  the tests that grep it), `page-css.mjs` (the same idea for the stylesheets, in
+  `plan-source.mjs`, `store-source.mjs` and `server-source.mjs` (a package's source as
+  one string, for the tests that grep it), `page-css.mjs` (the same idea for the
+  stylesheets, in
   cascade order), `dom-stub.mjs`, `coplanar.mjs`, `overlap.mjs`. `installDOM({ page: true })` parses
   the real `roomcad/web/index.html` into the stub, which is what makes the app's
   BUTTONS testable: they are static markup, and `app.js` binds their clicks by
@@ -156,10 +160,15 @@ contract, not that anything renders.
 - Start only `serve.sh` and the app still loads, but every server-side feature
   reports "server not reachable": `web/Caddyfile` proxies `/api/*` to
   `127.0.0.1:8078`.
-- **`server.py` defaults `ROOMCAD_DB_PATH` to the production path
-  `/var/roomcad/rooms.db`.** Both `ROOMCAD_DB_PATH` and `ROOMCAD_PASSWORD` come from
-  the environment, so a bare `python3 roomcad/server/server.py` points at the live
-  database location — always set both, as the run command above does.
+- **The API defaults `ROOMCAD_DB_PATH` to the production path
+  `/var/roomcad/rooms.db`** (`roomcad_api/state.py`). Both `ROOMCAD_DB_PATH` and
+  `ROOMCAD_PASSWORD` come from the environment, so a bare
+  `python3 roomcad/server/server.py` points at the live database location — always
+  set both, as the run command above does. Because every module reads them as
+  `state.NAME` at call time, **a test or caller must rebind them on
+  `roomcad_api.state`, never on the `server` facade** — a rebind there is a silent
+  no-op, and `tests/server-live.test.py` guards its temp paths so a missed rebind
+  aborts instead of touching production.
 - **The 3D view requires a WebGPU-capable browser.** `lib/` vendors Three.js WebGPU
   (`lib/three.core.js` carries `REVISION = '186dev'`) plus Rapier's WASM build, and
   **no CDN fallback exists**.
@@ -171,7 +180,8 @@ contract, not that anything renders.
 - **Editing the inline import map in `index.html` breaks the CSP hash**, and with it
   both the deploy-config test and the deployed page. The hash must be recomputed.
 - **`deploy.sh` defaults to `root@91.99.176.243`** and rsyncs `web/` with `--delete`
-  plus `server.py`, then reloads systemd units. It is a production deploy and needs
+  plus `server.py` and its `roomcad_api/` package, then reloads systemd units. It is a
+  production deploy and needs
   SSH key access. It never rewrites `rooms.db` **contents** — but it does create the
   `roomcadapp` service account and `chown` the database, its WAL sidecars and the
   legacy `.rcad` directory, because the API no longer runs as root. A root-owned
@@ -205,6 +215,15 @@ contract, not that anything renders.
   envelope, before the SSE headers go out, and registers nothing.
 - **Bodies go through `_read_json_object()`, never `_read_json()`.** The latter
   happily returns a list or a scalar, and every caller then reached for `.get(...)`.
+- **Every response goes through `_send`.** Login and logout used to build their own
+  because they carry a `Set-Cookie`, and both hand-wrote `Content-Length: 11` for the
+  12-byte body `{"ok": true}`: one byte stayed in the socket, and with
+  `protocol_version = "HTTP/1.1"` the *next* response on that connection began with a
+  stray `}`, which desynchronises Caddy and anything else that trusts the header. The
+  suite did not see it because `http.client` reads the declared length and discards
+  what follows — so `tests/server-live.test.py` now counts the bytes on a raw socket
+  instead. If a handler needs an extra header, pass `extra_headers`: the body and its
+  `Content-Length` must come from one `json.dumps`.
 - **No shadow caster may be given a negative depth bias** — not the room's point
   lights, not the sun, not the street lamp. Three.js renders shadow maps from back
   faces, so a closed caster already supplies the margin a bias would buy, and a
