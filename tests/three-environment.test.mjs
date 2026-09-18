@@ -5,10 +5,11 @@
 // and correctness rules that keep the city from degrading the room itself.
 
 import { readFileSync } from "node:fs";
+import { register } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { storeSource } from "./harness/store-source.mjs";
-import { walk3dSource, walk3dSolarSource } from "./harness/walk3d-source.mjs";
+import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -22,17 +23,17 @@ const city = readFileSync(join(root, "roomcad", "web", "city.js"), "utf8");
 // grepping the facade alone would look for a rule in a file that only composes.
 const store = storeSource();
 
-/// The sun model and the daylight ramp, lifted out of walk3d.js and run for
-/// real. They are pure functions of the hour, and how smoothly the light
-/// changes is a property of what they RETURN — reading the source only tells
-/// you the ramp is spelled the way it used to be.
-// Lifted from the sun modules rather than sliced out of walk3d.js: the split put
-// the solar constants in walk3d/constants.js and the maths in walk3d/sun.js, and
-// the class entry no longer contains either.
-const solar = await import("data:text/javascript;base64," + Buffer.from(
-  walk3dSolarSource().replace(/^import .*/gm, "").replace(/^export /gm, "")
-  + "\nexport { sunForHour, smoothstep01, clamp01 };"
-).toString("base64"));
+/// The sun model and the daylight ramp, run for real. They are pure functions
+/// of the hour, and how smoothly the light changes is a property of what they
+/// RETURN — reading the source only tells you the ramp is spelled the way it
+/// used to be.
+///
+/// Imported as the real module, through the page's import map. This used to
+/// splice the SG_* constants out of constants.js and prepend them to sun.js's
+/// source before loading it as a `data:` URL — which supplied exactly the
+/// bindings sun.js failed to import, so the test could only pass.
+register("./harness/three-resolver.mjs", import.meta.url);
+const solar = await import("../roomcad/web/walk3d/sun.js");
 
 /// How much daylight there is at a given hour, exactly as applyTimeOfDay works
 /// it out.
@@ -101,7 +102,6 @@ check("the city itself is built from the seed, not from chance",
   const seamEnd = city.indexOf("\n}", setterStart) + 2;
   check("the transport randomness seam can be located",
     seamStart > 0 && setterStart > seamStart && seamEnd > setterStart);
-  const seam = city.slice(seamStart, seamEnd);
   const outsideSeam = city.slice(0, seamStart) + city.slice(seamEnd);
   check("real randomness has a single entry point",
     !/Math\.random/.test(outsideSeam),

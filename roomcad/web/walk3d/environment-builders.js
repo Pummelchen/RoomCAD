@@ -4,6 +4,9 @@
 // viewer and every method still reaches every other one.
 
 import * as THREE from "three";
+import { pass, mrt, output, emissive, normalView } from "three/tsl";
+import { ssao } from "three/addons/tsl/display/SSAONode.js";
+import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { store } from "../store.js";
 import {
   DAY_BACKGROUND,
@@ -39,6 +42,9 @@ export const environment_builders = {
     const sky = new THREE.Mesh(geo, mat);
     sky.position.set(building.centerX, this.floorY(), building.centerZ);
     sky.renderOrder = -10;
+    // Not a solid: a shot must not be able to hit the sky dome, or the 60 m
+    // fallback range in shoot() is dead and the paint lands 380 m away.
+    sky.userData.environment = true;
     this.scene.add(sky);
     this.skyMesh = sky;
     this.buildClouds(room);

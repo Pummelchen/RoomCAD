@@ -12,8 +12,6 @@
 // in this class is private — no `#field`, no `super`, no static member.
 
 import * as THREE from "three";
-import * as RAPIER from "./lib/rapier.mjs";
-import * as P from "./plan.js";
 import { City } from "./city.js";
 import { store } from "./store.js";
 import { wallRunBox } from "./walk3d/wall-box.js";
@@ -21,68 +19,7 @@ import { wallRunBox } from "./walk3d/wall-box.js";
 // The one module-level helper this file exported before the split, re-exported so
 // callers and tests keep importing it from walk3d.js.
 export { wallRunBox };
-import {
-  AXIS_EPS,
-  BACKGROUND,
-  BULB_COLOR,
-  CEILING_COLOR,
-  CITY_HEADROOM,
-  CITY_LIGHT_POOL,
-  CITY_LIGHT_REACH,
-  CITY_SHADOW_LIGHTS,
-  CITY_SHADOW_MAP,
-  CITY_SHADOW_NORMAL_BIAS,
-  CLOSED_DOOR_SEAL,
-  CROUCH_HALF_HEIGHT,
-  DAY_BACKGROUND,
-  DAY_FOG,
-  FLOOR_HEIGHT,
-  FOG_FAR,
-  FOG_NEAR,
-  GLASS_COLOR,
-  GRAVITY,
-  JUMP_SPEED,
-  LEAF_COLOR,
-  LIGHT_METAL,
-  MAX_BACKLOG,
-  MAX_ROOM_LIGHTS,
-  MAX_SUBSTEPS,
-  NIGHT_BACKGROUND,
-  NIGHT_FOG,
-  OVERCAST_SKY,
-  PARKED_FAR_BELOW,
-  PHYSICS_STEP,
-  PLAYER_FRICTION,
-  PLAYER_MASS,
-  PLAYER_RADIUS,
-  POINT_SHADOW_BIAS,
-  POINT_SHADOW_MAP_SIZE,
-  ROOM_ONLY_LAYER,
-  RUBBLE_COLOR,
-  SG_LAT,
-  SG_LON,
-  SG_UTC_OFFSET,
-  SKY_DOME_MAX,
-  STAND_HALF_HEIGHT,
-  SUN_HEIGHT,
-  SUN_SHADOW_BIAS,
-  SUN_SHADOW_MAP,
-  SUN_SHADOW_NORMAL_BIAS,
-  SUN_SHADOW_REACH,
-  SUN_SHADOW_TEXEL,
-  TWILIGHT_BACKGROUND,
-  VEHICLE_BODY_POOL,
-  VEHICLE_FRICTION,
-  VEHICLE_SOLID_RANGE,
-  WALK_SPEED,
-  WALL_COLOR,
-  WALL_VERTICAL_SEAL,
-  _carrierMatrix,
-  _carrierNormal,
-  _carrierPoint,
-  _gunOffset,
-  _viewForward,
-} from "./walk3d/constants.js";
+import { BACKGROUND } from "./walk3d/constants.js";
 import { scene_building } from "./walk3d/scene-building.js";
 import { scene_building_2 } from "./walk3d/scene-building-2.js";
 import { scene_building_3 } from "./walk3d/scene-building-3.js";
@@ -191,7 +128,10 @@ export class Walk3D {
     this.observeSize();
     this.start();
 
-    store.onChange(() => {
+    // Kept so dispose() can detach it. A subscription that outlives the
+    // renderer fires this callback against a freed Rapier world the moment the
+    // store emits again.
+    this._unsubscribeStore = store.onChange(() => {
       if (store.mode !== "3d" && this.paintballMode) {
         this.paintballMode = false;
         this.clearPaintball();

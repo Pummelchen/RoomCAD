@@ -90,7 +90,7 @@ export const scene_building_2 = {
   },
 
   addWallPlan(room, wall, doors, windows, height) {
-    const plan = P.wallBuildPlan(wall, doors, windows, height);
+    const plan = P.wallBuildPlan(wall, doors, windows);
     const sill = Math.min(P.SILL_HEIGHT, height);
     const glassTop = Math.min(sill + P.GLASS_HEIGHT, height);
     const doorTop = Math.min(P.DOOR_HEIGHT, height);
@@ -178,9 +178,6 @@ export const scene_building_2 = {
     // round in 2D opens the same way here.
     const swingAt = P.doorHinge(wall, door);
     const hinge = swingAt.point;
-    const dx = wall.end.x - wall.start.x;
-    const dz = wall.end.z - wall.start.z;
-    const len = Math.max(Math.hypot(dx, dz), 0.0001);
     // Along the wall FROM THE HINGE: a closed leaf reaches across the opening
     // that way, and an open one swings a quarter turn from it.
     const ux = swingAt.along.x;

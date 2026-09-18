@@ -4,6 +4,7 @@
 // viewer and every method still reaches every other one.
 
 import * as THREE from "three";
+import { seedFromString } from "../city.js";
 import {
   BULB_COLOR,
   GLASS_COLOR,
@@ -385,6 +386,8 @@ export const scene_building_3 = {
       mesh.position.set(building.centerX, this.floorY() + spec.y, building.centerZ);
       mesh.renderOrder = -9;   // after the sky dome, before everything solid
       mesh.frustumCulled = false;
+      // Sky, not something a shot can land on.
+      mesh.userData.environment = true;
       this.scene.add(mesh);
       mesh.userData.altitude = spec.y;
       this.cloudLayers.push({ mesh, mat, map, base: spec.opacity, dx: spec.dx, dy: spec.dy });

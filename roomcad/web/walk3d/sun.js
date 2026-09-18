@@ -2,6 +2,8 @@
 //
 // Part of walk3d.js, split under roomcad/web/walk3d/.
 
+import { SG_LAT, SG_LON, SG_UTC_OFFSET } from "./constants.js";
+
 
 export function dayOfYear(date) {
   const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 0));

@@ -81,7 +81,16 @@ export const rapier_physics_2 = {
 
   makeFloorCanvas(bounds) {
     const layout = P.tileLayout(bounds.width, bounds.length);
-    const tilePx = 96; // 60 cm → 5 mm grout ≈ 1 px
+    // A fixed pixel budget, not 96 px per tile. The tile COUNT is what the room
+    // decides — a legal 60 m plate is 100 tiles across — and at 96 px a tile
+    // that is 9600²: 351 MB of CPU bitmap, and past WebGPU's default 8192
+    // maxTextureDimension2D. Shrinking the tile instead of the count keeps the
+    // floor texture's memory O(1) in the room's area, and the 1 px grout line
+    // is drawn at whatever size the tile ends up, so it survives (down to the
+    // 1 px floor below).
+    const MAX_CANVAS_PX = 4096;
+    const tilePx = Math.max(1, Math.min(96,
+      Math.floor(MAX_CANVAS_PX / Math.max(1, layout.columns, layout.rows))));
     const width = Math.max(1, Math.round(layout.columns * tilePx));
     const height = Math.max(1, Math.round(layout.rows * tilePx));
     const canvas = document.createElement("canvas");

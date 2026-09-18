@@ -4,6 +4,7 @@
 // viewer and every method still reaches every other one.
 
 import * as THREE from "three";
+import { playPlop } from "../audio.js";
 import { store } from "../store.js";
 import {
   RUBBLE_COLOR,
@@ -18,10 +19,15 @@ export const paintball = {
   /// Fires a green paintball straight ahead from the camera.
   shoot() {
     playPlop();
+    const range = 60;
     const origin = this.camera.position.clone();
     const direction = new THREE.Vector3();
     this.camera.getWorldDirection(direction);
     this.raycaster.set(origin, direction);
+    // The fallback range has to bound the ray as well, or a ray that misses
+    // everything solid reports whatever far-off mesh it found (the sky dome)
+    // and the ball is thrown there instead of 60 m ahead.
+    this.raycaster.far = range;
     const targets = this.shootableMeshes();
     const hits = this.raycaster.intersectObjects(targets, false);
     let hit = hits.length > 0 ? hits[0] : null;
@@ -52,7 +58,6 @@ export const paintball = {
       }
     }
 
-    const range = 60;
     const to = hit
       ? hit.point.clone()
       : origin.clone().add(direction.clone().multiplyScalar(range));
@@ -119,9 +124,13 @@ export const paintball = {
   shootableMeshes() {
     const meshes = [];
     this.scene.traverse(node => {
-      if (node.isMesh && !node.userData.splat && !node.userData.ball && !node.userData.gun) {
-        meshes.push(node);
-      }
+      if (!node.isMesh) return;
+      // The sky, the cloud decks and precipitation are not solid. A shot that
+      // hit the dome reported it at ~380 m, which made the 60 m fallback dead;
+      // precipitation is named by city.js, which owns it.
+      if (node.userData.environment || node.name === "city-precipitation") return;
+      if (node.userData.splat || node.userData.ball || node.userData.gun) return;
+      meshes.push(node);
     });
     return meshes;
   },
@@ -273,7 +282,10 @@ export const paintball = {
       this.camera.aspect = rect.width / rect.height;
       this.camera.updateProjectionMatrix();
     };
-    new ResizeObserver(resize).observe(this.container);
+    // Kept so dispose() can disconnect it. A live observer fires after teardown
+    // and calls setSize on a renderer that no longer exists.
+    this._resizeObserver = new ResizeObserver(resize);
+    this._resizeObserver.observe(this.container);
     resize();
   },
 
@@ -303,9 +315,28 @@ export const paintball = {
       target.removeEventListener(type, handler, options);
     }
     this._listeners = [];
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+    if (this._unsubscribeStore) {
+      this._unsubscribeStore();
+      this._unsubscribeStore = null;
+    }
     this.city.dispose();
     this.disposeScene();
+    // disposeMaterial() deliberately skips the two reusable textures, so
+    // nothing else frees them — they are ours to release.
+    if (this.skyTexture) this.skyTexture.dispose();
+    if (this.cloudTexture) this.cloudTexture.dispose();
+    // The PMREM texture built in start() is ours too.
+    if (this.environment) this.environment.dispose();
     if (this.world) this.world.free();
+    // The world was just freed; a later store emit must not reach it. Leaving
+    // physicsReady true is what let the callback in the constructor call
+    // buildPhysics() on a freed Rapier world.
+    this.world = null;
+    this.physicsReady = false;
     if (this.renderPipeline && this.renderPipeline.dispose) this.renderPipeline.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {

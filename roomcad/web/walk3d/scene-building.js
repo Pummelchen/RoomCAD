@@ -4,6 +4,7 @@
 // viewer and every method still reaches every other one.
 
 import * as THREE from "three";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import * as RAPIER from "../lib/rapier.mjs";
 import { City } from "../city.js";
 import * as P from "../plan.js";
@@ -78,15 +79,23 @@ export const scene_building = {
       }
       await Promise.race([
         this.renderer.init(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("WebGPU init timed out")), 20000)),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("WebGPU init timed out")), 20000);
+        }),
       ]);
       await RAPIER.init();
       this.physicsReady = true;
 
       // Image-based lighting (needs an initialised renderer).
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      this.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      const roomEnvironment = new RoomEnvironment();
+      this.environment = pmrem.fromScene(roomEnvironment, 0.04).texture;
       pmrem.dispose();
+      // fromScene() renders the environment into the PMREM synchronously and
+      // keeps nothing but the texture it returned, so the room scene — and the
+      // geometry and materials it built — is dead weight from here. Release it
+      // now; nothing holds it for the page's lifetime any more.
+      roomEnvironment.dispose();
 
       this.build(store.room, true);
       this.setupPostProcessing();
