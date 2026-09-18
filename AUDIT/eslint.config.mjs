@@ -89,15 +89,12 @@ const BUG_RULES = {
   "no-async-promise-executor": "error",
   "no-promise-executor-return": "error",
   "no-return-await": "error",
-  // Off by decision, not suppressed. The 9 findings are all `store.x = value`
-  // (and `appState.x = value`) after an `await` in an async UI handler. `store`
-  // and `appState` are module singletons that are never reassigned, and every
-  // write is a plain last-write-wins assignment in a single-threaded event loop.
-  // No read-modify-write spans an await, so the rule's premise — a stale read
-  // carried across an await — does not hold here. This is a genuinely wrong
-  // check for this codebase, recorded as AUDIT ledger task T0048.
-  "require-atomic-updates": "off",
-  "no-await-in-loop": "off",
+  // The findings this rule used to report (9 assignments to the store/appState
+  // singletons after an await) were removed by the T0018/T0019/T0020/T0039
+  // restructuring, which moved the post-await state into one place. The rule is
+  // back on and reports nothing; see AUDIT ledger T0048.
+  "require-atomic-updates": "error",
+  "no-await-in-loop": "error",
 
   // ── error handling ───────────────────────────────────────────────────────
   "no-throw-literal": "error",
@@ -124,21 +121,28 @@ const BUG_RULES = {
   "security/detect-bidi-characters": "error",
 
   // ── innerHTML built from anything but a literal ──────────────────────────
-  // `esc` is this codebase's escape function (app/ui.js), declared here so the
-  // rule does not have to guess. A built-in `esc` call is accepted; a raw
-  // interpolation into innerHTML is not.
+  // Two escapers are declared, both real functions in app/ui.js:
+  //   * `esc(value)`  — used when a single value is interpolated by hand;
+  //   * `safeHtml`    — a tagged template that escapes every raw interpolation
+  //                     itself. It is the preferred form, because it cannot be
+  //                     forgotten at a site the way a hand-written `esc()` can.
+  // A value that `safeHtml` itself produced (a SafeHtml marker) passes through
+  // untouched, which is how one builder's output composes into another's.
+  // Nothing else is trusted: an untagged `innerHTML = `...${x}...`` is still an
+  // error, and so is `innerHTML = someVariable`.
+  "no-unsanitized/property": [
+    "error",
+    { escape: { methods: ["esc"], taggedTemplates: ["safeHtml"] } },
+  ],
+  // `import()` is one of this rule's default checks, because in a browser
+  // importing a URL built from untrusted input is a code-loading sink. It is
+  // correct for production (the web block below keeps the defaults) and
+  // meaningless in the Node test harness, where `import()` of a repository path
+  // is the module system. The tests block therefore disables the defaults and
+  // re-enables every real DOM sink explicitly — so `insertAdjacentHTML`,
+  // `createContextualFragment`, `document.write` and `setHTMLUnsafe` are still
+  // checked in tests; only the import pseudo-sink is dropped there.
   "no-unsanitized/method": "error",
-  // Severity `warn`, on the record. The rule only accepts an escaping method
-  // that wraps the ENTIRE assigned expression; this codebase escapes each
-  // interpolation individually (`innerHTML = `...${esc(name)}...``), which is
-  // safe but invisible to the rule. It flagged exactly 12 sites (files.js,
-  // status.js, view.js, editor2d/coords.js); every interpolation at all 12 is
-  // `esc()`-wrapped or is a number/boolean, verified by a human XSS pass that
-  // fuzzed room names and label text with `</text><script>`, attribute-breaking
-  // quotes and ampersands. Recorded as AUDIT ledger task T0049. The waiver is
-  // compensated by tests/audit-xss.test.mjs, a source contract that re-checks
-  // every interpolation at those sites rather than trusting this comment.
-  "no-unsanitized/property": ["warn", { escape: { methods: ["esc"] } }],
 };
 
 const PLAIN_RULES = {
@@ -174,33 +178,31 @@ export default [
     rules: {
       ...BUG_RULES,
       ...PLAIN_RULES,
-      // Two rule scopes are adjusted for the Node test harness and nothing else.
-      // This is a rule-domain decision, recorded as AUDIT ledger task T0048-adjacent
-      // (see tool-coverage.md), NOT a suppression of a finding:
-      //
-      //  * `no-unsanitized/method` is a DOM-sink rule (innerHTML/insertAdjacentHTML/
-      //    document.write). It also flags dynamic `import()`, which the test harness
-      //    uses deliberately to load a module from a `data:` URL so that reloading it
-      //    gives a SECOND module instance — the very thing tests/live-multi.test.mjs
-      //    needs. There is no DOM and no untrusted string in that path.
-      //  * `no-new-func` is the documented `new Function` lifting pattern in
-      //    AGENTS.md ("The older tests that lift app.js functions with `new Function`
-      //    still work"). The code it compiles is this repository's own source text.
-      //
-      // Both stay at `error` for roomcad/web, where they are real checks.
-      "no-unsanitized/method": "off",
-      "no-new-func": "off",
-      // `security/detect-unsafe-regex` is reported as a warning here, on the
-      // record, for three patterns in tests/harness/dom-stub.mjs: the selector
-      // splitter (line 100), the HTML tokenizer (139) and the attribute reader
-      // (151). Each was read and each is LINEAR for its input, not catastrophic:
-      // the rule's heuristic is star-height > 1, and every nested repetition here
-      // is anchored and/or disjoint by first character, so it backtracks once per
-      // character rather than exponentially. The input is this repository's own
-      // index.html and test-built HTML — never an untrusted or unbounded string —
-      // and a DOM stub is not a production path. Recorded as ledger task T0051
-      // rather than silenced, and it remains `error` for roomcad/web.
-      "security/detect-unsafe-regex": "warn",
+      // The one rule whose DOM-sink list is narrowed for the Node harness. See
+      // the note on `no-unsanitized/method` above: `import()` is a browser
+      // code-loading sink and a Node module loader, so the tests block disables
+      // the defaults and re-enables every DOM sink by hand. Nothing here is a
+      // severity waiver — the rule stays at `error` and still catches all four
+      // DOM sinks in tests.
+      "no-unsanitized/method": [
+        "error",
+        { defaultDisable: true },
+        {
+          insertAdjacentHTML: { properties: [1] },
+          createContextualFragment: { properties: [0] },
+          write: { objectMatches: ["document"], properties: [0] },
+          writeln: { objectMatches: ["document"], properties: [0] },
+          setHTMLUnsafe: { properties: [0] },
+        },
+      ],
+      // `no-await-in-loop` is a performance rule: a serial await per iteration is
+      // how an N+1 creeps into production. It stays at `error` for `roomcad/web`
+      // (which is clean) and is off here, because every use in the suite is a
+      // poll-until-condition loop — `while (Date.now() < until) { …; await sleep(5) }`
+      // — where the await IS the loop and serialising is the point. There is no
+      // form of that loop the rule accepts, and parallelising it would change what
+      // the test means.
+      "no-await-in-loop": "off",
     },
   },
   {

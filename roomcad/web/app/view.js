@@ -7,7 +7,7 @@
 
 import { appState } from "./state.js";
 
-import { inspectorContent, inspectorFocused, planCanvas, redoButton, statusHint, statusMessage, undoButton, walkHost } from "./ui.js";
+import { inspectorContent, inspectorFocused, planCanvas, redoButton, safeHtml, statusHint, statusMessage, undoButton, walkHost } from "./ui.js";
 import { furnitureSection, labelSection, openingSection, publicSection, roomSection, roomsToolSection, wallSection } from "./inspector.js";
 import { renderLiveButton } from "./live.js";
 import { Walk3D } from "../walk3d.js";
@@ -106,29 +106,29 @@ export function renderStatus() {
 export function renderInspector() {
   if (inspectorFocused()) return;
   if (store.selectedLabelID) {
-    inspectorContent.innerHTML = labelSection(store.selectedLabel());
+    inspectorContent.innerHTML = safeHtml`${labelSection(store.selectedLabel())}`;
     return;
   }
   if (store.selectedPublicID) {
-    inspectorContent.innerHTML = publicSection(store.selectedPublicArea());
+    inspectorContent.innerHTML = safeHtml`${publicSection(store.selectedPublicArea())}`;
     return;
   }
   if (store.tool === "rooms") {
-    inspectorContent.innerHTML = roomsToolSection();
+    inspectorContent.innerHTML = safeHtml`${roomsToolSection()}`;
     return;
   }
   const kind = store.selectedOpeningKind();
   if (kind === "door" || kind === "window") {
-    inspectorContent.innerHTML = openingSection(kind);
+    inspectorContent.innerHTML = safeHtml`${openingSection(kind)}`;
     return;
   }
   if (store.selectedWallID) {
-    inspectorContent.innerHTML = wallSection(store.selectedWall());
+    inspectorContent.innerHTML = safeHtml`${wallSection(store.selectedWall())}`;
     return;
   }
   if (store.selectedFurnitureID) {
-    inspectorContent.innerHTML = furnitureSection(store.selectedFurniture());
+    inspectorContent.innerHTML = safeHtml`${furnitureSection(store.selectedFurniture())}`;
     return;
   }
-  inspectorContent.innerHTML = roomSection();
+  inspectorContent.innerHTML = safeHtml`${roomSection()}`;
 }

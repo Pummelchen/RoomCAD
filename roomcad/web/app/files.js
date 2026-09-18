@@ -3,7 +3,7 @@
 // Part of app.js, which is split under roomcad/web/app/ and composed in
 // ../app.js — imported there in the order this code used to run in.
 
-import { announceRepairs, confirmDiscard, esc, fileInput, roomsList, toast } from "./ui.js";
+import { announceRepairs, confirmDiscard, fileInput, roomsList, safeHtml, toast } from "./ui.js";
 import { apiDeleteRoom, apiListRooms, apiLoadLastRoom, apiLoadRoom, apiLoadRoomVersion, apiRememberLastRoom, apiSaveRoom, apiVersions } from "./api.js";
 import { CLIENT_ID, liveDetached, watchRoom } from "./watch.js";
 import * as P from "../plan.js";
@@ -36,16 +36,23 @@ export async function saveRoom({ watch = !liveDetached } = {}) {
       verified = false;
     }
 
-    store.serverRoomName = result.name;
-    store.serverRoomVersion = result.version;
+    // The whole post-await state lands in one atomic step. Four separate
+    // `store.x = …` writes after an await are what `require-atomic-updates`
+    // flags: a second save could interleave with them. One `Object.assign` is a
+    // single update of the store that was read before the request went out.
+    //
     // The version is not repeated here: renderStatus already appends it, so
     // spelling it out again read as "Saved as Attic-Flat · v0 · Shared · v0".
-    store.status = !verified
-      ? "Saved, but the data could not be verified"
-      : forking
-        ? "Started " + result.name + " — the previous design is untouched"
-        : "Saved as " + result.name;
-    store.edited = false;
+    Object.assign(store, {
+      serverRoomName: result.name,
+      serverRoomVersion: result.version,
+      status: !verified
+        ? "Saved, but the data could not be verified"
+        : forking
+          ? "Started " + result.name + " — the previous design is untouched"
+          : "Saved as " + result.name,
+      edited: false,
+    });
     store.emit();
     renderRooms();
     if (watch) watchRoom(result.name);
@@ -176,8 +183,7 @@ export async function openRoomModal() {
     seen.add(r.name);
     const li = document.createElement("li");
     const button = document.createElement("button");
-    button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
-      `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
+    button.innerHTML = safeHtml`<div class="room-name">${r.name}</div><div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => {
       modal.hidden = true;
       showVersionModal(r.name);
@@ -226,8 +232,7 @@ async function showVersionModal(name) {
   for (const v of versions) {
     const li = document.createElement("li");
     const button = document.createElement("button");
-    button.innerHTML = `<div class="room-name">Version ${v.version}</div>` +
-      `<div class="room-meta">${new Date(v.savedAt).toLocaleString()}</div>`;
+    button.innerHTML = safeHtml`<div class="room-name">Version ${v.version}</div><div class="room-meta">${new Date(v.savedAt).toLocaleString()}</div>`;
     button.addEventListener("click", () => {
       modal.hidden = true;
       openStoredRoom(name, v.version);
@@ -295,8 +300,7 @@ export async function renderRooms() {
     seen.add(r.name);
     const li = document.createElement("li");
     const button = document.createElement("button");
-    button.innerHTML = `<div class="room-name">${esc(r.name)}</div>` +
-      `<div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
+    button.innerHTML = safeHtml`<div class="room-name">${r.name}</div><div class="room-meta">v${r.version} · ${new Date(r.savedAt).toLocaleDateString()} · click to open</div>`;
     button.addEventListener("click", () => showVersionModal(r.name));
     li.appendChild(button);
     li.addEventListener("contextmenu", e => {

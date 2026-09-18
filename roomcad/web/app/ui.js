@@ -44,6 +44,39 @@ export function esc(s) {
   }[c]));
 }
 
+// The marker a `safeMarkup` value carries, so a builder's output can be
+// interpolated into another builder without being escaped a second time.
+const SAFE = Symbol("roomcad.safeHtml");
+
+/// Marks app-built markup as safe to insert. Returns a small tagged value.
+///
+/// Every `${value}` is escaped with `esc()` unless it is itself a `safeMarkup`
+/// value, in which case its `html` passes through unchanged. That is what lets
+/// `statRow()`/`field()`/a whole section compose: one builder's marked result is
+/// trusted by the next, while a room name or a teammate's label — a raw string
+/// from outside the app — is escaped exactly once. Literal text between
+/// interpolations passes through untouched.
+///
+/// Prefer this over `safeHtml` for anything another builder interpolates: the
+/// marker is what keeps the escaping from happening twice.
+export function safeMarkup(strings, ...values) {
+  let html = "";
+  strings.forEach((part, i) => {
+    html += part;
+    if (i >= values.length) return;
+    const value = values[i];
+    html += value && value[SAFE] ? value.html : esc(value);
+  });
+  return { [SAFE]: true, html };
+}
+
+/// The tag used at every `innerHTML` assignment. Returns a PRIMITIVE string, so
+/// the DOM stub and `String.prototype` methods keep working exactly as they did
+/// on a hand-built template literal.
+export function safeHtml(strings, ...values) {
+  return safeMarkup(strings, ...values).html;
+}
+
 export function inspectorFocused() {
   const el = document.activeElement;
   return !!el && !!el.closest && !!el.closest("#inspector");

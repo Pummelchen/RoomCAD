@@ -6,20 +6,33 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { registerHooks } from "node:module";
+import { resolve } from "./harness/three-resolver.mjs";
+import { installDOM } from "./harness/dom-stub.mjs";
 import { pageCss } from "./harness/page-css.mjs";
-import { appSource, appLiftable } from "./harness/app-source.mjs";
+import { appSource } from "./harness/app-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = appSource();
-// Lifting a function with `new Function` needs the source WITHOUT `export `,
-// which is not valid inside a function body; the data: import above needs it
-// WITH, because that is how the function is handed over. Hence both.
-const liftable = appLiftable();
 const html = readFileSync(join(root, "roomcad", "web", "index.html"), "utf8");
 // The page's stylesheets, concatenated in cascade order: the CSS is split
 // under roomcad/web/styles/ now, and reading one of the six would answer a
 // question about the page with a sixth of its stylesheet.
 const css = pageCss();
+
+// app.js is importable now, so the live code is the real code rather than a
+// fragment lifted out of the source. A bare specifier inside roomcad/web/
+// resolves through the page's own import map, and the real page gives the app
+// the buttons and status line it touches.
+registerHooks({ resolve });
+installDOM({ page: true });
+
+const { liveUpdateAction, LIVE_SYNC_MS } = await import("../roomcad/web/app/watch.js");
+const { resetLiveSequence, startLiveSync, stopLiveSync, scheduleLivePush } =
+  await import("../roomcad/web/app/status.js");
+const { appState } = await import("../roomcad/web/app/state.js");
+const { store } = await import("../roomcad/web/store.js");
+const P = await import("../roomcad/web/plan.js");
 
 let failed = 0;
 let passed = 0;
@@ -85,15 +98,9 @@ check("floor area is the enclosed floor, not width times length",
 // the moment people start collaborating: "the other side opened it but none of
 // the walls I drew were shown".
 //
-// Driven through the real function rather than read out of the source. The
-// function is lifted out of app.js on its own because app.js reaches for the
-// DOM the moment it loads.
+// Driven through the real exported function now, not a copy lifted out of the
+// source.
 {
-const src = app.slice(app.indexOf("export function liveUpdateAction"));
-  const body = src.slice(0, src.indexOf("\nfunction watchRoom"));
-  const { liveUpdateAction } = await import(
-    "data:text/javascript;base64," + Buffer.from(body, "utf8").toString("base64"));
-
   const me = { serverRoomName: "flat", serverRoomVersion: 3, clientId: "me", live: true,
                dragTransactionActive: false };
   const draft = (over = {}) => ({ name: "flat", clientId: "them", live: true, version: 3, ...over });
@@ -148,61 +155,85 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
 // seconds whether it still matches, and this runs that real code — the timer
 // and the network handed in, so the guards can be exercised rather than read.
 {
-  // The boundary used to be the next section's MARK comment, which is no longer
-  // adjacent to this code — the split gave that MARK its own module. The sync
-  // code is the run of functions ending with stopLiveSync(), and the indices come
-  // from the LIFTABLE source because that is what gets sliced below; indices from
-  // the other one would land mid-identifier.
-  const start = liftable.indexOf("let livePushTimer = null;");
-  const end = liftable.indexOf("\n}", liftable.indexOf("function stopLiveSync")) + 2;
+  // The sync code is the run of functions ending with stopLiveSync(); its
+  // location is still asserted against the source.
+  const start = app.indexOf("let livePushTimer = null;");
+  const end = app.indexOf("\n}", app.indexOf("function stopLiveSync")) + 2;
   check("the sync code can be located", start > 0 && end > start + 2);
 
   // The interval is read out of the app rather than restated here: a test that
-  // repeats the number it is checking passes whatever the number becomes.
+  // repeats the number it is checking passes whatever the number becomes. The
+  // module's exported constant must agree with the declaration the source greps.
   const declared = Number((app.match(/const LIVE_SYNC_MS = (\d+);/) || [])[1]);
-  check("the app declares how often to check", Number.isFinite(declared));
+  check("the app declares how often to check", Number.isFinite(declared) && LIVE_SYNC_MS === declared);
   check("which is a couple of seconds, as asked for",
     declared >= 1000 && declared <= 3000);
 
+  // A room of one wall, serialised by the app's own serializer, so the digest
+  // the drift check computes is the one the server would.
+  const roomOf = wallID => {
+    const room = P.freshRoom("Flat", 6, 4, 2.6);
+    room.walls = [{ id: wallID, start: { x: 0, z: 0 }, end: { x: 2, z: 0 } }];
+    return room;
+  };
+  const roomJson = wallID => P.serializeRoom(roomOf(wallID));
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const tick = () => new Promise(r => { realSetTimeout(r, 0); });
+
+  /// Puts the shared store and the real status module into the state a freshly
+  /// opened live session starts in, and hands their timers and network in.
   const build = () => {
-    const calls = [];
-    let scheduled = null;
-    const store = {
-      live: true, serverRoomName: "flat", serverRoomVersion: 2,
-      dragTransactionActive: false, room: { walls: [{ id: "w-1" }] },
-      status: "", emit() {}, applied: null,
-      applyRemoteRoom(room, version) { this.room = room; this.applied = version; },
-    };
+    let interval = null;      // the drift-check timer startLiveSync() registers
+    let pending = null;       // the 150 ms push timer scheduleLivePush() registers
+    const calls = [];         // /api/live-check requests
+    const pushes = [];        // /api/live/ publishes
     let reply = { inSync: true, version: 2 };
-    const pushes = [];
     let pushAnswer = { ok: true };
-    const fetchStub = async (url, opts) => {
-      calls.push({ url, body: JSON.parse(opts.body) });
-      return { ok: true, json: async () => reply };
+
+    globalThis.setTimeout = (fn, ms) => { pending = { fn, ms }; return 1; };
+    globalThis.clearTimeout = () => { pending = null; };
+    globalThis.setInterval = (fn, ms) => { interval = { fn, ms }; return 1; };
+    globalThis.clearInterval = () => { interval = null; };
+
+    // The module's own reset clears the sequence and any pending push, exactly
+    // as a room change does.
+    resetLiveSequence();
+    store.live = true;
+    store.serverRoomName = "flat";
+    store.serverRoomVersion = 2;
+    store.dragTransactionActive = false;
+    store.status = "";
+    store.room = P.parseRoom(roomJson("w-1"));
+
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (u.startsWith("/api/live-check/")) {
+        calls.push({ url: u, body: JSON.parse(opts.body) });
+        return { ok: true, json: async () => reply };
+      }
+      if (u.startsWith("/api/live/")) {
+        pushes.push({ name: decodeURIComponent(u.slice("/api/live/".length)), ...JSON.parse(opts.body) });
+        return { ok: true, json: async () => pushAnswer };
+      }
+      return { ok: true, json: async () => ({}) };
     };
-    const api = new Function(
-      "store", "P", "CLIENT_ID", "fetch", "apiLiveDraft", "toast", "appState",
-      "setInterval", "clearInterval", "setTimeout", "clearTimeout",
-      `const LIVE_SYNC_MS = ${declared};\n` + liftable.slice(start, end) +
-      "\nreturn { checkLiveSync, startLiveSync, stopLiveSync, scheduleLivePush, pushLiveDraft, seq: () => appState.liveSeq };"
-    )(
-      store,
-      { serializeRoom: r => JSON.stringify(r), parseRoom: t => JSON.parse(t) },
-      "me", fetchStub,
-      async (json, name, clientId, version, baseSeq) => {
-        pushes.push({ json, name, clientId, version, baseSeq });
-        return pushAnswer;
-      },
-      () => {},
-      // appState: the live sequence is shared mutable state now, so the lifted
-      // code writes this rather than a `let` declared in the lifted fragment.
-      { liveSeq: 0 },
-      (fn, ms) => { scheduled = { fn, ms }; return 1; },
-      () => { scheduled = null; },
-      () => 1, () => {},
-    );
+
+    // startLiveSync() hands the REAL checkLiveSync to setInterval, so the stub
+    // above is what captures the function the app runs on its timer.
+    startLiveSync();
+
     return {
-      api, store, calls, timer: () => scheduled, pushes,
+      calls, pushes,
+      timer: () => interval,
+      checkLiveSync: () => interval.fn(),
+      startLiveSync, stopLiveSync, scheduleLivePush,
+      // Runs the pending 150 ms push timer the way the browser would.
+      fire: () => { const t = pending; pending = null; if (t) t.fn(); },
+      seq: () => appState.liveSeq,
       reply: v => { reply = v; },
       answerPushWith: v => { pushAnswer = v; },
     };
@@ -210,12 +241,11 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
 
   // It asks, on a timer, with a fingerprint rather than the drawing.
   {
-    const { api, calls, timer } = build();
-    api.startLiveSync();
+    const { calls, timer, checkLiveSync, stopLiveSync } = build();
     check("joining live schedules a repeating check", timer() !== null);
     check("and it uses that interval rather than one of its own",
       timer() && timer().ms === declared);
-    await timer().fn();
+    await checkLiveSync();
     check("and it asks the server", calls.length === 1);
     check("it asks about the room it is in",
       calls[0] && calls[0].url === "/api/live-check/flat");
@@ -223,16 +253,16 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
       calls[0] && /^[0-9a-f]{64}$/.test(calls[0].body.digest) && calls[0].body.json === undefined);
     check("the fingerprint is the one the server computes",
       calls[0] && calls[0].body.digest
-        === createHash("sha256").update(JSON.stringify({ walls: [{ id: "w-1" }] })).digest("hex"));
-    api.stopLiveSync();
+        === createHash("sha256").update(P.serializeRoom(store.room)).digest("hex"));
+    stopLiveSync();
     check("leaving live stops the check", timer() === null);
   }
 
   // Told it agrees, it changes nothing but the version it is on.
   {
-    const { api, store, reply } = build();
+    const { checkLiveSync, reply } = build();
     reply({ inSync: true, version: 7 });
-    await api.checkLiveSync();
+    await checkLiveSync();
     check("agreeing leaves the drawing alone", store.room.walls[0].id === "w-1");
     check("and moves it onto the version everyone is on", store.serverRoomVersion === 7);
     check("agreeing is not announced as an event", store.status === "");
@@ -240,12 +270,12 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
 
   // Told it has drifted, it takes the shared state.
   {
-    const { api, store, reply } = build();
-    reply({ inSync: false, json: JSON.stringify({ walls: [{ id: "w-theirs" }] }), version: 9 });
-    await api.checkLiveSync();
+    const { checkLiveSync, reply } = build();
+    reply({ inSync: false, json: roomJson("w-theirs"), version: 9 });
+    await checkLiveSync();
     check("drifting is corrected from the shared state",
       store.room.walls.length === 1 && store.room.walls[0].id === "w-theirs");
-    check("and carries the version with it", store.applied === 9);
+    check("and carries the version with it", store.serverRoomVersion === 9);
     check("and the person is told why their drawing moved",
       /caught up/i.test(store.status));
   }
@@ -254,27 +284,27 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
   // differ" for the good reason that WE changed it — and taking that answer
   // would throw away the very edit being made.
   {
-    const { api, calls } = build();
-    api.scheduleLivePush();                 // an edit is waiting to go out
-    await api.checkLiveSync();
+    const { checkLiveSync, calls, scheduleLivePush } = build();
+    scheduleLivePush();                     // an edit is waiting to go out
+    await checkLiveSync();
     check("a client with unpublished work does not ask", calls.length === 0);
   }
   {
-    const { api, store, calls } = build();
+    const { checkLiveSync, calls } = build();
     store.dragTransactionActive = true;
-    await api.checkLiveSync();
+    await checkLiveSync();
     check("a client mid-drag does not ask", calls.length === 0);
   }
   {
-    const { api, store, calls } = build();
+    const { checkLiveSync, calls } = build();
     store.live = false;
-    await api.checkLiveSync();
+    await checkLiveSync();
     check("a client that has not joined live does not ask", calls.length === 0);
   }
   {
-    const { api, store, calls } = build();
+    const { checkLiveSync, calls } = build();
     store.serverRoomName = null;
-    await api.checkLiveSync();
+    await checkLiveSync();
     check("a client with no room on the server does not ask", calls.length === 0);
   }
 
@@ -284,39 +314,48 @@ const src = app.slice(app.indexOf("export function liveUpdateAction"));
   // sequence the copy is based on, and a refusal is caught up from, not
   // retried.
   {
-    const { api, store, pushes, answerPushWith } = build();
+    const { fire, pushes, seq, answerPushWith } = build();
     answerPushWith({ ok: true, seq: 5 });
-    api.pushLiveDraft();
-    await new Promise(r => { setTimeout(r, 0); });
+    scheduleLivePush();
+    fire();
+    await tick();
     check("an edit is published against the copy it was made on",
       pushes.length === 1 && pushes[0].baseSeq === 0, JSON.stringify(pushes[0]));
-    check("and the client moves on to what the server assigned", api.seq() === 5);
+    check("and the client moves on to what the server assigned", seq() === 5);
 
-    api.pushLiveDraft();
-    await new Promise(r => { setTimeout(r, 0); });
+    scheduleLivePush();
+    fire();
+    await tick();
     check("so the next edit is published against that",
       pushes.length === 2 && pushes[1].baseSeq === 5, JSON.stringify(pushes[1]));
     check("the room really is what gets sent",
-      JSON.parse(pushes[1].json).walls[0].id === "w-1");
+      JSON.parse(pushes[1].json).room.walls[0].id === "w-1");
     check("and it is sent for the room this client is in",
       pushes[1].name === "flat" && pushes[1].version === 2);
     check("nothing was applied over the person's own work", store.room.walls[0].id === "w-1");
   }
   {
-    const { api, store, answerPushWith } = build();
+    const { fire, pushes, seq, answerPushWith } = build();
     answerPushWith({
       ok: false, stale: true, seq: 9, version: 4,
-      json: JSON.stringify({ walls: [{ id: "w-theirs" }] }),
+      json: roomJson("w-theirs"),
     });
-    api.pushLiveDraft();
-    await new Promise(r => { setTimeout(r, 0); });
+    scheduleLivePush();
+    fire();
+    await tick();
     check("a refused edit leaves the client on the shared state, not its own",
       store.room.walls.length === 1 && store.room.walls[0].id === "w-theirs");
-    check("carrying the version that state is on", store.applied === 4);
-    check("and the sequence to publish against next", api.seq() === 9);
+    check("carrying the version that state is on", store.serverRoomVersion === 4);
+    check("and the sequence to publish against next", seq() === 9);
     check("the person is told their copy was out of date, in words they can act on",
       /out of date/i.test(store.status) && /again/i.test(store.status), store.status);
+    void pushes;
   }
+
+  globalThis.setTimeout = realSetTimeout;
+  globalThis.clearTimeout = realClearTimeout;
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
 
   // The sequence has to be taken from a message BEFORE deciding to ignore it.
   // A client ignores the echo of its own save — and that echo is the only place
