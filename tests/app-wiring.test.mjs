@@ -44,7 +44,7 @@ function check(name, cond, detail = "") {
   console.error("FAIL: " + name + (detail ? " — " + detail : ""));
 }
 
-const settle = () => new Promise(resolve => setTimeout(resolve, 30));
+const settle = () => new Promise(resolve => { setTimeout(resolve, 30); });
 
 const dom = installDOM({ width: 1200, height: 800 });
 

@@ -4,7 +4,6 @@
 //
 // Run:  node tests/plan-editing.test.mjs
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 

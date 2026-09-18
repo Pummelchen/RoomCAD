@@ -12,13 +12,8 @@
 // lifted out of the source and driven with fakes, as mode-switch.test.mjs and
 // live-state.test.mjs do with app.js.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..");
 const walk = walk3dSource();
 
 let passed = 0;

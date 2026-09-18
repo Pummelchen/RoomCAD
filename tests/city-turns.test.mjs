@@ -28,7 +28,7 @@
 
 import { loadWebModule } from "./harness/load-web-module.mjs";
 
-const { City, ROAD_WIDTH, seedFromString, setTransportRandom } = await loadWebModule("city.js");
+const { City, seedFromString, setTransportRandom } = await loadWebModule("city.js");
 
 let passed = 0;
 let failed = 0;

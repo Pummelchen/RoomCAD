@@ -14,7 +14,6 @@
 //
 // Run:  node tests/app-internals.test.mjs
 
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -99,7 +98,9 @@ function lift(header, params = [], extra = "") {
     && /^[0-9a-f]{64}$/.test(await roomDigest("x")));
   check("a different document gives a different digest",
     await roomDigest("a") !== await roomDigest("b"));
-  check("the same document is stable", await roomDigest("same") === await roomDigest("same"));
+  const digestOnce = await roomDigest("same");
+  const digestAgain = await roomDigest("same");
+  check("the same document is stable", digestOnce === digestAgain);
   // The room is UTF-8 in the file and on the wire; hashing must agree.
   check("non-ASCII hashes as UTF-8, not as code units",
     await roomDigest("Küche 台所") === expected("Küche 台所"));

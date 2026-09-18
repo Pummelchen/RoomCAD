@@ -89,7 +89,7 @@ async function loadLogin({ probe, login }) {
   return { els, calls, reloads, win: globalThis.window, settle: tick };
 }
 
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+const tick = () => new Promise(resolve => { setTimeout(resolve, 0); });
 const ok = () => Promise.resolve({ ok: true });
 const denied = () => Promise.resolve({ ok: false });
 

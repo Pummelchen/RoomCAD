@@ -19,7 +19,6 @@
 import { loadWebModule } from "./harness/load-web-module.mjs";
 import { vehiclesOverlap } from "./harness/overlap.mjs";
 import { coplanarClashes, coplanarInGeometry } from "./harness/coplanar.mjs";
-import { readFileSync } from "node:fs";
 import { walk3dSource } from "./harness/walk3d-source.mjs";
 
 // The same Three.js the city itself builds with, so a matrix composed here is
@@ -27,13 +26,12 @@ import { walk3dSource } from "./harness/walk3d-source.mjs";
 const THREE = await import(new URL("../roomcad/web/lib/three.webgpu.js", import.meta.url).href);
 
 const {
-  City, BLOCK_SIZE, ROAD_WIDTH, SIDEWALK, KERB_HEIGHT, GRID_RADIUS,
+  City, BLOCK_SIZE, ROAD_WIDTH, KERB_HEIGHT, GRID_RADIUS,
   ROOM_SLAB_THICKNESS, WEATHER_KINDS, NEAR_SIDE_TURN, CROSSING_TURN, seedFromString,
-  PARK_OFFSET, BAY_PITCH, PARK_CLEAR, PARK_SHARE, PARK_MIN, PARK_MAX, TURN_CONTROL_PERIOD,
+  PARK_OFFSET, BAY_PITCH, PARK_SHARE, TURN_CONTROL_PERIOD,
   FLEET_SIZE,
   REVERSE_ANGLE, REVERSE_RUN,
-  UNLOAD_MIN, UNLOAD_MAX, BUS_DWELL_MIN, BUS_DWELL_MAX, BUS_STOPS_PER_BLOCK,
-  BUS_STOP_OFFSET, RESERVE_TTL, setTransportRandom,
+  RESERVE_TTL, setTransportRandom,
 } = await loadWebModule("city.js");
 
 // The traffic is driven by real `Math.random()` in production, on purpose — no
@@ -93,8 +91,8 @@ function placements(group) {
   /// Axis-aligned world extent of `box` after transform `e` (column-major).
   const extentOf = (box, e, o) => {
     if (!box) return null;
-    let lo = [Infinity, Infinity, Infinity];
-    let hi = [-Infinity, -Infinity, -Infinity];
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
     for (let c = 0; c < 8; c++) {
       const lx = c & 1 ? box.max.x : box.min.x;
       const ly = c & 2 ? box.max.y : box.min.y;
@@ -723,7 +721,6 @@ for (const [w, l, label] of [
   const viewer = { x: 0, y: 1.6, z: 0 };
   const last = city.roadX.length - 1;
   const occupancy = new Array(city.roadX.length).fill(0);
-  let sampled = 0;
   let completedTurns = 0;
   const turning = new Set();
 
@@ -735,7 +732,6 @@ for (const [w, l, label] of [
     }
     if (f % 300) continue;
     for (const v of city.cars) occupancy[v.lane.roadIndex]++;
-    sampled++;
   }
 
   const total = occupancy.reduce((a, b) => a + b, 0);
@@ -810,7 +806,7 @@ for (const [w, l, label] of [
   const before = new Map(city.cars.map(v => [v.id, v.pace]));
   const changes = new Map(city.cars.map(v => [v.id, 0]));
   const everySeen = [];
-  let wasTurning = new Set();
+  const wasTurning = new Set();
   for (let f = 0; f < 18000; f++) {
     city.update(1 / 60, viewer);
     for (const v of city.cars) {
@@ -1397,9 +1393,6 @@ for (const [w, l, label] of [
 // frame, and this test would still be passing on assumptions that no longer
 // hold.
 {
-  const { fileURLToPath } = await import("node:url");
-  const { dirname, join } = await import("node:path");
-  const web = join(dirname(fileURLToPath(import.meta.url)), "..", "roomcad", "web");
   const walk = walk3dSource();
   const line = /const dt = ([^\n]+);/.exec(walk);
   check("walk3d caps the frame length before anything consumes it",
@@ -2016,7 +2009,7 @@ for (const [w, l, label] of [
   let busOutsideLayby = 0;
   let articStopped = 0;
   let vanInTheLane = 0;
-  let reversedIn = 0;
+  const reversedIn = 0;
   const manoeuvred = new Set();
   const arrived = new Set();
 

@@ -188,8 +188,6 @@ const CAR_COLORS = [
 const TRUCK_COLORS = [0xdfe2e6, 0x3f6fa8, 0xc8563c, 0x4a4f57, 0xd9c89a];
 const BUS_COLORS = [0xd23f36, 0x2f6f3f, 0xe0a52c, 0x3a5f9e];
 const VAN_COLORS = [0xf2f4f7, 0xdfe3e8, 0xc8ced6, 0x8d9aa8, 0x3f6fae];
-const TYRE_COLOR = 0x1b1d21;
-const GLASS_COLOR = 0x2a3038;
 const CITY_GLASS_COLOR = 0xcfe2ee;  // the pane in a near building's window
 const CITY_GLASS_T = 0.04;
 const CITY_GLASS_INSET = 0.07;      // set back from the face, so it is in a reveal
@@ -2355,7 +2353,9 @@ export class City {
   /// is actually doing. The lights are not decoration timed to look plausible:
   /// they read the same phase the vehicles obey, so what you see on the pole is
   /// why the queue in front of it is stopped.
-  _trafficSignals(poles, housings, darkLamps, cx, cz) {
+  /// `_cx`/`_cz` are retained for the call shape: the junction centre is passed
+  /// by every caller and this signature is a stable internal interface.
+  _trafficSignals(poles, housings, darkLamps, _cx, _cz) {
     this.signals = [];
     const poleH = SIGNAL_HEIGHT;
     const reach = ROAD_WIDTH / 2 + 1.6;
@@ -4906,7 +4906,9 @@ export class City {
   _writeCarMatrices() {
     if (!this.carParts || !this.vehicleMeshes) return;
     const { head, tail, brake, indicator, cabin } = this.carParts;
-    const night = 1 - clamp01(this._dayAmount);
+    // Headlights are drawn in daylight too; `night` used to gate them and was
+    // left behind. Whether lamps should follow the time of day is a design
+    // question, not a lint one — it is reported, not silently "fixed".
     const blinkOn = ((this._clock * BLINK_HZ) % 1) < 0.55;
     let heads = 0;
     let tails = 0;

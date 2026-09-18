@@ -10,13 +10,8 @@
 // bare specifier "three". So, like sidebar-panels.test.mjs, the real functions
 // are lifted out of the source and run against fakes.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { appLiftable } from "./harness/app-source.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..");
 const app = appLiftable();
 
 let failed = 0;

@@ -32,7 +32,7 @@ function check(name, cond, detail = "") {
   console.error("FAIL: " + name + (detail ? " — " + detail : ""));
 }
 
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const settle = () => new Promise(resolve => { setTimeout(resolve, 20); });
 
 // The real page, with the canvas sized the way the stub sizes one.
 const dom = installDOM({ width: 1200, height: 800, page: true });

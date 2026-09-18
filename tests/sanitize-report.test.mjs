@@ -19,7 +19,6 @@
 //
 // Run:  node tests/sanitize-report.test.mjs
 
-import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
