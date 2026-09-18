@@ -205,14 +205,33 @@ function they captured) and `security/detect-object-injection` (fires on every
 
 ## Verifying commit versus handing-over commit
 
-The verified tree is `ca9c2e6`. Every commit after it in this branch changes
-**only files under `AUDIT/`** (this record and the generated report), which no
-part of the verification consumes: the suite, `boot.test.mjs`, the linters and the
-ledger check read `roomcad/` and `tests/`. The check is one command, and it is the
-guarantee:
+The verified tree is `ca9c2e6`. Every commit after it changes **only files under
+`AUDIT/`** (this record and the generated report), which no part of the
+verification consumes: the suite, `boot.test.mjs`, the linters and the ledger check
+read `roomcad/` and `tests/`. The check is one command, and it is the guarantee:
 
 ```bash
 git diff --name-only ca9c2e6..HEAD | grep -v '^AUDIT/'   # must print nothing
+```
+
+**The verified commit was then rebased, and here is exactly what that changed.**
+The work was fast-forwarded onto `main` and pushed. The remote `main` had one
+commit the branch did not — `d15a56b`, an automated refresh of the "views (14d)"
+badge in `.github/traffic.json` — and this repository's history is linear (0 merge
+commits in 222), so `main` was rebased onto it rather than merged. Rebasing changed
+**only parentage**: the rebased equivalent of the verified commit is `bc3edc0`, and
+
+```bash
+git diff --name-only ca9c2e6 bc3edc0     # prints only .github/traffic.json
+```
+
+so every file the verification reads — `roomcad/`, `tests/`, `AUDIT/` — is
+byte-identical, and the deployed file set (`web/`, `server.py`, `roomcad_api/`)
+does not include `.github/` at all. The invariant check for the pushed branch is
+therefore:
+
+```bash
+git diff --name-only bc3edc0..HEAD | grep -v '^AUDIT/'   # must print nothing
 ```
 
 ## What Phase E does not claim
@@ -220,9 +239,13 @@ git diff --name-only ca9c2e6..HEAD | grep -v '^AUDIT/'   # must print nothing
 - It is not a browser test. `boot.test.mjs` proves the module graph and the DOM
   contract; no real browser was driven, so "the page renders" is not claimed for
   any change (unchanged from the baseline, and stated in `AGENTS.md`).
-- The production VPS was never contacted, deployed to, or read from (§0). The
-  deploy itself is `BLOCKED(owner)` in the ledger (`T0060`), with two options for
-  the human who runs it.
+- The production VPS was never deployed to, restarted, or written to (§0). Two
+  read-only facts about it were checked afterwards, when the owner asked for the
+  deploy: its public `version.js` serves `10.7` against the repository's `10.8`,
+  and `/city/weather.js` answers 404 — so neither the release nor the split is
+  live. The deploy itself could not run from this host: `root@91.99.176.243`
+  refuses the only private key here, so it is recorded as `BLOCKED(owner)`
+  (`T0060`) rather than silently skipped.
 - Semgrep and bandit were run on the primary host (their results are in
   `baseline.md` and `tool-coverage.md`) and not re-installed in the container;
   the container re-ran ruff, shellcheck, eslint and gitleaks. Scanning the same

@@ -55,7 +55,7 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0022 | S1 | B | `roomcad/web/audio.js:5-14` | ensureCtx() does not guard AudioContext construction, so a blocked browser throws out of the edit that played the sound | DONE | `f7c2d26` |
 | T0023 | S1 | A | `tests/three-environment.test.mjs:36; tests/harness/walk3d-source.mjs:23-28` | No test runs the 3D path, and the solar test re-adds by hand the very constants sun.js fails to import | DONE | `b69edfe` |
 | T0047 | S1 | A | `roomcad/web/store/notifications.js:22` | store.emit() aborts every later listener when one throws, so a single subsystem failure disables the rest of the app's change handling | DONE | `f7c2d26` |
-| T0065 | S1 | A | `roomcad/server/roomcad_api/http.py (was roomcad/server/server.py)` | POST /api/login and /api/logout declared Content-Length: 11 for the 12-byte body {"ok": true}, leaving one byte in the socket | DONE | `ca9c2e6` |
+| T0065 | S1 | A | `roomcad/server/roomcad_api/http.py (was roomcad/server/server.py)` | POST /api/login and /api/logout declared Content-Length: 11 for the 12-byte body {"ok": true}, leaving one byte in the socket | DONE | `bc3edc0` |
 | T0024 | S2 | A | `.github/workflows/tests.yml:1-45` | CI actions are pinned to mutable major tags and no GITHUB_TOKEN permissions are declared | DONE | `d062aeb` |
 | T0025 | S2 | B | `roomcad/web/walk3d.js:24-85` | 56 imports in walk3d.js are dead after the split | DONE | `b69edfe` |
 | T0026 | S2 | B | `roomcad/web/walk3d/loop.js:293-314; walk3d.js:194; walk3d/paintball.js:268-277` | Walk3D.dispose() leaks resources and leaves a live store subscription and ResizeObserver | DONE | `b69edfe` |
@@ -78,7 +78,7 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0043 | S2 | A | `roomcad/web/login.js:38-47` | Every non-OK login response is reported as 'Wrong password.', including the 429 lockout and a 500 | DONE | `b370652` |
 | T0054 | S2 | A | `roomcad/web/app/{ui,inspector,view,files,status}.js, editor2d/coords.js` | Remove hand-written innerHTML interpolation: one escaping primitive (safeHtml/safeMarkup) at every sink | DONE | `553b887` |
 | T0056 | S2 | B | `roomcad/web/app/files.js:39,40,43,48; app/live.js:64,69,73,76; app/status.js:215` | Remove the post-await singleton assignments so require-atomic-updates can be enforced rather than waived | DONE | `553b887` |
-| T0062 | S2 | A | `roomcad/server/server.py` | Tracker T-02b: split server.py (1241 lines) into a package while keeping server.py the runnable entry and every rebinding contract live | DONE | `ca9c2e6` |
+| T0062 | S2 | A | `roomcad/server/server.py` | Tracker T-02b: split server.py (1241 lines) into a package while keeping server.py the runnable entry and every rebinding contract live | DONE | `bc3edc0` |
 | T0044 | S3 | A | `roomcad/server/deploy.sh:150` | shellcheck SC2034: loop variable `attempt` is never read | DONE | `d062aeb` |
 | T0045 | S3 | C | `tests/server-live.test.py:51,118,119,600` | Ruff sweep: asserts that vanish under -O, and a lambda assignment | DONE | `d062aeb + 91379d8` |
 | T0046 | S3 | C | `roomcad/web/**/*.js (128 eslint findings)` | eslint sweep: unused vars, prefer-const, redundant no-eq-null rule | DONE | `4cf0b30` |
@@ -93,8 +93,8 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0058 | S3 | C | `AUDIT/eslint.config.mjs (tests/** block, no-unsanitized/method)` | Scope the import() pseudo-sink out of the Node test harness while keeping every DOM sink at error | DONE | `553b887` |
 | T0059 | S3 | A | `roomcad/web/editor2d/drag.js:398-493` | onPointerUp bound a local `drag` that shadowed the module's exported `drag` object; renamed, and no-shadow is now on for production | DONE | `-` |
 | T0060 | S3 | A | `roomcad/server/deploy.sh` | Tracker T-01 (ship 10.8): pre-deploy verification done; the deploy itself is a human step and is not performed by this audit | BLOCKED | `-` |
-| T0061 | S3 | B | `roomcad/web/city.js` | Tracker T-02a: split city.js (5301 lines) into the repo's prototype pattern | DONE | `ca9c2e6` |
-| T0063 | S3 | B | `roomcad/web/plan/layout.js, layout-slice.js, layout-partition.js` | Tracker T-04: the auto-layout 'no frontage' decision is implemented and tested; remove the dead hallway vestige and the comments that promise a carve which does not exist | DONE | `ca9c2e6` |
+| T0061 | S3 | B | `roomcad/web/city.js` | Tracker T-02a: split city.js (5301 lines) into the repo's prototype pattern | DONE | `bc3edc0` |
+| T0063 | S3 | B | `roomcad/web/plan/layout.js, layout-slice.js, layout-partition.js` | Tracker T-04: the auto-layout 'no frontage' decision is implemented and tested; remove the dead hallway vestige and the comments that promise a carve which does not exist | DONE | `bc3edc0` |
 | T0064 | S3 | B | `roomcad/web/city.js:4909` | Tracker T-05: the vehicle lamps already follow the time of day; correct the comment that said it was an open question | DONE | `-` |
 
 # AUDIT — Phase E: the single final verification on the independent host (§11)
@@ -304,14 +304,33 @@ function they captured) and `security/detect-object-injection` (fires on every
 
 ## Verifying commit versus handing-over commit
 
-The verified tree is `ca9c2e6`. Every commit after it in this branch changes
-**only files under `AUDIT/`** (this record and the generated report), which no
-part of the verification consumes: the suite, `boot.test.mjs`, the linters and the
-ledger check read `roomcad/` and `tests/`. The check is one command, and it is the
-guarantee:
+The verified tree is `ca9c2e6`. Every commit after it changes **only files under
+`AUDIT/`** (this record and the generated report), which no part of the
+verification consumes: the suite, `boot.test.mjs`, the linters and the ledger check
+read `roomcad/` and `tests/`. The check is one command, and it is the guarantee:
 
 ```bash
 git diff --name-only ca9c2e6..HEAD | grep -v '^AUDIT/'   # must print nothing
+```
+
+**The verified commit was then rebased, and here is exactly what that changed.**
+The work was fast-forwarded onto `main` and pushed. The remote `main` had one
+commit the branch did not — `d15a56b`, an automated refresh of the "views (14d)"
+badge in `.github/traffic.json` — and this repository's history is linear (0 merge
+commits in 222), so `main` was rebased onto it rather than merged. Rebasing changed
+**only parentage**: the rebased equivalent of the verified commit is `bc3edc0`, and
+
+```bash
+git diff --name-only ca9c2e6 bc3edc0     # prints only .github/traffic.json
+```
+
+so every file the verification reads — `roomcad/`, `tests/`, `AUDIT/` — is
+byte-identical, and the deployed file set (`web/`, `server.py`, `roomcad_api/`)
+does not include `.github/` at all. The invariant check for the pushed branch is
+therefore:
+
+```bash
+git diff --name-only bc3edc0..HEAD | grep -v '^AUDIT/'   # must print nothing
 ```
 
 ## What Phase E does not claim
@@ -319,9 +338,13 @@ git diff --name-only ca9c2e6..HEAD | grep -v '^AUDIT/'   # must print nothing
 - It is not a browser test. `boot.test.mjs` proves the module graph and the DOM
   contract; no real browser was driven, so "the page renders" is not claimed for
   any change (unchanged from the baseline, and stated in `AGENTS.md`).
-- The production VPS was never contacted, deployed to, or read from (§0). The
-  deploy itself is `BLOCKED(owner)` in the ledger (`T0060`), with two options for
-  the human who runs it.
+- The production VPS was never deployed to, restarted, or written to (§0). Two
+  read-only facts about it were checked afterwards, when the owner asked for the
+  deploy: its public `version.js` serves `10.7` against the repository's `10.8`,
+  and `/city/weather.js` answers 404 — so neither the release nor the split is
+  live. The deploy itself could not run from this host: `root@91.99.176.243`
+  refuses the only private key here, so it is recorded as `BLOCKED(owner)`
+  (`T0060`) rather than silently skipped.
 - Semgrep and bandit were run on the primary host (their results are in
   `baseline.md` and `tool-coverage.md`) and not re-installed in the container;
   the container re-ran ruff, shellcheck, eslint and gitleaks. Scanning the same

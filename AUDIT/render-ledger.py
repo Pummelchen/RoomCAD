@@ -42,7 +42,9 @@ def main():
     lines.append("")
     lines.append("**Generated from `AUDIT/ledger.json`. Do not edit by hand.**")
     lines.append("")
-    lines.append("Branch: `audit/2026-09-18` · Base: `dbba4df`")
+    lines.append("Branch: `%s` · Base: `%s`"
+                 % (data.get("meta", {}).get("branch", "?"),
+                    data.get("meta", {}).get("base_commit", "?")))
     lines.append("")
     lines.append(
         "Totals: **%d tasks** — done:%d open:%d blocked:%d"
