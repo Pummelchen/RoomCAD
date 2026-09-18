@@ -18,7 +18,20 @@ export const notifications = {
   },
 
   emit() {
-    this.listeners.forEach(fn => fn());
+    // One listener must not be able to silence the rest. `forEach` runs them in
+    // registration order and an exception from one aborts the whole loop, so a
+    // single failing renderer stopped every renderer registered after it — the
+    // inspector, the status line and the toolbar all went dead for that change
+    // with nothing shown. Each is isolated over a COPY of the set (a listener
+    // may add or remove one as it runs), and a failure is reported rather than
+    // swallowed, so the next listener still runs and the cause is visible.
+    for (const fn of [...this.listeners]) {
+      try {
+        fn();
+      } catch (err) {
+        console.error("store listener failed:", err);
+      }
+    }
   },
 
   /// Briefly colours a furniture item green (valid) or red (invalid) in the
@@ -126,6 +139,10 @@ export const notifications = {
     this.selectedLabelID = null;
     this.selectedPublicID = null;
     this.furnitureFeedback = null;
+    // The clash colour a carried public area shows is part of the drag, not
+    // part of the plan, so it goes with the selection too — leaving it set
+    // painted an area red for good.
+    this.publicFeedback = null;
     this.furnitureGaps = null;
   },
 

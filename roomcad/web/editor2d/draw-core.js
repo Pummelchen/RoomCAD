@@ -158,7 +158,7 @@ export const draw_core = {
         size: P.LABEL_DEFAULT_SIZE }, false);
     }
 
-    this.drawRoomSelection(room);
+    this.drawRoomSelection();
 
     // Readouts already drawn this frame claim their space; the set was cleared
     // at the top of the frame.

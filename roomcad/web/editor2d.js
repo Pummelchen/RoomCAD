@@ -11,7 +11,6 @@
 // is behaviour-preserving here because nothing in this class is private — no
 // `#field`, no `super`, no static member.
 
-import * as P from "./plan.js";
 import { store } from "./store.js";
 import { coords } from "./editor2d/coords.js";
 import { view } from "./editor2d/view.js";

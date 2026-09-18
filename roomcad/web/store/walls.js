@@ -42,8 +42,18 @@ export const walls = {
     // Exclude this wall so the end never snaps onto the wall it belongs to,
     // and so it can lock onto whatever other wall it is being dragged into.
     const p = P.snapWallEndpoint(this.room, raw, fixed, id);
-    if (part === "start") wall.start = p;
-    else wall.end = p;
+    // `snapWallEndpoint` may hand back a candidate that is off BOTH lines
+    // through the fixed end: its `consider` accepts any wall start, end or
+    // midpoint within tolerance, unlike `snapWallEnd`'s, which guards the
+    // shared axis. A wall at an angle is a shape this model cannot hold — the
+    // next sanitize() drops it, and every opening on it, with no warning — so
+    // the snapped point is pulled back onto the axis the drag chose, exactly as
+    // `attachAlongAxis` does for a wall being drawn.
+    const guide = P.axisAligned(raw, fixed);
+    const onX = Math.abs(guide.z - fixed.z) <= 1e-9;
+    const locked = onX ? P.point(p.x, fixed.z) : P.point(fixed.x, p.z);
+    if (part === "start") wall.start = locked;
+    else wall.end = locked;
     // The same floor the editor draws to. This used to accept 0.15 — the
     // threshold sanitize() uses to repair a FILE — so a wall could be dragged
     // down to half the length it was allowed to be drawn at: 20 cm was legal to
@@ -312,17 +322,46 @@ export const walls = {
   },
 
   updateOpeningWidth(kind, width) {
+    // Resolve the selection BEFORE opening a drag transaction: a dangling id
+    // (the opening was already removed) used to `return` after beginDrag() and
+    // leave the transaction open, which blocks live updates until something
+    // else happens to close it.
+    const list = kind === "door" ? this.room.doors : this.room.windows;
+    const id = kind === "door" ? this.selectedDoorID : this.selectedWindowID;
+    const index = list.findIndex(o => o.id === id);
+    if (index < 0) return;
     this.beginDrag();
+    const opening = list[index];
+    const wall = this.room.walls.find(w => w.id === opening.wallID);
     // From plan.js, not typed out again: the inspector slider, this clamp and
     // the one sanitize() applies on load all have to be the same range, or a
     // width can be set to one the model then rewrites.
-    const clamped = P.clamp(width, P.MIN_OPENING_WIDTH[kind], P.MAX_OPENING_WIDTH[kind]);
-    if (kind === "door") {
-      const index = this.room.doors.findIndex(d => d.id === this.selectedDoorID);
-      if (index >= 0) this.room.doors[index].width = clamped;
-    } else {
-      const index = this.room.windows.findIndex(w => w.id === this.selectedWindowID);
-      if (index >= 0) this.room.windows[index].width = clamped;
+    const asked = P.clamp(width, P.MIN_OPENING_WIDTH[kind], P.MAX_OPENING_WIDTH[kind]);
+    // The wall has to keep 10 cm at each end, so the widest opening it can hold
+    // is its length less 0.2 — exactly the figure sanitize() tests before it
+    // drops an opening for not fitting its wall. Clamping only to the global
+    // range let the inspector ask for a width the wall could not hold, and the
+    // sanitize() on release then deleted the door, leaving the selection
+    // dangling. The opening must never be dropped by a legal slider value.
+    const fits = wall ? P.clean(P.wallLength(wall) - 0.2) : asked;
+    // sanitize() keeps an opening when `wallLength >= width + 0.2`, and binary
+    // floating point can put that sum a hair above the length, so a capacity
+    // that would not survive the comparison is stepped just below it.
+    const capacity = wall && !(P.wallLength(wall) >= fits + 0.2) ? fits - 1e-6 : fits;
+    if (wall && capacity < P.MIN_OPENING_WIDTH[kind]) {
+      // Not even the narrowest opening fits. Nothing is applied: the opening
+      // stays where it was rather than vanishing.
+      this.status = "That wall is too short for a "
+        + (kind === "door" ? "door" : "window") + " that wide";
+      this.emit();
+      return;
+    }
+    const clamped = Math.min(asked, capacity);
+    list[index].width = clamped;
+    if (clamped < asked - 1e-9) {
+      this.status = (kind === "door" ? "Door" : "Window")
+        + " limited to " + P.cm(clamped) + " by its wall";
+      this.emit();
     }
   },
 

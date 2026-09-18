@@ -54,7 +54,11 @@ export function roomToSVG(room, options = {}) {
   const planW = (bounds.maxX - bounds.minX) + pad * 2;
   const planH = (bounds.maxZ - bounds.minZ) + pad * 2;
 
-  const denom = options.scale || chooseScale(planW, planH);
+  // A number, not whatever was handed in: every other room-derived string on
+  // the sheet goes through esc(), and `options.scale` used to be spliced raw
+  // into a <text> element, so a crafted value escaped it.
+  const asked = Number(options.scale);
+  const denom = Number.isFinite(asked) && asked > 0 ? asked : chooseScale(planW, planH);
   const k = MM_PER_M / denom;           // millimetres on the sheet per metre
   const titleH = 16;
   // A tall narrow plan makes a tall narrow sheet, and the title block then has
@@ -218,7 +222,11 @@ export function roomToSVG(room, options = {}) {
 
   // --- title block ----------------------------------------------------------
   const baseY = planH * k;
-  const area = (room.width * room.length).toFixed(2);
+  // The floor actually enclosed, not the bounding-box extent. `syncExtent()`
+  // sets width/length to the overall wall extent, so on an L, a U or anything
+  // with a courtyard their product overstates the plan — an L-shaped 6×6 plan
+  // printed 36.00 m² when it encloses 27.00 m².
+  const area = P.floorArea(room).toFixed(2);
   push(`<g font-family="Helvetica, Arial, sans-serif" fill="#1b2027">\n`);
   push(`  <line x1="0" y1="${n(baseY)}" x2="${n(sheetW)}" y2="${n(baseY)}" stroke="${STROKE}" stroke-width="0.3"/>\n`);
   push(`  <text x="2" y="${n(baseY + 6)}" font-size="4.4" font-weight="bold">${esc(room.name || "Room")}</text>\n`);
