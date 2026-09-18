@@ -14,6 +14,14 @@ Production (`91.99.176.243`, the VPS in `deploy.sh`) is **never** a host for thi
 no restart, no DB write, no migration, no credential rotation is performed against it (§0).
 No VPS was provisioned; the independent host is a local container (§1b: "Linux/x86 local or VPS").
 
+The independent host is provisioned at Phase E, not before: `colima start --profile roomcad-e
+--cpu 2 --memory 2 --disk 15` (colima 0.10.x / Lima 2.2.0), then
+`docker run --rm -v <repo>:/src:ro node:24-bookworm-slim bash /phase-e-run.sh`. It is a native
+`aarch64` Linux 6.8 container, not emulation, and the existing colima `default` profile was already
+running and was not touched. Everything installed inside it is in `phase-e.md`; the profile is
+deleted again after the run with `colima delete --profile roomcad-e` (rollback: re-run the
+`colima start` line).
+
 ## Language toolchain
 
 | Language | Tool | Version | Install method | Role |

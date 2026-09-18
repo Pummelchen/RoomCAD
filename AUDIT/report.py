@@ -63,6 +63,13 @@ def main():
                      % (t["id"], t["severity"], t["tier"], t["file"], t["title"],
                         t["status"], t["commit"] or "-"))
     lines.append("")
+    # §11 Phase E evidence is appended verbatim from its own record so the report
+    # stays generated while the raw scanner output stays where it was captured.
+    phase_e = os.path.join(HERE, "phase-e.md")
+    if os.path.exists(phase_e):
+        with open(phase_e, encoding="utf-8") as f:
+            lines.append(f.read().rstrip())
+        lines.append("")
     with open(OUT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip() + "\n")
     print("wrote %s (%d tasks)" % (OUT, len(tasks)))
