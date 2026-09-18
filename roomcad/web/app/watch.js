@@ -5,7 +5,8 @@
 
 import { appState } from "./state.js";
 
-import { resetLiveSequence, startLiveSync, stopLiveSync } from "./status.js";
+import { liveEditPending, resetLiveSequence, startLiveSync, stopLiveSync } from "./status.js";
+import { toast } from "./ui.js";
 import * as P from "../plan.js";
 import { store } from "../store.js";
 
@@ -102,6 +103,14 @@ export function watchRoom(name) {
     eventSource.onmessage = e => {
       try {
         const data = JSON.parse(e.data);
+        const ownEcho = !!data && data.clientId === CLIENT_ID
+          && data.name === store.serverRoomName;
+        // Our own echo is the one message we do not apply — we already hold the
+        // room — but it is where we learn the sequence our own edit landed at,
+        // so it must still move us forward or we can never publish again.
+        if (ownEcho && typeof data.seq === "number" && data.seq > appState.liveSeq) {
+          appState.liveSeq = data.seq;
+        }
         const { action, version } = liveUpdateAction(data, {
           serverRoomName: store.serverRoomName,
           serverRoomVersion: store.serverRoomVersion,
@@ -109,12 +118,21 @@ export function watchRoom(name) {
           live: store.live,
           dragTransactionActive: store.dragTransactionActive,
         });
-        // The sequence travels with every copy of the room, including our own
-        // echo: a client that ignores the message still has to know what the
-        // shared state is now, or its next edit is refused as stale.
-        if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
         if (action === "ignore") return;
+        // A teammate's change that arrives while we have an edit of our own
+        // still waiting to go out must not replace it: applyRemoteRoom clears
+        // both undo stacks, so the edit would be gone and had never been sent.
+        // The periodic drift check re-reads the true shared state once our push
+        // has settled, so the change arrives then instead of being lost.
+        if (liveEditPending() || store.dragTransactionActive) {
+          store.status = "Live: a teammate's change is waiting for your edit to finish";
+          store.emit();
+          return;
+        }
         const room = P.parseRoom(data.json);
+        // Only now is the message really adopted, so only now may the sequence
+        // move: a drag or a parse failure leaves it where it was.
+        if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
         if (action === "hold") {
           // Remembered while the user considers joining, so Join Live adopts
           // the teammate's work instead of overwriting it.
@@ -125,6 +143,27 @@ export function watchRoom(name) {
       } catch (err) {
         console.warn("Live update ignored:", err);
       }
+    };
+    eventSource.onerror = () => {
+      if (!eventSource) return;
+      // EventSource.CLOSED. A stream the server refused — a 401 after the
+      // session expired, a 503 at the watcher cap — never retries, and nothing
+      // used to notice: `eventSource` stayed non-null, so Join Live thought the
+      // channel was fine and the footer went on claiming Live.
+      if (eventSource.readyState !== 2) {
+        // A plain drop stays CONNECTING and the platform retries it itself.
+        // Say so; do not tear the channel down.
+        if (store.status !== "Live: reconnecting…") {
+          store.status = "Live: reconnecting…";
+          store.emit();
+        }
+        return;
+      }
+      stopWatching({ detached: true });
+      store.live = false;
+      store.status = "Live: the stream was refused — press Join Live to reconnect";
+      store.emit();
+      toast("Live connection lost", "error");
     };
   } catch (err) {
     console.warn("Live stream failed to open:", err);

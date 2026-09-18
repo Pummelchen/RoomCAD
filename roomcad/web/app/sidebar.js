@@ -33,8 +33,8 @@ function chromeWidth() {
   return RESIZER_TOTAL_WIDTH + edgeGapPx * 2;
 }
 
-let sidebarWidths = loadSidebarWidths();
-let panelsShown = loadPanelsShown();
+const sidebarWidths = loadSidebarWidths();
+const panelsShown = loadPanelsShown();
 
 function validWidth(value, fallback) {
   return Number.isFinite(value) ? value : fallback;

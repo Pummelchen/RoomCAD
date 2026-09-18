@@ -62,7 +62,10 @@ async function leaveLiveMode() {
   renderLiveButton();
   const saved = await saveRoom({ watch: false });
   appState.leavingLive = false;
-  if (!saved) {
+  // The SAVE is what matters here, not the read-back verification: the work is
+  // on the server either way, and refusing to leave on a failed verification
+  // only made the user save the same design again as a new version.
+  if (!saved.saved) {
     store.status = "Could not save for everyone — still in Live Active";
     store.emit();
     return;

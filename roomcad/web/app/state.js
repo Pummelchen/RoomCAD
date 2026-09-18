@@ -12,10 +12,20 @@
 // section's private state. Putting them in one place also makes the sharing
 // visible, which it was not when they were five `let`s scattered down a
 // two-thousand-line file.
+
+// How often the server is polled for presence and latency. It lives here rather
+// than in status.js because `statusBackoff` has to START at it, and status.js
+// cannot supply it: status.js reads this object while it evaluates, so an import
+// the other way is a cycle, and the constant would be in its temporal dead zone.
+export const STATUS_INTERVAL_MS = 3000;
+
 export const appState = {
   walk3d: null,   // the 3D walkthrough, built on first use
   liveSeq: 0,   // the server's sequence number for live edits
   leavingLive: false,   // true while leaving, so the buttons cannot double-fire
   pendingLiveDraft: null,   // a teammate's unsaved draft, held while the user decides
-  statusBackoff: 0,   // the current poll interval, backing off while offline
+  // The current poll interval, backing off while offline. It starts at the
+  // interval, not at 0: `Math.min(0 * 2, …)` is 0 forever, which re-polls an
+  // unreachable server as fast as it can refuse.
+  statusBackoff: STATUS_INTERVAL_MS,
 };

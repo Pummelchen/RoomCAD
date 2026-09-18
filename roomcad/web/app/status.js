@@ -5,7 +5,7 @@
 // MARK: - Server status (presence + latency), polled every 3 s
 
 
-import { appState } from "./state.js";
+import { appState, STATUS_INTERVAL_MS } from "./state.js";
 
 import { appVersion, toast } from "./ui.js";
 import { apiLiveDraft } from "./api.js";
@@ -38,7 +38,10 @@ export function updateVersionBadge() {
 // present from its requests, so pausing would drop people out of the
 // collaborator count whenever they switched tabs. Browsers already throttle
 // background timers, which is the right amount of restraint here.
-export const STATUS_INTERVAL_MS = 3000;
+// The interval itself lives on `appState`'s module, which owns it because the
+// backoff starts at it; status.js re-exports it so the rest of the app keeps one
+// import for the poll.
+export { STATUS_INTERVAL_MS };
 const STATUS_BACKOFF_MAX_MS = 30000;
 let statusTimer = null;
 
@@ -85,6 +88,21 @@ async function pollStatus() {
 let livePushTimer = null;
 let liveSyncTimer = null;
 let liveUnpublished = false;
+// Which local edit a push belongs to. `scheduleLivePush()` numbers every edit,
+// and a push remembers the number it went out under, so an answer from an older
+// push can tell that a newer edit is still waiting and must not be applied over
+// it — `applyRemoteRoom()` clears both undo stacks.
+let liveEditGeneration = 0;
+
+/// Is an edit of ours still on its way to the server?
+///
+/// A teammate's update must not be applied over it: `applyRemoteRoom()` clears
+/// both undo stacks, so the local edit would be gone and had never been sent.
+/// The stream handler asks this before touching the room; the flags live here
+/// because this module owns the push.
+export function liveEditPending() {
+  return liveUnpublished || livePushTimer !== null;
+}
 
 /// Forgets this client's position in the watched room's live sequence. The
 /// server numbers edits per room, so everything derived from that number — the
@@ -100,6 +118,7 @@ export function resetLiveSequence() {
 
 export function scheduleLivePush() {
   if (livePushTimer) clearTimeout(livePushTimer);
+  liveEditGeneration += 1;
   // Something of ours is not out there yet, so we are not in a position to be
   // told we are out of date.
   liveUnpublished = true;
@@ -111,15 +130,18 @@ export function scheduleLivePush() {
 
 function pushLiveDraft() {
   if (!store.live || !store.serverRoomName) return;
+  const generation = liveEditGeneration;
   apiLiveDraft(P.serializeRoom(store.room), store.serverRoomName, CLIENT_ID,
                store.serverRoomVersion, appState.liveSeq)
     .then(answer => {
-      liveUnpublished = false;
       if (answer && answer.stale) {
-        // This edit was made against a copy that had already moved on, so it
-        // was refused rather than published — otherwise it would have replaced
-        // newer work by other people with this older picture. Take what the
-        // room actually is now.
+        // A newer local edit was scheduled while this one was in flight. The
+        // server's copy predates that edit, so applying it — or adopting its
+        // sequence, which would let the newer push win against the work that
+        // made this one stale — would lose it. Leave this answer to the newer
+        // push, which will be answered on its own terms.
+        if (generation !== liveEditGeneration || store.dragTransactionActive) return;
+        liveUnpublished = false;
         if (typeof answer.seq === "number") appState.liveSeq = answer.seq;
         if (answer.json) {
           store.applyRemoteRoom(P.parseRoom(answer.json),
@@ -130,6 +152,8 @@ function pushLiveDraft() {
         toast("Someone else had already changed this — you are now on their version", "error");
         return;
       }
+      // Only settle this push's own flag: a newer edit owns it while it waits.
+      if (generation === liveEditGeneration) liveUnpublished = false;
       if (answer && typeof answer.seq === "number") appState.liveSeq = answer.seq;
     })
     .catch(() => {
@@ -138,7 +162,7 @@ function pushLiveDraft() {
       // silently switch off the drift check — the exact divergence it exists to
       // catch — until the next edit happened to succeed. Clearing it lets the
       // next check notice and recover, and a later edit re-schedules a push.
-      liveUnpublished = false;
+      if (generation === liveEditGeneration) liveUnpublished = false;
       store.status = "Live: could not reach the server";
       store.emit();
       toast("Live sync lost — reconnecting…", "error");
@@ -169,6 +193,7 @@ async function checkLiveSync() {
   if (!store.live || !store.serverRoomName) return;
   if (liveUnpublished || livePushTimer) return;
   if (store.dragTransactionActive) return;
+  let data;
   try {
     const json = P.serializeRoom(store.room);
     const res = await fetch("/api/live-check/" + encodeURIComponent(store.serverRoomName), {
@@ -177,23 +202,39 @@ async function checkLiveSync() {
       body: JSON.stringify({ clientId: CLIENT_ID, digest: await roomDigest(json) }),
     });
     if (!res.ok) return;
-    const data = await res.json();
-    if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
-    if (data.inSync) {
-      if (data.version != null) store.serverRoomVersion = data.version;
-      return;
-    }
-    // Drifted. Take the shared state — but not on top of an edit made while
-    // this was in flight.
-    if (liveUnpublished || livePushTimer || store.dragTransactionActive) return;
-    const room = P.parseRoom(data.json);
-    store.applyRemoteRoom(room, data.version != null ? data.version : null);
-    store.status = "Live: caught up with everyone";
-    store.emit();
+    data = await res.json();
   } catch {
-    // A failed check is not worth telling anyone about: the next one is two
+    // A failed request is not worth telling anyone about: the next check is two
     // seconds away, and the push path already reports a server it cannot reach.
+    return;
   }
+  if (data.inSync) {
+    // Nothing is applied — the local room already matches — but the server's
+    // sequence is authoritative here, so it is safe to adopt.
+    if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
+    if (data.version != null) store.serverRoomVersion = data.version;
+    return;
+  }
+  // Drifted. Take the shared state — but not on top of an edit made while
+  // this was in flight.
+  if (liveUnpublished || livePushTimer || store.dragTransactionActive) return;
+  let room;
+  try {
+    room = P.parseRoom(data.json);
+  } catch (err) {
+    // The shared copy could not be read. Leave the sequence alone: adopting it
+    // would make the next edit look like it was built on a copy we never took,
+    // and the server would accept it over the very work that made us drift.
+    // Say so rather than swallow it — the client is still out of date.
+    store.status = "Live: could not catch up with everyone — the shared update was unreadable";
+    store.emit();
+    console.warn("Live catch-up ignored:", err);
+    return;
+  }
+  store.applyRemoteRoom(room, data.version != null ? data.version : null);
+  if (typeof data.seq === "number" && data.seq > appState.liveSeq) appState.liveSeq = data.seq;
+  store.status = "Live: caught up with everyone";
+  store.emit();
 }
 
 export function startLiveSync() {

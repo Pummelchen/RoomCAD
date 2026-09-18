@@ -5,7 +5,7 @@
 // MARK: - Keyboard
 
 
-import { isTyping } from "./ui.js";
+import { inspectorFocused, isTyping } from "./ui.js";
 import { togglePanel } from "./sidebar.js";
 import { setMode } from "./view.js";
 import { openFileDialog, saveRoom } from "./files.js";
@@ -25,6 +25,12 @@ document.addEventListener("keydown", e => {
     const key = e.key.toLowerCase();
     if (key === "s") {
       e.preventDefault();
+      // The inspector writes a field back on `change`, which the browser fires
+      // when the field loses focus. Saving is an app action that can be pressed
+      // with the field still focused, so commit it first — otherwise the save
+      // serialises the value from before the edit. Blurring is what commits it.
+      const el = document.activeElement;
+      if (inspectorFocused() && el && el.blur) el.blur();
       saveRoom();
       return;
     }

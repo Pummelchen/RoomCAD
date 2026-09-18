@@ -55,13 +55,18 @@ export async function saveRoom({ watch = !liveDetached } = {}) {
       btn.classList.add("saved");
       setTimeout(() => btn.classList.remove("saved"), 3000);
     }
-    return verified;
+    // The save result, not the verification result: the verification is a
+    // SECOND request, and a save that stored the work but whose read-back failed
+    // is still a save. Reporting `verified` here made leaveLiveMode refuse to
+    // leave a session that had already been saved, so the user retried and
+    // created a duplicate version.
+    return { saved: true, verified };
   } catch {
     store.status = "Could not save to the server";
     store.emit();
     toast("Could not save — server not reachable", "error");
     btn.classList.remove("saving");
-    return false;
+    return { saved: false, verified: false };
   }
 }
 
@@ -242,8 +247,10 @@ async function openStoredRoom(name, version) {
     const repairs = {};
     const room = P.parseRoom(data.json, repairs);
     store.loadRoom(room, data.name, true);
-    announceRepairs(repairs);
     store.serverRoomVersion = data.version;
+    // announceRepairs() emits, so the repair sentence is on screen with the
+    // version it belongs to.
+    announceRepairs(repairs);
     watchRoom(data.name);
     // Persist the exact version the person selected. This is deliberately
     // server-side: a reload resumes it without browser-local storage.
@@ -312,9 +319,11 @@ export async function resumeLastRoom() {
     store.serverRoomVersion = data.version;
     store.status = (data.projectLatest ? "Opened latest project design " : "Resumed ")
       + data.name + " · v" + data.version;
+    store.emit();
+    // Emits only when it has something to add, so an untouched load is not
+    // rendered twice.
     announceRepairs(repairs);
     watchRoom(data.name);
-    store.emit();
   } catch (err) {
     // No prior session or an offline server leaves the normal demo intact.
     // apiReject already reopens the sign-in screen for an expired session.
