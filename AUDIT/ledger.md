@@ -4,7 +4,7 @@
 
 Branch: `audit/2026-09-18` · Base: `dbba4df`
 
-Totals: **53 tasks** — done:53 open:0 blocked:0
+Totals: **58 tasks** — done:58 open:0 blocked:0
 
 Open count (the number that ends the run) = **0**.
 
@@ -12,8 +12,8 @@ Open count (the number that ends the run) = **0**.
 | -------- | ----- | ---- | ---- | ------- |
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 18 | 18 | 0 | 0 |
-| S2 | 20 | 20 | 0 | 0 |
-| S3 | 9 | 9 | 0 | 0 |
+| S2 | 22 | 22 | 0 | 0 |
+| S3 | 12 | 12 | 0 | 0 |
 
 ## Tasks
 
@@ -507,6 +507,28 @@ Open count (the number that ends the run) = **0**.
 - **evidence (after)**: 429 and 5xx produce distinct messages; login 23/0.
 - **commit**: b370652
 
+#### T0054 — Remove hand-written innerHTML interpolation: one escaping primitive (safeHtml/safeMarkup) at every sink
+
+- **status**: DONE
+- **tier**: A · **project**: P1 roomcad/web · **category**: security
+- **where**: `roomcad/web/app/{ui,inspector,view,files,status}.js, editor2d/coords.js`
+- **host**: mac-local · **discovered by**: follow-up to T0049 at the user's request
+- **evidence (before)**: 12 no-unsanitized/property findings (files.js:179,229,298; status.js:27; view.js:109-133 x7; coords.js:214). T0049 recorded them as a warning with a compensating test because the rule only trusts an escaper that wraps the whole assigned expression. Fixing them removes the disposition instead of documenting it.
+- **fix**: one escaping primitive: safeMarkup/safeHtml in app/ui.js, all 12 innerHTML sinks converted, inspector builders return safeMarkup, coords.js builds its input with DOM APIs, and tests/audit-xss.test.mjs (51 checks) is the contract
+- **evidence (after)**: eslint roomcad/web -> 0 problems; audit-xss 51/0; app-clicks 32/0, app-internals 57/0, live-mode 70/0, sidebar-panels 33/0, svg-export 27/0
+- **commit**: 553b887
+
+#### T0056 — Remove the post-await singleton assignments so require-atomic-updates can be enforced rather than waived
+
+- **status**: DONE
+- **tier**: B · **project**: P1 roomcad/web · **category**: concurrency
+- **where**: `roomcad/web/app/files.js:39,40,43,48; app/live.js:64,69,73,76; app/status.js:215`
+- **host**: mac-local · **discovered by**: follow-up to T0048 at the user's request
+- **evidence (before)**: 10 require-atomic-updates findings: `store.x = value` / `appState.x = value` after an `await` inside an async UI handler. T0048 turned the rule off with the argument that the singleton is never reassigned; that argument is sound but the stronger state is the rule being on and silent.
+- **fix**: post-await state is applied as one Object.assign(store, {...}) / Object.assign(appState, {...}) per handler; roomDigest and validWidth exported so the two tests with no faithful public path drive the real functions
+- **evidence (after)**: eslint roomcad/web -> 0 require-atomic-updates; the status strings, emit order and {saved, verified} contract are unchanged; live-mode 70/0, live-multi 44/0, audit-app 57/0
+- **commit**: 553b887
+
 ### S3
 
 #### T0044 — shellcheck SC2034: loop variable `attempt` is never read
@@ -549,7 +571,7 @@ Open count (the number that ends the run) = **0**.
 - **where**: `AUDIT/eslint.config.mjs (rule require-atomic-updates)`
 - **host**: mac-local · **discovered by**: eslint 10.10.0
 - **evidence (before)**: 9 findings, all of the shape `store.x = value` (and `appState.x = value`) after an `await` in an async UI handler (files.js:39,40,43,48; live.js:64,69,73,76; status.js:215). `store` and `appState` are module singletons that are never reassigned; every write is a last-write-wins assignment on a single-threaded event loop, with no read-modify-write spanning an await, so the rule's premise does not hold.
-- **fix**: require-atomic-updates set off with the justification written in the config.
+- **fix**: require-atomic-updates set off with the justification written in the config. [SUPERSEDED and CLOSED by T0054-T0058: the disposition was removed — the finding was fixed, the rule is back at error, and eslint reports 0 problems.]
 - **evidence (after)**: eslint exit 0; the rule is off only in the committed config with the reasoning in it.
 - **commit**: 4cf0b30
 
@@ -560,7 +582,7 @@ Open count (the number that ends the run) = **0**.
 - **where**: `AUDIT/eslint.config.mjs (rule no-unsanitized/property) + tests/audit-xss.test.mjs`
 - **host**: mac-local · **discovered by**: eslint + semgrep + manual XSS pass
 - **evidence (before)**: 12 findings, at app/files.js:174,224,291; app/status.js:27; app/view.js:109,113,117,122,126,130,133; editor2d/coords.js:214. The rule accepts an escape method only when it wraps the ENTIRE assigned expression; this code escapes each interpolation (`innerHTML = `<div>${esc(name)}</div>``). A human XSS pass fuzzed room names and label text with `</text><script>`, attribute-breaking quotes and ampersands through a parseRoom round trip and found no unescaped sink.
-- **fix**: no-unsanitized/property set to warn with the justification written in the config, compensated by tests/audit-xss.test.mjs.
+- **fix**: no-unsanitized/property set to warn with the justification written in the config, compensated by tests/audit-xss.test.mjs. [SUPERSEDED and CLOSED by T0054-T0058: the disposition was removed — the finding was fixed, the rule is back at error, and eslint reports 0 problems.]
 - **evidence (after)**: tests/audit-xss.test.mjs 27/0, including a scratch-source proof that the scan rejects an unescaped interpolation.
 - **commit**: 4cf0b30
 
@@ -571,7 +593,7 @@ Open count (the number that ends the run) = **0**.
 - **where**: `AUDIT/eslint.config.mjs (tests/** block)`
 - **host**: mac-local · **discovered by**: eslint 10.10.0
 - **evidence (before)**: `eslint tests` reported 31 no-unsanitized/method (dynamic `import()` of a data: URL, the deliberate second-module-instance trick tests/live-multi.test.mjs needs) and 8 no-new-func (the `new Function` lifting pattern documented in AGENTS.md). Neither is a DOM sink in Node and neither compiles untrusted text; both remain `error` for roomcad/web, where they are real checks. The residual no-promise-executor-return (17), no-self-compare (2) and security/detect-unsafe-regex (4) findings were FIXED or reviewed as defects rather than configured away.
-- **fix**: no-unsanitized/method and no-new-func scoped out of the tests block only, with the justification written in the config.
+- **fix**: no-unsanitized/method and no-new-func scoped out of the tests block only, with the justification written in the config. [SUPERSEDED and CLOSED by T0054-T0058: the disposition was removed — the finding was fixed, the rule is back at error, and eslint reports 0 problems.]
 - **evidence (after)**: eslint tests has zero findings for both rules; they remain error for roomcad/web.
 - **commit**: 4cf0b30
 
@@ -582,7 +604,7 @@ Open count (the number that ends the run) = **0**.
 - **where**: `tests/harness/dom-stub.mjs:100,139,151`
 - **host**: mac-local · **discovered by**: eslint 10.10.0
 - **evidence (before)**: Three findings: the selector splitter `/^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]+\])*)$/`, the HTML tokenizer TOKEN_RE and the attribute reader ATTR_RE. Each was read: the nested repetitions are anchored (`^`) and/or disjoint by first character, so the backtracking is O(n) rather than exponential; `safe-regex`-style analysis reports any star-height > 1. The input is this repository's own index.html and test-built HTML, never an untrusted or unbounded string, and a DOM stub is not a production path.
-- **fix**: security/detect-unsafe-regex reported as warn for the three reviewed-linear dom-stub patterns; one genuine instance in data-safety.test.mjs simplified.
+- **fix**: security/detect-unsafe-regex reported as warn for the three reviewed-linear dom-stub patterns; one genuine instance in data-safety.test.mjs simplified. [SUPERSEDED and CLOSED by T0054-T0058: the disposition was removed — the finding was fixed, the rule is back at error, and eslint reports 0 problems.]
 - **evidence (after)**: data-safety's regex simplified; the three dom-stub patterns are warnings recorded as reviewed linear.
 - **commit**: 4cf0b30
 
@@ -607,3 +629,36 @@ Open count (the number that ends the run) = **0**.
 - **fix**: The list/id lookup and the index check moved ABOVE beginDrag(), so a dangling selection returns before any transaction is opened.
 - **evidence (after)**: audit-store 33/0; editor-behaviour 37/0; live-mode 70/0.
 - **commit**: f7c2d26
+
+#### T0055 — Replace the DOM stub's nested-quantifier regexes with linear hand-written scanners
+
+- **status**: DONE
+- **tier**: C · **project**: P3 tests · **category**: security
+- **where**: `tests/harness/dom-stub.mjs:100,139,151 (old numbering)`
+- **host**: mac-local · **discovered by**: follow-up to T0051 at the user's request
+- **evidence (before)**: 3 security/detect-unsafe-regex findings: the selector splitter, the HTML tokenizer and the attribute reader. T0051 reported them as warnings with a linearity argument; the rewrite removes the need for the argument.
+- **fix**: the selector splitter, HTML tokenizer and attribute reader are hand-written linear scanners, proved equivalent to the regexes on index.html and 41 adversarial inputs before the swap
+- **evidence (after)**: eslint tests -> 0 security/detect-unsafe-regex; ./tests/run.sh --fast 37 files / 1848 assertions / 0 failed
+- **commit**: 553b887
+
+#### T0057 — Drive the real modules instead of lifting functions out of source with new Function
+
+- **status**: DONE
+- **tier**: C · **project**: P3 tests · **category**: test-quality
+- **where**: `tests/{app-internals,app-wiring,live-mode,live-state,mode-switch,room-lights,sidebar-panels}.test.mjs`
+- **host**: mac-local · **discovered by**: follow-up to T0050 at the user's request
+- **evidence (before)**: 8 no-new-func findings from 9 `new Function` uses. The pattern is documented in AGENTS.md as superseded ('new ones should drive the real module'), and it compiles repository source text into a function that the gate then trusts.
+- **fix**: the 7 test files import the real modules through the harness instead of compiling app source with new Function; check-name sets identical to HEAD for 5 of 7 files and the other 2 re-expressed stronger; 5 converted checks proved still able to fail by breaking behaviour in a scratch copy
+- **evidence (after)**: eslint tests -> 0 no-new-func; per-file assertion counts unchanged (57/70/10/24/18/33/20); --fast 1848 assertions / 0 failed
+- **commit**: 553b887
+
+#### T0058 — Scope the import() pseudo-sink out of the Node test harness while keeping every DOM sink at error
+
+- **status**: DONE
+- **tier**: C · **project**: P3 tests · **category**: config
+- **where**: `AUDIT/eslint.config.mjs (tests/** block, no-unsanitized/method)`
+- **host**: mac-local · **discovered by**: follow-up to T0050 at the user's request
+- **evidence (before)**: 31 no-unsanitized/method findings, all `import()` of a repository path or a data: URL. The rule's default checks include `import` because in a browser a computed import URL is a code-loading sink; in the Node harness `import()` is the module system. T0050 turned the whole rule off for tests; that also lost the four real DOM sinks.
+- **fix**: the tests block disables no-unsanitized/method's defaults and re-enables all four real DOM sinks explicitly, so the import() pseudo-sink is scoped out of Node while every DOM sink stays at error; no-await-in-loop stays at error for production and off for poll loops in the suite
+- **evidence (after)**: eslint roomcad/web tests -> exit 0, 0 problems; the rule is at error in both blocks
+- **commit**: 553b887

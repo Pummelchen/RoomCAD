@@ -6,15 +6,15 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 
 ## Headline
 
-- **53 tasks, 53 DONE, 0 BLOCKED, 0 open.**
-- Findings by severity: S0 6, S1 18, S2 20, S3 9.
+- **58 tasks, 58 DONE, 0 BLOCKED, 0 open.**
+- Findings by severity: S0 6, S1 18, S2 22, S3 12.
 
 | severity | total | done | open | blocked |
 | -------- | ----- | ---- | ---- | ------- |
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 18 | 18 | 0 | 0 |
-| S2 | 20 | 20 | 0 | 0 |
-| S3 | 9 | 9 | 0 | 0 |
+| S2 | 22 | 22 | 0 | 0 |
+| S3 | 12 | 12 | 0 | 0 |
 
 ## The six S0 findings
 
@@ -75,6 +75,8 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0041 | S2 | B | `roomcad/web/app/ui.js:59-62` | The discard guard asks 'Save changes?' but OK discards without saving | DONE | `b370652` |
 | T0042 | S2 | B | `roomcad/web/app/keys.js:24-30; app/inspector.js:309-312` | Cmd/Ctrl-S from inside a field saves the previous value | DONE | `b370652` |
 | T0043 | S2 | A | `roomcad/web/login.js:38-47` | Every non-OK login response is reported as 'Wrong password.', including the 429 lockout and a 500 | DONE | `b370652` |
+| T0054 | S2 | A | `roomcad/web/app/{ui,inspector,view,files,status}.js, editor2d/coords.js` | Remove hand-written innerHTML interpolation: one escaping primitive (safeHtml/safeMarkup) at every sink | DONE | `553b887` |
+| T0056 | S2 | B | `roomcad/web/app/files.js:39,40,43,48; app/live.js:64,69,73,76; app/status.js:215` | Remove the post-await singleton assignments so require-atomic-updates can be enforced rather than waived | DONE | `553b887` |
 | T0044 | S3 | A | `roomcad/server/deploy.sh:150` | shellcheck SC2034: loop variable `attempt` is never read | DONE | `d062aeb` |
 | T0045 | S3 | C | `tests/server-live.test.py:51,118,119,600` | Ruff sweep: asserts that vanish under -O, and a lambda assignment | DONE | `d062aeb + 91379d8` |
 | T0046 | S3 | C | `roomcad/web/**/*.js (128 eslint findings)` | eslint sweep: unused vars, prefer-const, redundant no-eq-null rule | DONE | `4cf0b30` |
@@ -84,6 +86,9 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0051 | S3 | C | `tests/harness/dom-stub.mjs:100,139,151` | security/detect-unsafe-regex flags three linear tokenizer patterns in the DOM stub; reviewed, found linear, reported as warnings and kept at error for production | DONE | `4cf0b30` |
 | T0052 | S3 | B | `roomcad/web/editor2d/drag.js:59-79` | The T0021 fix introduced two empty catch blocks; corrected to report rather than swallow | DONE | `f7c2d26` |
 | T0053 | S3 | B | `roomcad/web/store/walls.js:324-330` | The T0004 fix could leave a drag transaction open when the selected opening had already vanished | DONE | `f7c2d26` |
+| T0055 | S3 | C | `tests/harness/dom-stub.mjs:100,139,151 (old numbering)` | Replace the DOM stub's nested-quantifier regexes with linear hand-written scanners | DONE | `553b887` |
+| T0057 | S3 | C | `tests/{app-internals,app-wiring,live-mode,live-state,mode-switch,room-lights,sidebar-panels}.test.mjs` | Drive the real modules instead of lifting functions out of source with new Function | DONE | `553b887` |
+| T0058 | S3 | C | `AUDIT/eslint.config.mjs (tests/** block, no-unsanitized/method)` | Scope the import() pseudo-sink out of the Node test harness while keeping every DOM sink at error | DONE | `553b887` |
 
 # AUDIT — Phase E: the single final verification on the independent host (§11)
 
