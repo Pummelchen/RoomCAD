@@ -5,8 +5,6 @@
 // MARK: - Element refs
 
 
-import { appState } from "./state.js";
-
 import * as P from "../plan.js";
 import { Editor2D } from "../editor2d.js";
 import { APP_VERSION } from "../version.js";
@@ -57,8 +55,12 @@ export function isTyping() {
 }
 
 export function confirmDiscard() {
+  // OK discards — every caller destroys the edits and none of them saves. The
+  // question used to say "Save changes?", so the button that did the opposite
+  // read as the safe one. Ask what OK actually does.
   return !store.edited || window.confirm(
-    "Save changes to " + (store.documentName || store.room.name) + "?\n\nYour latest changes are not saved yet."
+    "Discard unsaved changes to " + (store.documentName || store.room.name) + "?\n\n" +
+    "They have not been saved and this cannot be undone."
   );
 }
 
@@ -78,10 +80,18 @@ let toastTimer = null;
 /// joint that was healed, or a coordinate nudged into the plate, is invisible
 /// either way and does not deserve to interrupt anyone. Both go in the status
 /// line, because "it opened" and "it opened unchanged" are different facts.
+///
+/// Emits, because the status has to reach the screen: the load paths set their
+/// own status and called this after their last emit, so the sentence sat in
+/// store.status while the page showed the line from before it — the exact "it
+/// opened looking whole" failure this exists to end. `store.emit()` runs its
+/// listeners synchronously and none of them comes back here, so this cannot
+/// re-enter or loop.
 export function announceRepairs(report) {
   if (!report || P.reportIsEmpty(report)) return;
   const said = P.describeReport(report);
   store.status = (store.status ? store.status + " · " : "") + "with repairs: " + said;
+  store.emit();
   if (report.dropped.length) toast("Opened with repairs — " + said, "warn");
 }
 

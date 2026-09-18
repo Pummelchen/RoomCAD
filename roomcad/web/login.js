@@ -39,12 +39,22 @@ form.addEventListener("submit", e => {
       if (res.ok) {
         // Cookie is set — reload so the app boots straight into the room list.
         location.reload();
+        return;
+      }
+      // A non-OK answer is not always a wrong password: the server throttles
+      // failed attempts with 429 and reports a misconfigured gate with 500.
+      // Showing "Wrong password." for those told a correct password it was
+      // wrong and hid the wait the user needed to know about.
+      if (res.status === 429) {
+        error.textContent = "Too many attempts — wait a minute and try again.";
+      } else if (res.status >= 500) {
+        error.textContent = "The server could not sign you in. Try again shortly.";
       } else {
         error.textContent = "Wrong password.";
-        error.hidden = false;
-        input.select();
-        input.focus();
       }
+      error.hidden = false;
+      input.select();
+      input.focus();
     })
     .catch(() => {
       error.textContent = "Could not reach the server.";
