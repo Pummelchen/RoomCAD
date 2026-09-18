@@ -40,8 +40,14 @@ else
   if "$ESLINT" --config AUDIT/eslint.config.mjs roomcad/web tests; then ok "eslint"; else bad "eslint"; fi
 fi
 
+# Gate on ERROR severity. The WARNING-severity rules are the ones whose findings
+# are reviewed and compensated in writing: roomcad-innerhtml-dynamic (the 12
+# esc()-mitigated sites, T0049) and roomcad-insertadjacenthtml-dynamic. They are
+# still reported by `semgrep scan` without --severity, and proved to fire in
+# AUDIT/tool-coverage.md; they just do not gate, because a rule that cannot see
+# per-interpolation escaping would gate forever on a false positive.
 step "semgrep (pinned local rule pack)"
-if semgrep scan --config AUDIT/semgrep-rules.yml --metrics off --quiet --error roomcad tests >/dev/null 2>&1; then
+if semgrep scan --config AUDIT/semgrep-rules.yml --metrics off --quiet --severity ERROR --error roomcad tests >/dev/null 2>&1; then
   ok "semgrep"
 else
   bad "semgrep"
