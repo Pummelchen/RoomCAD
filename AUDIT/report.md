@@ -200,6 +200,18 @@ before is uncovered now, and no test was removed. This is recorded as a justifie
 deviation, not treated as a regression, and it is the only metric that did not
 strictly improve.
 
+## Verifying commit versus handing-over commit
+
+The verified tree is `3ec7f71`. Every commit after it in this branch changes
+**only files under `AUDIT/`** (this record, the generated report, and the audit's
+own gate configuration), which no part of the verification consumes: the suite,
+`boot.test.mjs`, the linters and the ledger check read `roomcad/` and `tests/`.
+The check is one command, and it is the guarantee:
+
+```bash
+git diff --name-only 3ec7f71..HEAD | grep -v '^AUDIT/'   # must print nothing
+```
+
 ## What Phase E does not claim
 
 - It is not a browser test. `boot.test.mjs` proves the module graph and the DOM
