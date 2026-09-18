@@ -6,15 +6,15 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 
 ## Headline
 
-- **58 tasks, 58 DONE, 0 BLOCKED, 0 open.**
-- Findings by severity: S0 6, S1 18, S2 22, S3 12.
+- **59 tasks, 59 DONE, 0 BLOCKED, 0 open.**
+- Findings by severity: S0 6, S1 18, S2 22, S3 13.
 
 | severity | total | done | open | blocked |
 | -------- | ----- | ---- | ---- | ------- |
 | S0 | 6 | 6 | 0 | 0 |
 | S1 | 18 | 18 | 0 | 0 |
 | S2 | 22 | 22 | 0 | 0 |
-| S3 | 12 | 12 | 0 | 0 |
+| S3 | 13 | 13 | 0 | 0 |
 
 ## The six S0 findings
 
@@ -89,6 +89,7 @@ Branch `audit/2026-09-18`, base commit `dbba4df`.
 | T0055 | S3 | C | `tests/harness/dom-stub.mjs:100,139,151 (old numbering)` | Replace the DOM stub's nested-quantifier regexes with linear hand-written scanners | DONE | `553b887` |
 | T0057 | S3 | C | `tests/{app-internals,app-wiring,live-mode,live-state,mode-switch,room-lights,sidebar-panels}.test.mjs` | Drive the real modules instead of lifting functions out of source with new Function | DONE | `553b887` |
 | T0058 | S3 | C | `AUDIT/eslint.config.mjs (tests/** block, no-unsanitized/method)` | Scope the import() pseudo-sink out of the Node test harness while keeping every DOM sink at error | DONE | `553b887` |
+| T0059 | S3 | A | `roomcad/web/editor2d/drag.js:398-493` | onPointerUp bound a local `drag` that shadowed the module's exported `drag` object; renamed, and no-shadow is now on for production | DONE | `-` |
 
 # AUDIT — Phase E: the single final verification on the independent host (§11)
 

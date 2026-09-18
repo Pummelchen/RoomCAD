@@ -148,8 +148,21 @@ const BUG_RULES = {
 const PLAIN_RULES = {
   "no-var": "error",
   "no-redeclare": "error",
-  "no-shadow": "off", // shadowing is the linter's opinion, not a defect class we count
 };
+
+// `no-shadow` is enabled for production only. Its one production finding was
+// real: `editor2d/drag.js` bound a local `drag` inside `onPointerUp` while the
+// module exports a `drag` object, which makes a later edit silently act on the
+// wrong thing. It is renamed to `gesture` and the rule is clean.
+//
+// It is deliberately NOT enabled for the test tree, which has 20 instances of a
+// local deliberately named after the thing it captured from a harness — e.g.
+// `const { checkLiveSync, stopLiveSync } = build()` shadowing the imported
+// functions of the same names. That idiom documents which function is being
+// driven; renaming them would make the tests less clear, not more correct, and
+// there is no behaviour to fix. This is a rule-selection decision for a
+// readability rule, not a waiver of a finding.
+const SHADOW_RULES = { "no-shadow": "error" };
 
 export default [
   {
@@ -165,7 +178,7 @@ export default [
       sourceType: "module",
       globals: { ...globals.browser, ...globals.worker },
     },
-    rules: { ...BUG_RULES, ...PLAIN_RULES },
+    rules: { ...BUG_RULES, ...PLAIN_RULES, ...SHADOW_RULES },
   },
   {
     files: ["tests/**/*.mjs", "tests/**/*.js"],

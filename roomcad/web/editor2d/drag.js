@@ -395,15 +395,15 @@ export const drag = {
 
     const p = this.plan(c);
     const moved = this.pointerMoved;
-    const drag = this.drag;
+    const gesture = this.drag;
     this.drag = null;
     this.lastPlan = null;
     this.pointerStart = null;
     this.pointerMoved = false;
     this.canvas.style.cursor = "";
 
-    if (!drag) return;
-    switch (drag.type) {
+    if (!gesture) return;
+    switch (gesture.type) {
       case "pan":
         break;
       case "click":
@@ -434,8 +434,8 @@ export const drag = {
         store.emit();
         break;
       case "drawWall":
-        if (P.distance(drag.anchor, drag.current) >= P.MIN_WALL_LENGTH) {
-          store.addWall(drag.anchor, drag.current);
+        if (P.distance(gesture.anchor, gesture.current) >= P.MIN_WALL_LENGTH) {
+          store.addWall(gesture.anchor, gesture.current);
         } else {
           store.status = "Walls need to be at least 30 cm long";
           store.emit();
@@ -443,20 +443,20 @@ export const drag = {
         break;
       case "roomSelect":
         store.setRoomSelection({
-          x1: drag.anchor.x, z1: drag.anchor.z,
-          x2: drag.current.x, z2: drag.current.z,
+          x1: gesture.anchor.x, z1: gesture.anchor.z,
+          x2: gesture.current.x, z2: gesture.current.z,
         });
         break;
       case "publicArea":
         store.markPublicArea({
-          x1: drag.anchor.x, z1: drag.anchor.z,
-          x2: drag.current.x, z2: drag.current.z,
+          x1: gesture.anchor.x, z1: gesture.anchor.z,
+          x2: gesture.current.x, z2: gesture.current.z,
         });
         break;
       case "moveFurniture": {
         // Read the verdict before endDrag clears it.
         const clashes = store.furnitureFeedback
-          && store.furnitureFeedback.id === drag.id
+          && store.furnitureFeedback.id === gesture.id
           && store.furnitureFeedback.state === "invalid";
         if (moved) store.endDrag(clashes ? "Moved furniture — it overlaps here" : "Moved furniture");
         else {
@@ -466,7 +466,7 @@ export const drag = {
         break;
       }
       case "slideOpening":
-        if (moved) store.endDrag(drag.kind === "door" ? "Slid door" : "Slid window");
+        if (moved) store.endDrag(gesture.kind === "door" ? "Slid door" : "Slid window");
         else {
           store.discardDrag();
           store.select(p);
@@ -477,7 +477,7 @@ export const drag = {
         else store.discardDrag();
         break;
       case "openingEnd":
-        if (moved) store.endDrag(drag.kind === "door" ? "Resized door" : "Resized window");
+        if (moved) store.endDrag(gesture.kind === "door" ? "Resized door" : "Resized window");
         else store.discardDrag();
         break;
       case "publicCorner":
@@ -490,7 +490,7 @@ export const drag = {
         // real drag: a click is not a move, and settling one would nudge an
         // area the user merely tapped.
         if (moved) {
-          store.settleDraggedPublicArea(drag.id);
+          store.settleDraggedPublicArea(gesture.id);
           store.endDrag("Moved public area");
         }
         else {
