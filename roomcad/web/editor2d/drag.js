@@ -46,7 +46,41 @@ export const drag = {
   /// to come through here. Harmless when no drag is in progress.
   abortDrag() {
     this.drag = null;
+    // A captured pointer has to be given back, or the canvas keeps receiving
+    // its moves with no drag left to apply them to.
+    this.releasePointers();
     store.discardDrag();
+  },
+
+  /// Asks the browser to keep sending this pointer to the canvas until it is
+  /// released, so a drag that leaves the canvas still ends. A platform without
+  /// capture, or a pointer the DOM no longer knows, is not an error: the window
+  /// listeners in attachEvents are the fallback.
+  capturePointer(id) {
+    if (!this.canvas.setPointerCapture) return;
+    try {
+      this.canvas.setPointerCapture(id);
+    } catch (err) {
+      // The pointer is already gone, so there is nothing left to capture and
+      // the window listeners are the fallback. Reported rather than swallowed:
+      // a capture that keeps failing is a platform problem worth seeing.
+      console.debug("pointer capture unavailable for", id, err);
+    }
+  },
+
+  releasePointer(id) {
+    if (!this.canvas.releasePointerCapture || !this.canvas.hasPointerCapture) return;
+    try {
+      if (this.canvas.hasPointerCapture(id)) this.canvas.releasePointerCapture(id);
+    } catch (err) {
+      // Already released by the browser when the pointer vanished; the release
+      // is a no-op. Reported for the same reason as above.
+      console.debug("pointer release skipped for", id, err);
+    }
+  },
+
+  releasePointers() {
+    for (const id of this.pointers.keys()) this.releasePointer(id);
   },
 
   onPointerDown(e) {
@@ -58,6 +92,10 @@ export const drag = {
     const rect = this.canvas.getBoundingClientRect();
     const c = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     this.pointers.set(e.pointerId, { c, moved: false });
+    // Hold on to the pointer for the whole gesture, so letting go past the edge
+    // of the canvas still comes back here rather than to whatever is under the
+    // cursor.
+    this.capturePointer(e.pointerId);
     this.pointerStart = c;
     this.pointerMoved = false;
 
@@ -264,6 +302,20 @@ export const drag = {
       this.pinch = null;
     }
 
+    // A pointer with no buttons down is no longer dragging. This is the backstop
+    // for a release that happened outside the canvas and was never delivered:
+    // without it the drag stayed live and the next button-less move carried the
+    // wall on. Abandoning it here clears the pointer, ends the store's
+    // transaction, and puts the room back where the drag picked it up.
+    if (this.drag && e.buttons === 0) {
+      this.abortDrag();
+      this.pointers.clear();
+      this.pinch = null;
+      this.lastPlan = null;
+      this.requestDraw();
+      return;
+    }
+
     // Left-click-and-hold on empty space pans the view: once the pointer has
     // actually moved, a pending "click" becomes a pan (Wall keeps drawing).
     if (this.drag && (this.drag.type === "click" || this.drag.type === "wallOutside")
@@ -336,6 +388,7 @@ export const drag = {
   onPointerUp(e) {
     const rect = this.canvas.getBoundingClientRect();
     const c = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    this.releasePointer(e.pointerId);
     this.pointers.delete(e.pointerId);
     if (this.pinch && this.pointers.size < 2) this.pinch = null;
     if (this.pointers.size > 0) return;

@@ -76,6 +76,10 @@ export function freshState() {
   undoStack: [],
   redoStack: [],
   dragTransactionActive: false,
+  /// The oldest undo entry `beginDrag` had to evict when the stack was already
+  /// at the 100 cap. A drag that is DISCARDED — a click-select is exactly that —
+  /// has to put it back, or clicking around quietly evicts real history.
+  dragDroppedEntry: null,
   /// How a public area being dragged reads: "valid", or "invalid" while it is
   /// lying on top of another one. Cleared when it is put down.
   publicFeedback: null,

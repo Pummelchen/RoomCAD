@@ -13,10 +13,11 @@ export const history = {
   //
   // These three fields are one thing, not three. `dragTransactionActive` means
   // the TOP of `undoStack` is the pre-drag snapshot `beginDrag` pushed, and
-  // while it is true that one entry belongs to the drag: `commit` consumes it
-  // to fold the drag into the history the commit is writing, `endDrag` keeps it
-  // as the drag's own undo step, `discardDrag` throws it away. No other path may
-  // pop it. Undo and redo used to pop it and leave the flag set, so the next
+  // while it is true that one entry belongs to the drag: `commit` ends the
+  // transaction but KEEPS the snapshot — the drag stays its own undo step — and
+  // then pushes the state before its own mutation, `endDrag` keeps it as the
+  // drag's own undo step, `discardDrag` throws it away. No other path may pop
+  // it. Undo and redo used to pop it and leave the flag set, so the next
   // commit popped the entry UNDERNEATH — the user's most recent real change,
   // silently destroyed. Every path here either owns that snapshot or cancels
   // the transaction that does.
@@ -76,15 +77,16 @@ export const history = {
   },
 
   commit(message, mutation) {
-    // The drag in flight owns the top snapshot: beginDrag parked the pre-drag
-    // room there, so popping it here is this commit taking ownership, and the
-    // push below records the room as the drag left it — the drag becomes its own
-    // history step instead of an untracked set of edits. Clearing the flag in
-    // the same breath is what stops any later commit from popping this entry a
-    // second time (see the MARK above).
+    // A drag in flight owns the top snapshot: beginDrag parked the pre-drag
+    // room there. It is KEPT — this commit does not take it over. Popping it
+    // here folded the drag into the commit, so the state the drag started from
+    // never entered the history and two undos skipped straight past it. Ending
+    // the transaction leaves the drag as its own undo step; the push below
+    // records the room as it is now, which is this commit's own step.
     if (this.dragTransactionActive) {
       this.dragTransactionActive = false;
-      this.undoStack.pop();
+      // The eviction beginDrag did now belongs to a real step, so it stands.
+      this.dragDroppedEntry = null;
     }
     this.undoStack.push(this.cloneRoom());
     if (this.undoStack.length > 100) this.undoStack.shift();
@@ -111,14 +113,19 @@ export const history = {
   beginDrag() {
     if (this.dragTransactionActive) return;
     this.undoStack.push(this.cloneRoom());
-    if (this.undoStack.length > 100) this.undoStack.shift();
+    // At the cap the oldest entry has to go, but a drag that is discarded has
+    // to leave the stack exactly as it was — so what was evicted is remembered
+    // and put back by discardDrag.
+    this.dragDroppedEntry = this.undoStack.length > 100 ? this.undoStack.shift() : null;
     this.dragTransactionActive = true;
   },
 
   endDrag(message) {
     if (!this.dragTransactionActive) return;
     this.dragTransactionActive = false;
+    this.dragDroppedEntry = null;
     this.furnitureFeedback = null;
+    this.publicFeedback = null;
     P.sanitize(this.room);
     // The same at the end of a drag: a wall dragged up to another one has just
     // made a junction, and this is where that becomes two walls. Not during the
@@ -139,8 +146,17 @@ export const history = {
     if (!this.dragTransactionActive) return false;
     this.dragTransactionActive = false;
     this.furnitureFeedback = null;
+    // A drag carried over another area reads red; abandoning the drag must not
+    // leave the canvas painting it red for good.
+    this.publicFeedback = null;
     const before = this.undoStack.pop();
     if (before) this.room = before;
+    // Put back what beginDrag evicted, so a discarded drag — a click-select is
+    // one — leaves the history exactly as it found it.
+    if (this.dragDroppedEntry) {
+      this.undoStack.unshift(this.dragDroppedEntry);
+      this.dragDroppedEntry = null;
+    }
     return true;
   },
 

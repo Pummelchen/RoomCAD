@@ -216,8 +216,13 @@ export const coords = {
     input.focus();
     input.select();
     const finish = () => {
-      const v = Math.round(Number(input.value));
-      if (!isNaN(v)) this.zoomTo(v);
+      // An emptied field is not a request for 0%: `Number("")` is 0 and
+      // `isNaN(0)` is false, so clearing the field committed `zoomTo(0)`, which
+      // clamped to the 20% floor. `blur` calls this too, so merely clicking away
+      // from the field did it. Only a real, finite number applies.
+      const raw = String(input.value).trim();
+      const v = Math.round(Number(raw));
+      if (raw !== "" && Number.isFinite(v)) this.zoomTo(v);
       this.zoomEditing = false;
       this.zoomEl.textContent = this.zoomPercent() + "%";
     };

@@ -33,7 +33,7 @@ export const draw_room = {
   /// The rooms picked out by the Rooms tool, plus the box being dragged.
   /// Each selected room is shaded and captioned with the measurement that
   /// matters for evening them out — its width along the row.
-  drawRoomSelection(room) {
+  drawRoomSelection() {
     const ctx = this.ctx;
     if (this.drag && this.drag.type === "roomSelect") {
       const r = this.rect({
