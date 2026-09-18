@@ -13,6 +13,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The workflow reads the repository and nothing else, so the token gets nothing
+# else. Without this the job inherits the repository's default token
+# permissions, which on an older repository can be read/write for every scope.
+permissions:
+  contents: read
+
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -22,14 +28,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
-
+      # Actions are pinned to a full commit SHA, with the human-readable version
+      # in a comment. A tag is a movable pointer: whoever can write to the
+      # action's repository can silently change what this repository's ONLY gate
+      # does on the next push. Dependabot (or a manual bump) can update the SHA
+      # and the comment together.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # node:sqlite (used by live-multi) needs Node >= 22.5.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 

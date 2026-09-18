@@ -48,7 +48,11 @@ class SseReader(threading.Thread):
             conn.request("GET", "/api/watch/" + self.name,
                          headers={"Accept": "text/event-stream", "Cookie": self.cookie})
             r = conn.getresponse()
-            assert r.status == 200, r.status
+            # Not an `assert`: this file is Tier C test code, but an assert is
+            # stripped by `python -O`, so the check would vanish and the reader
+            # would go on reading a non-stream. Ruff's S101 names it.
+            if r.status != 200:
+                raise AssertionError(r.status)
             while not self._stop.is_set():
                 line = r.readline().decode()
                 if not line:
@@ -115,8 +119,10 @@ def raw_request(port, method, path, body_bytes, headers):
 
 def login(port):
     status, _, set_cookie = request(port, "POST", "/api/login", {"password": "testpass"})
-    assert status == 200, status
-    assert set_cookie, "no Set-Cookie returned"
+    if status != 200:
+        raise AssertionError(status)
+    if not set_cookie:
+        raise AssertionError("no Set-Cookie returned")
     return set_cookie.split(";")[0]  # "roomcad_auth=<token>"
 
 
@@ -597,8 +603,11 @@ def main():
         request(port, "POST", "/api/save",
                 {"name": bulk, "json": bulk_json, "clientId": "bulk"}, cookie)
     conn = server.get_conn()
-    count_of = lambda: conn.execute(
-        "SELECT COUNT(*) FROM rooms WHERE name=?", (bulk,)).fetchone()[0]
+
+    def count_of():
+        return conn.execute(
+            "SELECT COUNT(*) FROM rooms WHERE name=?", (bulk,)).fetchone()[0]
+
     check("a file can accumulate many versions", count_of() >= 120, f"{count_of()}")
 
     # Point a session at it and leave an unsaved draft under its name.
@@ -799,6 +808,27 @@ def main():
     status, _, _ = request(port, "POST", "/api/login", {"password": "testpass"},
                            extra_headers={"Origin": origin})
     check("a same-origin login still works", status == 200, f"{status}")
+
+    # ---- A save body's `json` must be a string, not any JSON value ----------
+    # The document is stored as TEXT and handed back for the client to parse. A
+    # dict or a list used to reach the INSERT and die inside sqlite3, which is
+    # not a response: the connection was dropped with a traceback in the journal
+    # and the caller could not tell a bad request from a dead server. A number
+    # was silently accepted and stored. Each shape is checked here, and the
+    # server has to still answer normally afterwards.
+    for label, value in (("an object", {"a": 1}), ("a list", [1, 2]),
+                         ("a number", 5), ("null", None), ("a boolean", True)):
+        status, resp, _ = request(port, "POST", "/api/save",
+                                  {"json": value, "name": "shapecheck", "clientId": "shape"},
+                                  cookie)
+        check(f"a save whose json is {label} is refused as a bad request",
+              status == 400, f"{status} {resp!r:.80}")
+    check("the server is still serving after refusing those bodies",
+          request(port, "GET", "/api/rooms", None, cookie)[0] == 200)
+    status, resp, _ = request(port, "POST", "/api/save",
+                              {"json": "{\"room\":{}}", "name": "shapecheck",
+                               "clientId": "shape"}, cookie)
+    check("a save whose json IS a string is accepted", status == 200, f"{status} {resp!r:.80}")
 
     httpd.shutdown()
     tmp.cleanup()
