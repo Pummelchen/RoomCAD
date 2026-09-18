@@ -1,0 +1,15 @@
+{
+  "name": "roomcad-audit-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned JS audit toolchain for the RoomCAD pre-production audit. This is NOT the application's package.json — the app has none and stays bundler-free. It exists only so eslint/prettier are pinned and reproducible.",
+  "type": "module",
+  "devDependencies": {
+    "c8": "12.0.0",
+    "eslint": "10.10.0",
+    "eslint-plugin-no-unsanitized": "4.1.5",
+    "eslint-plugin-security": "4.0.1",
+    "globals": "17.12.0",
+    "prettier": "3.9.8"
+  }
+}

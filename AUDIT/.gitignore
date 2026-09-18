@@ -1,0 +1,4 @@
+# The audit toolchain's own dependency tree. The pins live in package.json and
+# package-lock.json, which are committed; the installed tree is not.
+node_modules/
+.tools/
